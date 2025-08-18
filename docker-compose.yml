@@ -1,0 +1,33 @@
+services:
+  rave:
+    build: .
+    container_name: rave-agent-manager
+    ports:
+      - "7890:3000"  # Vibe Kanban
+      - "3001:3001"  # Claude Code Studio (if enabled)
+    volumes:
+      - ./workspace:/workspace
+      - ./config:/opt/config
+      - /var/run/docker.sock:/var/run/docker.sock  # For Docker in Docker
+    environment:
+      - NODE_ENV=production
+      - START_STUDIO=${START_STUDIO:-false}
+    stdin_open: true
+    tty: true
+    networks:
+      - rave-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  rave-network:
+    driver: bridge
+
+volumes:
+  rave-data:
+    driver: local

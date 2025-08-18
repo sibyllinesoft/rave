@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "vibe-kanban": {
+      "command": "node",
+      "args": ["/opt/scripts/vibe-kanban-mcp-server.js"],
+      "env": {
+        "VIBE_KANBAN_URL": "http://localhost:3000",
+        "VIBE_KANBAN_API_KEY": ""
+      }
+    }
+  }
+}
