@@ -31,6 +31,21 @@
   services.xserver.displayManager.autoLogin.user = "agent";
   services.xserver.desktopManager.xfce.enable = true;
   
+  # Set Chromium as default browser
+  environment.sessionVariables = {
+    BROWSER = "chromium";
+  };
+  
+  # XFCE default applications
+  environment.etc."xdg/mimeapps.list".text = ''
+    [Default Applications]
+    text/html=chromium.desktop
+    x-scheme-handler/http=chromium.desktop
+    x-scheme-handler/https=chromium.desktop
+    x-scheme-handler/about=chromium.desktop
+    x-scheme-handler/unknown=chromium.desktop
+  '';
+  
   # Rust development environment will be available through packages
   
   # Core development packages
@@ -71,6 +86,9 @@
     jq
     unzip
     zip
+    
+    # Desktop utilities
+    xdg-utils
   ];
   
   # Install Claude tools via npm at system startup
@@ -111,10 +129,13 @@
       Type = "simple";
       User = "agent";
       WorkingDirectory = "/home/agent/projects";
-      Environment = "NODE_ENV=production";
-      ExecStart = "${pkgs.nodejs_18}/bin/npx vibe-kanban --host 0.0.0.0 --port 3000";
+      Environment = [
+        "NODE_ENV=production"
+        "PATH=${pkgs.nodejs_18}/bin:/run/current-system/sw/bin"
+      ];
+      ExecStart = "${pkgs.nodejs_18}/bin/npx vibe-kanban";
       Restart = "always";
-      RestartSec = 5;
+      RestartSec = 10;
     };
     wantedBy = [ "multi-user.target" ];
   };
@@ -247,10 +268,20 @@ echo ""
 EOF
         chmod +x /home/agent/welcome.sh
         
-        # Add welcome to bashrc
+        # Set up user environment in bashrc
+        echo "" >> /home/agent/.bashrc
+        echo "# AI Agent Environment Setup" >> /home/agent/.bashrc
+        echo "export BROWSER=chromium" >> /home/agent/.bashrc
+        echo "export PATH=\$PATH:/home/agent/.local/bin" >> /home/agent/.bashrc
         echo "" >> /home/agent/.bashrc
         echo "# Welcome message" >> /home/agent/.bashrc
         echo "~/welcome.sh" >> /home/agent/.bashrc
+        
+        # Set user default browser for XFCE
+        mkdir -p /home/agent/.config/xfce4
+        cat > /home/agent/.config/xfce4/helpers.rc << 'EOF'
+WebBrowser=chromium
+EOF
         
         echo "Agent environment setup complete!"
       '';
