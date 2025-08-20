@@ -100,9 +100,18 @@
       Type = "oneshot";
       User = "agent";
       WorkingDirectory = "/home/agent";
+      Environment = [
+        "PATH=${pkgs.nodejs_18}/bin:${pkgs.unzip}/bin:${pkgs.zip}/bin:/run/current-system/sw/bin"
+        "HOME=/home/agent"
+      ];
       ExecStart = pkgs.writeScript "install-claude-tools" ''
-        #!/bin/bash
+        #!${pkgs.bash}/bin/bash
         set -e
+        
+        # Set npm to install to user directory
+        echo "Setting up npm user directory..."
+        mkdir -p /home/agent/.local/bin
+        ${pkgs.nodejs_18}/bin/npm config set prefix /home/agent/.local
         
         echo "Installing Claude Code CLI..."
         ${pkgs.nodejs_18}/bin/npm install -g @anthropic-ai/claude-code
@@ -114,6 +123,8 @@
         ${pkgs.nodejs_18}/bin/npm install -g vibe-kanban
         
         echo "Claude tools installation complete!"
+        echo "Installed tools:"
+        ls -la /home/agent/.local/bin/
       '';
       RemainAfterExit = true;
     };
@@ -131,9 +142,10 @@
       WorkingDirectory = "/home/agent/projects";
       Environment = [
         "NODE_ENV=production"
-        "PATH=${pkgs.nodejs_18}/bin:/run/current-system/sw/bin"
+        "PATH=/home/agent/.local/bin:${pkgs.nodejs_18}/bin:${pkgs.unzip}/bin:${pkgs.zip}/bin:/run/current-system/sw/bin"
+        "HOME=/home/agent"
       ];
-      ExecStart = "${pkgs.nodejs_18}/bin/npx vibe-kanban";
+      ExecStart = "/home/agent/.local/bin/vibe-kanban";
       Restart = "always";
       RestartSec = 10;
     };
@@ -153,8 +165,10 @@
         "NODE_ENV=production"
         "CCR_HOST=0.0.0.0"
         "CCR_PORT=3001"
+        "PATH=/home/agent/.local/bin:${pkgs.nodejs_18}/bin:/run/current-system/sw/bin"
+        "HOME=/home/agent"
       ];
-      ExecStart = "${pkgs.nodejs_18}/bin/npx ccr serve --host 0.0.0.0 --port 3001";
+      ExecStart = "/home/agent/.local/bin/ccr serve --host 0.0.0.0 --port 3001";
       Restart = "always";
       RestartSec = 5;
     };
@@ -246,9 +260,9 @@ echo "🚀 AI Agent Sandbox Environment Ready!"
 echo "======================================"
 echo ""
 echo "📦 Pre-installed tools:"
-echo "  • Claude Code CLI: $(which claude-code || echo 'installing...')"
-echo "  • Claude Code Router: $(which ccr || echo 'installing...')  [http://localhost:3001]"
-echo "  • vibe-kanban: $(which vibe-kanban || echo 'installing...')  [http://localhost:3000]"
+echo "  • Claude Code CLI: $(/home/agent/.local/bin/claude-code --version 2>/dev/null || echo 'installing...')"
+echo "  • Claude Code Router: $(/home/agent/.local/bin/ccr --version 2>/dev/null || echo 'installing...')  [http://localhost:3001]"
+echo "  • vibe-kanban: $(/home/agent/.local/bin/vibe-kanban --version 2>/dev/null || echo 'installing...')  [http://localhost:3000]"
 echo "  • Node.js: $(node --version)"
 echo "  • Python: $(python3 --version)"
 echo "  • Rust: $(rustc --version)"
@@ -258,12 +272,14 @@ echo "  • Vibe Kanban: http://localhost:3000 (Project Management)"
 echo "  • Claude Code Router: http://localhost:3001 (AI Router)"
 echo ""
 echo "🔧 Service Status:"
-systemctl --user is-active vibe-kanban.service || echo "  • vibe-kanban: starting..."
-systemctl --user is-active claude-code-router.service || echo "  • claude-code-router: starting..."
+sudo systemctl is-active vibe-kanban.service 2>/dev/null || echo "  • vibe-kanban: starting..."
+sudo systemctl is-active claude-code-router.service 2>/dev/null || echo "  • claude-code-router: starting..."
 echo ""
 echo "🖥️ Desktop shortcuts available on Desktop"
 echo "📁 Working directory: /home/agent/projects"
 echo "🌐 SSH access: ssh -p 2223 agent@localhost"
+echo ""
+echo "💡 If services aren't running, check: sudo systemctl status vibe-kanban claude-code-router"
 echo ""
 EOF
         chmod +x /home/agent/welcome.sh
