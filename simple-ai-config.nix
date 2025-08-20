@@ -35,8 +35,8 @@ in
   # Minimal desktop
   services.xserver.enable = true;
   services.xserver.displayManager.lightdm.enable = true;
-  services.xserver.displayManager.autoLogin.enable = true;
-  services.xserver.displayManager.autoLogin.user = "agent";
+  services.displayManager.autoLogin.enable = true;
+  services.displayManager.autoLogin.user = "agent";
   services.xserver.desktopManager.xfce.enable = true;
   
   # Set Chromium as default browser
@@ -180,11 +180,11 @@ in
       Environment = [
         "NODE_ENV=production"
         "CCR_HOST=0.0.0.0"
-        "CCR_PORT=3001"
+        "CCR_PORT=3456"
         "PATH=/home/agent/.local/bin:${pkgs.nodejs_20}/bin:/run/current-system/sw/bin"
         "HOME=/home/agent"
       ];
-      ExecStart = "/home/agent/.local/bin/ccr serve --host 0.0.0.0 --port 3001";
+      ExecStart = "/home/agent/.local/bin/ccr start";
       Restart = "always";
       RestartSec = 5;
     };
@@ -212,6 +212,8 @@ in
         mkdir -p /home/agent/.claude-code-router
         cat > /home/agent/.claude-code-router/config.json << 'EOF'
 {
+  "PORT": 3456,
+  "HOST": "0.0.0.0",
   "providers": {
     "openrouter": {
       "enabled": false,
@@ -233,7 +235,7 @@ in
   "defaultProvider": "ollama",
   "server": {
     "host": "0.0.0.0",
-    "port": 3001
+    "port": 3456
   }
 }
 EOF
@@ -336,7 +338,7 @@ EOF
         
         # Route /ccr-ui to Claude Code Router
         location /ccr-ui {
-          proxy_pass http://127.0.0.1:3001;
+          proxy_pass http://127.0.0.1:3456;
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
