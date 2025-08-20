@@ -58,8 +58,8 @@
     vim
     nano
     
-    # Development runtimes
-    nodejs_18
+    # Development runtimes  
+    nodejs_20
     python3
     python3Packages.pip
     python3Packages.virtualenv
@@ -101,7 +101,7 @@
       User = "agent";
       WorkingDirectory = "/home/agent";
       Environment = [
-        "PATH=${pkgs.nodejs_18}/bin:${pkgs.unzip}/bin:${pkgs.zip}/bin:/run/current-system/sw/bin"
+        "PATH=${pkgs.nodejs_20}/bin:${pkgs.unzip}/bin:${pkgs.zip}/bin:/run/current-system/sw/bin"
         "HOME=/home/agent"
       ];
       ExecStart = pkgs.writeScript "install-claude-tools" ''
@@ -111,16 +111,33 @@
         # Set npm to install to user directory
         echo "Setting up npm user directory..."
         mkdir -p /home/agent/.local/bin
-        ${pkgs.nodejs_18}/bin/npm config set prefix /home/agent/.local
+        ${pkgs.nodejs_20}/bin/npm config set prefix /home/agent/.local
         
         echo "Installing Claude Code CLI..."
-        ${pkgs.nodejs_18}/bin/npm install -g @anthropic-ai/claude-code
+        ${pkgs.nodejs_20}/bin/npm install -g @anthropic-ai/claude-code
         
         echo "Installing Claude Code Router..."
-        ${pkgs.nodejs_18}/bin/npm install -g @musistudio/claude-code-router
+        ${pkgs.nodejs_20}/bin/npm install -g @musistudio/claude-code-router
         
-        echo "Installing vibe-kanban..."
-        ${pkgs.nodejs_18}/bin/npm install -g vibe-kanban
+        echo "Setting up vibe-kanban build environment..."
+        
+        # Clone and build vibe-kanban from source
+        cd /home/agent
+        if [ ! -d "vibe-kanban" ]; then
+          ${pkgs.git}/bin/git clone https://github.com/thewh1teagle/vibe-kanban.git
+        fi
+        
+        cd vibe-kanban
+        echo "Building vibe-kanban from source..."
+        
+        # Install frontend dependencies
+        ${pkgs.pnpm}/bin/pnpm install
+        
+        # Build the project
+        ${pkgs.cargo}/bin/cargo build --release
+        
+        # Create symlink in local bin
+        ln -sf /home/agent/vibe-kanban/target/release/vibe-kanban /home/agent/.local/bin/vibe-kanban
         
         echo "Claude tools installation complete!"
         echo "Installed tools:"
@@ -131,7 +148,7 @@
     wantedBy = [ "multi-user.target" ];
   };
   
-  # Auto-start vibe-kanban service
+  # Vibe Kanban service (built from source)
   systemd.services.vibe-kanban = {
     description = "Vibe Kanban Project Management";
     after = [ "install-claude-tools.service" "network-online.target" ];
@@ -141,8 +158,7 @@
       User = "agent";
       WorkingDirectory = "/home/agent/projects";
       Environment = [
-        "NODE_ENV=production"
-        "PATH=/home/agent/.local/bin:${pkgs.nodejs_18}/bin:${pkgs.unzip}/bin:${pkgs.zip}/bin:/run/current-system/sw/bin"
+        "PATH=/home/agent/.local/bin:${pkgs.nodejs_20}/bin:/run/current-system/sw/bin"
         "HOME=/home/agent"
       ];
       ExecStart = "/home/agent/.local/bin/vibe-kanban";
@@ -165,7 +181,7 @@
         "NODE_ENV=production"
         "CCR_HOST=0.0.0.0"
         "CCR_PORT=3001"
-        "PATH=/home/agent/.local/bin:${pkgs.nodejs_18}/bin:/run/current-system/sw/bin"
+        "PATH=/home/agent/.local/bin:${pkgs.nodejs_20}/bin:/run/current-system/sw/bin"
         "HOME=/home/agent"
       ];
       ExecStart = "/home/agent/.local/bin/ccr serve --host 0.0.0.0 --port 3001";
@@ -184,7 +200,7 @@
       User = "agent";
       WorkingDirectory = "/home/agent";
       ExecStart = pkgs.writeScript "setup-agent-env" ''
-        #!/bin/bash
+        #!${pkgs.bash}/bin/bash
         set -e
         
         # Create useful directories
