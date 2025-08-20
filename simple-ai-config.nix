@@ -1,6 +1,11 @@
 # Enhanced AI Agent Sandbox Configuration with Claude Ecosystem
 { config, pkgs, lib, ... }:
 
+let
+  # Import the vibe-kanban derivation
+  vibe-kanban = pkgs.callPackage ./vibe-kanban.nix {};
+in
+
 {
   system.stateVersion = "24.11";
   
@@ -89,6 +94,9 @@
     
     # Desktop utilities
     xdg-utils
+    
+    # Precompiled vibe-kanban
+    vibe-kanban
   ];
   
   # Install Claude tools via npm at system startup
@@ -119,25 +127,7 @@
         echo "Installing Claude Code Router..."
         ${pkgs.nodejs_20}/bin/npm install -g @musistudio/claude-code-router
         
-        echo "Setting up vibe-kanban build environment..."
-        
-        # Clone and build vibe-kanban from source
-        cd /home/agent
-        if [ ! -d "vibe-kanban" ]; then
-          ${pkgs.git}/bin/git clone https://github.com/thewh1teagle/vibe-kanban.git
-        fi
-        
-        cd vibe-kanban
-        echo "Building vibe-kanban from source..."
-        
-        # Install frontend dependencies
-        ${pkgs.pnpm}/bin/pnpm install
-        
-        # Build the project
-        ${pkgs.cargo}/bin/cargo build --release
-        
-        # Create symlink in local bin
-        ln -sf /home/agent/vibe-kanban/target/release/vibe-kanban /home/agent/.local/bin/vibe-kanban
+        echo "vibe-kanban already compiled and installed system-wide"
         
         echo "Claude tools installation complete!"
         echo "Installed tools:"
@@ -161,7 +151,7 @@
         "PATH=/home/agent/.local/bin:${pkgs.nodejs_20}/bin:/run/current-system/sw/bin"
         "HOME=/home/agent"
       ];
-      ExecStart = "/home/agent/.local/bin/vibe-kanban";
+      ExecStart = "${vibe-kanban}/bin/vibe-kanban";
       Restart = "always";
       RestartSec = 10;
     };
@@ -278,7 +268,7 @@ echo ""
 echo "📦 Pre-installed tools:"
 echo "  • Claude Code CLI: $(/home/agent/.local/bin/claude-code --version 2>/dev/null || echo 'installing...')"
 echo "  • Claude Code Router: $(/home/agent/.local/bin/ccr --version 2>/dev/null || echo 'installing...')  [http://localhost:3001]"
-echo "  • vibe-kanban: $(/home/agent/.local/bin/vibe-kanban --version 2>/dev/null || echo 'installing...')  [http://localhost:3000]"
+echo "  • vibe-kanban: $(${vibe-kanban}/bin/vibe-kanban --version 2>/dev/null || echo 'system-installed')  [http://localhost:3000]"
 echo "  • Node.js: $(node --version)"
 echo "  • Python: $(python3 --version)"
 echo "  • Rust: $(rustc --version)"
