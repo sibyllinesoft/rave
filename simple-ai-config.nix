@@ -2,12 +2,15 @@
 { config, pkgs, lib, ... }:
 
 let
-  # Import the vibe-kanban derivation
-  vibe-kanban = pkgs.callPackage ./vibe-kanban.nix {};
+  # Import the simplified vibe-kanban derivation
+  vibe-kanban = pkgs.callPackage ./vibe-kanban-simple.nix {};
 in
 
 {
   system.stateVersion = "24.11";
+  
+  # Allow unfree packages (needed for steam-run binary compatibility)
+  nixpkgs.config.allowUnfree = true;
   
   # User configuration
   users.users.agent = {
@@ -95,6 +98,12 @@ in
     # Desktop utilities
     xdg-utils
     
+    # Binary compatibility layer for non-NixOS executables
+    steam-run
+    
+    # Reverse proxy
+    nginx
+    
     # Precompiled vibe-kanban
     vibe-kanban
   ];
@@ -138,7 +147,7 @@ in
     wantedBy = [ "multi-user.target" ];
   };
   
-  # Vibe Kanban service (built from source)
+  # Vibe Kanban service (precompiled from npm)
   systemd.services.vibe-kanban = {
     description = "Vibe Kanban Project Management";
     after = [ "install-claude-tools.service" "network-online.target" ];
@@ -150,6 +159,7 @@ in
       Environment = [
         "PATH=/home/agent/.local/bin:${pkgs.nodejs_20}/bin:/run/current-system/sw/bin"
         "HOME=/home/agent"
+        "PORT=3000"  # Set specific port for consistency
       ];
       ExecStart = "${vibe-kanban}/bin/vibe-kanban";
       Restart = "always";
@@ -277,6 +287,10 @@ echo "🌐 Web Services (Auto-started):"
 echo "  • Vibe Kanban: http://localhost:3000 (Project Management)"
 echo "  • Claude Code Router: http://localhost:3001 (AI Router)"
 echo ""
+echo "🔗 Unified Access (via nginx proxy on :3002):"
+echo "  • Vibe Kanban: http://localhost:3002/ (Project Management)"
+echo "  • CCR UI: http://localhost:3002/ccr-ui (Claude Code Router Interface)"
+echo ""
 echo "🔧 Service Status:"
 sudo systemctl is-active vibe-kanban.service 2>/dev/null || echo "  • vibe-kanban: starting..."
 sudo systemctl is-active claude-code-router.service 2>/dev/null || echo "  • claude-code-router: starting..."
@@ -312,6 +326,58 @@ EOF
     wantedBy = [ "multi-user.target" ];
   };
   
+  # Enable nginx service for reverse proxy
+  services.nginx = {
+    enable = true;
+    httpConfig = ''
+      server {
+        listen 3002;
+        server_name _;
+        
+        # Route /ccr-ui to Claude Code Router
+        location /ccr-ui {
+          proxy_pass http://127.0.0.1:3001;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          
+          # WebSocket support
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          
+          # Timeouts
+          proxy_connect_timeout 60s;
+          proxy_send_timeout 60s;
+          proxy_read_timeout 60s;
+          
+          # Rewrite path for upstream
+          rewrite ^/ccr-ui/(.*) /$1 break;
+        }
+        
+        # Default route to vibe-kanban
+        location / {
+          proxy_pass http://127.0.0.1:3000;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          
+          # WebSocket support
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          
+          # Timeouts
+          proxy_connect_timeout 60s;
+          proxy_send_timeout 60s;
+          proxy_read_timeout 60s;
+        }
+      }
+    '';
+  };
+  
   # Open firewall for web services
-  networking.firewall.allowedTCPPorts = [ 3000 3001 ];
+  networking.firewall.allowedTCPPorts = [ 3000 3001 3002 ];
 }
