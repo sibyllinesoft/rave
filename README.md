@@ -12,18 +12,36 @@ Build deterministic, reproducible AI agent sandbox VMs using **NixOS Flakes** wi
 
 ## Quick Start
 
+### P0 Production-Ready Build (Recommended)
+
 ```bash
-# Check Nix installation
+# Check Nix installation with flakes support
 nix --version
 
-# Build QEMU VM image (default)
-nix build .#qemu
+# Build P0 production VM with TLS and security hardening
+nix build .#p0-production
 
-# Run the VM
+# Run the VM (HTTPS on :3002, SSH keys required)
 ./result/bin/run-vm.sh
 ```
 
-Your VM will auto-login to Xfce as user `agent` with:
+**P0 Production Features:**
+- **TLS/HTTPS**: https://rave.local:3002 (self-signed certificate)
+- **Memory-Disciplined Builds**: Uses binary substituters, capped parallelism
+- **Security Hardening**: SSH key auth required, no anonymous access
+- **Services**: Vibe Kanban, Grafana monitoring, Claude Code Router
+
+### Development Build (Legacy)
+
+```bash
+# Build development VM (HTTP only, less secure)
+nix build .#qemu
+
+# Run with HTTP access
+./result/bin/run-vm.sh
+```
+
+**Development Services:**
 - **Vibe Kanban**: http://localhost:3000 (Project Management)
 - **Claude Code Router**: http://localhost:3001 (AI Router UI)  
 - **Unified Access**: http://localhost:3002 (Nginx proxy routing)
@@ -61,12 +79,29 @@ brew install qemu
 
 ## Build System
 
+### Production vs Development Builds
+
+**P0 Production Configuration** (`p0-production-config.nix`):
+- Memory-disciplined builds with binary substituters
+- TLS/HTTPS with self-signed certificates
+- Security hardening (SSH keys required)
+- Grafana monitoring included
+- Daily garbage collection and store optimization
+
+**Development Configuration** (`simple-ai-config.nix`):
+- HTTP-only services for quick development
+- Password-based authentication
+- No additional monitoring services
+
 ### Available Formats
 
 The flake supports multiple output formats via nixos-generators:
 
 ```bash
-# QEMU/KVM (qcow2) - Linux virtualization
+# P0 Production-ready (RECOMMENDED)
+nix build .#p0-production
+
+# QEMU/KVM development (qcow2) - Linux virtualization
 nix build .#qemu
 
 # VirtualBox (OVA) - Cross-platform
@@ -492,6 +527,49 @@ jobs:
 MIT - Build VMs, not barriers.
 
 ---
+
+## P0 Production Readiness
+
+### Phase P0: Foundation + TLS/OIDC Baseline
+
+The P0 production configuration implements foundational security and memory discipline:
+
+**Memory Discipline (P0.2):**
+- Binary substituters prevent local compilation (90%+ cache hits)
+- Build parallelism capped at `max-jobs=2, cores=4` for memory constraints
+- Daily garbage collection and store optimization
+- `/tmp` tmpfs disabled, uses `/var/tmp` for large operations
+
+**TLS & Security (P0.3):**
+- HTTPS on `:3002` with self-signed certificates
+- SSH key authentication required (no passwords)
+- Grafana monitoring with admin authentication
+- All services routed through TLS-terminated nginx
+
+**Services Included:**
+- **Vibe Kanban**: Project management at `/`
+- **Grafana**: System monitoring at `/grafana/`
+- **Claude Code Router**: AI routing at `/ccr-ui/`
+
+### OIDC Configuration (Future)
+
+To enable GitLab OIDC authentication:
+
+1. Create GitLab OAuth application
+2. Configure redirect URIs for each service
+3. Update service configurations with client ID/secret
+4. Enable OIDC in Grafana, Element, and Penpot configs
+
+See `docs/adr/002-p0-production-readiness-foundation.md` for detailed implementation.
+
+### Host Configuration Requirements
+
+Add to `/etc/hosts` for local development:
+```
+127.0.0.1 rave.local
+```
+
+Accept self-signed certificate in browser when accessing `https://rave.local:3002`.
 
 ## Migration from Packer/Ansible
 
