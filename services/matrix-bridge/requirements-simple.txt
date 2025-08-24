@@ -1,0 +1,28 @@
+# Simplified requirements for Matrix Bridge testing
+# Core Matrix SDK and web framework
+aiohttp>=3.9.0
+aiohttp-cors>=0.7.0
+
+# Authentication and JWT validation
+PyJWT>=2.8.0
+cryptography>=42.0.0
+requests>=2.31.0
+
+# Configuration and secrets management
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
+
+# Rate limiting and security
+aiolimiter>=1.1.0
+
+# Validation and serialization
+pydantic>=2.7.0
+
+# Logging and monitoring
+structlog>=24.1.0
+prometheus-client>=0.20.0
+
+# Testing framework
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+pytest-mock>=3.14.0

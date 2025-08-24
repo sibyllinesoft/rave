@@ -1,7 +1,7 @@
 {
   description = "RAVE - Reproducible AI Virtual Environment";
 
-  # Memory-disciplined build configuration
+  # P0.3: SAFE mode memory-disciplined build configuration (SAFE=1 defaults)
   nixConfig = {
     substituters = [
       "https://cache.nixos.org"
@@ -11,9 +11,13 @@
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
     ];
-    max-jobs = 2;
-    cores = 4;
+    # SAFE mode defaults: max-jobs=1, cores=2 for memory discipline
+    max-jobs = 1;
+    cores = 2;
+    auto-optimise-store = true;
     experimental-features = [ "nix-command" "flakes" ];
+    sandbox = true;
+    extra-substituters = "https://nix-community.cachix.org";
   };
 
   inputs = {
@@ -25,6 +29,11 @@
   };
 
   outputs = { self, nixpkgs, nixos-generators, ... }: {
+    # P2.2: NixOS VM test infrastructure
+    tests.x86_64-linux = {
+      rave-vm = import ./tests/rave-vm.nix { pkgs = nixpkgs.legacyPackages.x86_64-linux; };
+    };
+
     # VM image packages
     packages.x86_64-linux = {
       # QEMU qcow2 image (development)
@@ -39,6 +48,27 @@
         system = "x86_64-linux";
         format = "qcow";
         modules = [ ./p0-production-config.nix ];
+      };
+      
+      # P1 Security Hardened Production image
+      p1-production = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ ./p1-production-config.nix ];
+      };
+      
+      # P2 Observability-Enhanced Production image
+      p2-production = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ ./p2-production-config.nix ];
+      };
+      
+      # P6 Sandbox-on-PR Production image
+      p6-production = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ ./p6-production-config.nix ];
       };
       
       # VirtualBox OVA image  
@@ -70,7 +100,7 @@
       };
     };
 
-    # Default package (P0 production-ready)
-    defaultPackage.x86_64-linux = self.packages.x86_64-linux.p0-production;
+    # Default package (P6 sandbox-on-PR production)
+    defaultPackage.x86_64-linux = self.packages.x86_64-linux.p6-production;
   };
 }

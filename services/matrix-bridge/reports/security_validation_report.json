@@ -1,0 +1,139 @@
+{
+  "validation_timestamp": "2025-08-23T22:38:46.681338",
+  "overall_status": "CRITICAL_ISSUES_FOUND",
+  "security_checks": {
+    "Static Analysis (Bandit)": {
+      "passed": false,
+      "reason": "Bandit not installed",
+      "severity": "medium"
+    },
+    "Dependency Vulnerabilities (Safety)": {
+      "passed": false,
+      "reason": "Safety not installed",
+      "severity": "medium"
+    },
+    "Code Quality (Flake8)": {
+      "passed": false,
+      "reason": "Flake8 not installed",
+      "severity": "low"
+    },
+    "Secret Detection": {
+      "passed": true,
+      "details": "No hardcoded secrets detected"
+    },
+    "Input Validation": {
+      "passed": false,
+      "reason": "Missing security patterns in input validation",
+      "severity": "high",
+      "details": [
+        "Case-insensitive pattern matching"
+      ]
+    },
+    "Authentication Security": {
+      "passed": true,
+      "details": "Authentication security features present"
+    },
+    "Command Injection Protection": {
+      "passed": false,
+      "reason": "Found potential command injection vulnerabilities",
+      "severity": "critical",
+      "details": [
+        "agent_controller.py: Uses eval() or exec()",
+        "rate_limiter.py: Uses eval() or exec()"
+      ]
+    },
+    "SQL Injection Protection": {
+      "passed": false,
+      "reason": "Found potential SQL injection vulnerabilities",
+      "severity": "critical",
+      "details": [
+        "src/auth.py",
+        "src/audit.py",
+        "src/rate_limiter.py",
+        "src/circuit_breaker.py"
+      ]
+    },
+    "XSS Protection": {
+      "passed": true,
+      "details": "XSS protection measures present"
+    },
+    "Path Traversal Protection": {
+      "passed": false,
+      "reason": "Found potential path traversal vulnerabilities",
+      "severity": "high",
+      "details": [
+        "src/circuit_breaker.py"
+      ]
+    },
+    "Rate Limiting Implementation": {
+      "passed": true,
+      "details": "Rate limiting implementation complete"
+    },
+    "Audit Logging Security": {
+      "passed": true,
+      "details": "Audit logging security features present"
+    },
+    "Circuit Breaker Security": {
+      "passed": true,
+      "details": "Circuit breaker implementation complete"
+    },
+    "Configuration Security": {
+      "passed": true,
+      "details": "Configuration security validated"
+    }
+  },
+  "critical_issues": [
+    {
+      "check": "Command Injection Protection",
+      "issue": "Found potential command injection vulnerabilities",
+      "details": [
+        "agent_controller.py: Uses eval() or exec()",
+        "rate_limiter.py: Uses eval() or exec()"
+      ]
+    },
+    {
+      "check": "SQL Injection Protection",
+      "issue": "Found potential SQL injection vulnerabilities",
+      "details": [
+        "src/auth.py",
+        "src/audit.py",
+        "src/rate_limiter.py",
+        "src/circuit_breaker.py"
+      ]
+    }
+  ],
+  "high_issues": [
+    {
+      "check": "Input Validation",
+      "issue": "Missing security patterns in input validation",
+      "details": [
+        "Case-insensitive pattern matching"
+      ]
+    },
+    {
+      "check": "Path Traversal Protection",
+      "issue": "Found potential path traversal vulnerabilities",
+      "details": [
+        "src/circuit_breaker.py"
+      ]
+    }
+  ],
+  "medium_issues": [
+    {
+      "check": "Static Analysis (Bandit)",
+      "issue": "Bandit not installed",
+      "details": []
+    },
+    {
+      "check": "Dependency Vulnerabilities (Safety)",
+      "issue": "Safety not installed",
+      "details": []
+    },
+    {
+      "check": "Code Quality (Flake8)",
+      "issue": "Flake8 not installed",
+      "details": []
+    }
+  ],
+  "recommendations": []
+}
