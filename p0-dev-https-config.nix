@@ -218,41 +218,19 @@ EOF
       sslCertificate = "/var/lib/nginx/certs/cert.pem";
       sslCertificateKey = "/var/lib/nginx/certs/key.pem";
       
-      # Modern SSL configuration for development
+      # Simple SSL configuration for development
       extraConfig = ''
-        # SSL/TLS Configuration
         ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;
         ssl_prefer_server_ciphers off;
         ssl_session_cache shared:SSL:10m;
         ssl_session_timeout 1d;
-        
-        # Development-friendly security headers
-        add_header Strict-Transport-Security "max-age=300; includeSubDomains" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "SAMEORIGIN" always;  
-        add_header X-XSS-Protection "1; mode=block" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        
-        # Relaxed CSP for development (allows inline styles/scripts for GitLab)
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-src 'self';" always;
       '';
 
       locations = {
-        # Health and SSL info endpoints
+        # Simple health check
         "/health" = {
-          return = "200 'RAVE HTTPS Development Environment\\n\\nStatus: ✅ Running\\nSSL: $ssl_protocol / $ssl_cipher\\nTime: $time_iso8601\\n\\nEndpoints:\\n- GitLab: https://localhost:8080/\\n- Health: https://localhost:8080/health\\n- SSL Info: https://localhost:8080/ssl-info\\n- Prometheus: https://localhost:8080/prometheus/\\n'";
-          extraConfig = ''
-            add_header Content-Type text/plain;
-            access_log off;
-          '';
-        };
-        
-        "/ssl-info" = {
-          return = "200 'RAVE Development SSL Certificate Information\\n\\nCertificate: Self-signed for development\\nIssuer: RAVE Development Environment\\nSubject: localhost\\n\\nValid Domains:\\n- localhost, *.localhost\\n- rave-demo, *.rave-demo  \\n- gitlab.local, *.gitlab.local\\n- rave.local, *.rave.local\\n\\nValid IPs: 127.0.0.1, ::1, 10.0.2.15, 192.168.122.1\\n\\n⚠️  BROWSER WARNINGS ARE NORMAL\\nThis is a self-signed certificate for development.\\nClick \"Advanced\" -> \"Proceed to localhost\" in your browser.\\n'";
-          extraConfig = ''
-            add_header Content-Type text/plain;
-          '';
+          return = "200 'RAVE Ready'";
         };
 
         # GitLab main application  
