@@ -8,7 +8,7 @@
   imports = [ ./p1-production-config.nix ];
   
   # Override hostname for P2
-  networking.hostName = lib.mkForce "rave-p2";
+  networking.hostName = lib.mkDefault "rave-p2";
   
   # P2.3: Enable Prometheus monitoring with SAFE mode configuration
   services.prometheus = {
@@ -169,7 +169,7 @@
   };
   
   # P2.3: Enhanced observability environment setup
-  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkForce (pkgs.writeScript "setup-agent-env-p2" ''
+  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkDefault (pkgs.writeScript "setup-agent-env-p2" ''
     #!${pkgs.bash}/bin/bash
     set -e
     

@@ -12,7 +12,7 @@
   ];
   
   # Override hostname for P3
-  networking.hostName = lib.mkForce "rave-p3";
+  networking.hostName = lib.mkDefault "rave-p3";
   
   # P3: Configure sops-nix secrets
   sops = {
@@ -105,7 +105,7 @@
   ];
   
   # P3: Update system environment for GitLab integration
-  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkForce (pkgs.writeScript "setup-agent-env-p3" ''
+  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkDefault (pkgs.writeScript "setup-agent-env-p3" ''
     #!${pkgs.bash}/bin/bash
     set -e
     

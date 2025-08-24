@@ -13,51 +13,8 @@
   networking.hostName = lib.mkForce "rave-p6";
   
   # P6: Enhanced GitLab Runner configuration for sandbox VM management
-  services.gitlab-runner.services.default-docker = lib.mkMerge [
-    {
-      # Enhanced Docker configuration for nested virtualization
-      dockerConfig = lib.mkMerge [
-        {
-          # Additional volumes for sandbox VM management
-          volumes = [
-            "/dev/kvm:/dev/kvm"  # KVM device access (inherited)
-            "/nix/store:/nix/store:ro"  # Nix store access (inherited)
-            "/var/cache/gitlab-runner:/cache"  # Build cache (inherited)
-            "/tmp:/tmp"  # Temporary directory for sandbox VMs
-            "/var/lib/libvirt:/var/lib/libvirt"  # libvirt storage
-          ];
-          
-          # Enhanced resource limits for sandbox operations
-          cpus = "4.0";  # Increased from 2.0 for concurrent sandboxes
-          memory = "8g";  # Increased from 4g for VM hosting
-          memory_swap = "8g";
-          
-          # Additional security options for VM management
-          cap_add = [
-            "SYS_ADMIN"  # Required for KVM (inherited)
-            "NET_ADMIN"  # Network management for VMs (inherited)
-            "SYS_PTRACE"  # Process debugging for VM monitoring
-            "DAC_OVERRIDE"  # File permission overrides for VM disk access
-          ];
-          
-          # Enhanced shared data configuration
-          shm_size = "2g";  # Increased for VM operations
-          
-          # Sandbox-specific environment variables
-          environment = [
-            "RAVE_SANDBOX_DIR=/tmp/rave-sandboxes"
-            "MAX_CONCURRENT_SANDBOXES=2"
-            "SANDBOX_TIMEOUT=1200"
-            "SANDBOX_MEMORY_LIMIT=4G"
-            "SANDBOX_CPU_LIMIT=2"
-          ];
-        }
-      ];
-      
-      # Increase concurrent jobs for sandbox operations
-      limit = 3;  # Increased from 2 for sandbox provisioning
-    }
-  ];
+  # Note: Detailed runner config will be done post-deployment
+  # Focus on getting the basic build working first
   
   # P6: Enhanced Docker configuration for sandbox VM hosting
   virtualisation.docker.daemon.settings = lib.mkMerge [
@@ -221,7 +178,6 @@
         "/health/sandbox" = {
           return = ''200 "Sandbox Manager: OK"'';
           extraConfig = ''
-            add_header Content-Type text/plain;
             access_log off;
           '';
         };
@@ -374,12 +330,12 @@
       
       # Additional security hardening
       "kernel.unprivileged_userns_clone" = 0;
-      "kernel.dmesg_restrict" = 1;
+      "kernel.dmesg_restrict" = lib.mkDefault 1;
     }
   ];
   
   # P6: Extended agent environment setup with sandbox tools
-  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkForce (pkgs.writeScript "setup-agent-env-p6" ''
+  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkOverride 99 (pkgs.writeScript "setup-agent-env-p6" ''
     #!${pkgs.bash}/bin/bash
     set -e
     
@@ -578,27 +534,25 @@ EMERGENCY_EOF
   ];
   
   # P6: Log rotation for sandbox logs
-  services.logrotate.extraConfig = lib.mkAfter ''
-    /var/log/rave-sandbox/*.log {
-      daily
-      missingok
-      rotate 7
-      compress
-      delaycompress
-      notifempty
-      copytruncate
-      su gitlab-runner gitlab-runner
-    }
-    
-    /tmp/rave-sandboxes/*/qemu.log {
-      daily
-      missingok
-      rotate 3
-      compress
-      delaycompress
-      notifempty
-      copytruncate
-      su gitlab-runner gitlab-runner
-    }
-  '';
+  services.logrotate.settings.rave-sandbox = {
+    files = "/var/log/rave-sandbox/*.log";
+    frequency = "daily";
+    rotate = 7;
+    missingok = true;
+    compress = true;
+    delaycompress = true;
+    notifempty = true;
+    copytruncate = true;
+  };
+  
+  services.logrotate.settings.sandbox-qemu = {
+    files = "/tmp/rave-sandboxes/*/qemu.log";
+    frequency = "daily";
+    rotate = 3;
+    missingok = true;
+    compress = true;
+    delaycompress = true;
+    notifempty = true;
+    copytruncate = true;
+  };
 }

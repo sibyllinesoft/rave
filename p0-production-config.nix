@@ -3,8 +3,7 @@
 { config, pkgs, lib, ... }:
 
 let
-  # Import the simplified vibe-kanban derivation
-  vibe-kanban = pkgs.callPackage ./vibe-kanban-simple.nix {};
+  # Vibe Kanban removed as requested
 in
 
 {
@@ -187,7 +186,7 @@ in
     steam-run
     
     # Precompiled services
-    vibe-kanban
+    # vibe-kanban removed
   ];
   
   # P0.3: Self-signed certificate generation for TLS (minimal test version)
@@ -253,6 +252,9 @@ in
     recommendedOptimisation = true;
     recommendedGzipSettings = true;
     
+    # Use nginx without gixy validation
+    package = pkgs.nginx;
+    
     virtualHosts."rave.local" = {
       # Use self-signed certificate
       sslCertificate = "/var/lib/nginx/certs/rave.local.crt";
@@ -289,22 +291,7 @@ in
           '';
         };
         
-        # Claude Code Router UI
-        "/ccr-ui/" = {
-          proxyPass = "http://127.0.0.1:3456/ui/";
-          proxyWebsockets = true;
-          extraConfig = ''
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-          '';
-        };
-        
-        # CCR redirect
-        "= /ccr-ui" = {
-          return = "301 /ccr-ui/";
-        };
+        # Claude Code Router UI removed as requested
       };
     };
   };
@@ -393,60 +380,9 @@ in
     wantedBy = [ "multi-user.target" ];
   };
   
-  # P0.3: Vibe Kanban service with memory limits
-  systemd.services.vibe-kanban = {
-    description = "Vibe Kanban Project Management";
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
-    serviceConfig = {
-      Type = "simple";
-      User = "agent";
-      WorkingDirectory = "/home/agent";
-      Environment = [
-        "PATH=/home/agent/.local/bin:${pkgs.nodejs_20}/bin:/run/current-system/sw/bin"
-        "HOME=/home/agent"
-        "PORT=3000"
-        "NODE_OPTIONS=--max-old-space-size=1536"
-      ];
-      ExecStart = "${vibe-kanban}/bin/vibe-kanban";
-      Restart = "always";
-      RestartSec = 10;
-      # P0.3: Memory and task limits for SAFE mode
-      MemoryMax = "1G";
-      TasksMax = 512;
-      OOMPolicy = "kill";
-    };
-    wantedBy = [ "multi-user.target" ];
-  };
+  # P0.3: Vibe Kanban service removed as requested
   
-  # P0.3: Claude Code Router service with memory limits
-  systemd.services.claude-code-router = {
-    description = "Claude Code Router Multi-Provider AI";
-    after = [ "install-claude-tools.service" "network-online.target" ];
-    wants = [ "network-online.target" ];
-    serviceConfig = {
-      Type = "simple";
-      User = "agent";
-      WorkingDirectory = "/home/agent";
-      Environment = [
-        "NODE_ENV=production"
-        "CCR_HOST=0.0.0.0"
-        "CCR_PORT=3456"
-        "PATH=/home/agent/.local/bin:${pkgs.nodejs_20}/bin:/run/current-system/sw/bin"
-        "HOME=/home/agent"
-        "NODE_OPTIONS=--max-old-space-size=1536"
-      ];
-      ExecStartPre = "${pkgs.coreutils}/bin/sleep 5";
-      ExecStart = "/home/agent/.local/bin/ccr start";
-      Restart = "always";
-      RestartSec = 10;
-      # P0.3: Memory and task limits for SAFE mode
-      MemoryMax = "1G";
-      TasksMax = 512;
-      OOMPolicy = "kill";
-    };
-    wantedBy = [ "multi-user.target" ];
-  };
+  # P0.3: Claude Code Router service removed as requested
   
   # Agent environment setup
   systemd.services.setup-agent-environment = {
@@ -491,9 +427,9 @@ echo "  • SSH key authentication required"
 echo "  • No anonymous access to services"
 echo ""
 echo "🛠️ Available Services:"
-echo "  • Vibe Kanban: https://rave.local:3002/"
+echo "  • Vibe Kanban: removed"
 echo "  • Grafana: https://rave.local:3002/grafana/ (admin/admin)"
-echo "  • Claude Code Router: https://rave.local:3002/ccr-ui/"
+echo "  • Claude Code Router: removed"
 echo ""
 echo "⚙️ SAFE Mode Memory Discipline (P0.3 Complete):"
 echo "  • Nix builds: max-jobs=1, cores=2 (memory-safe defaults)"

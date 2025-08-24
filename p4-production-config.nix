@@ -12,7 +12,7 @@
   ];
   
   # Override hostname for P4
-  networking.hostName = lib.mkForce "rave-p4";
+  networking.hostName = lib.mkDefault "rave-p4";
   
   # P4: Extend sops-nix secrets for Matrix integration
   sops.secrets = lib.mkMerge [
@@ -87,33 +87,23 @@
         
         "@matrix_healthy" = {
           return = ''200 "Matrix: OK"'';
-          extraConfig = ''
-            add_header Content-Type text/plain;
-          '';
         };
         
         "@matrix_unhealthy" = {
           return = ''503 "Matrix: Unavailable"'';
-          extraConfig = ''
-            add_header Content-Type text/plain;
-          '';
         };
       }
     ];
     
-    # Additional security headers for Matrix/Element
+    # Global security headers for all locations (P4 consolidation) 
     extraConfig = lib.mkAfter ''
-      # Content Security Policy for Element
-      location /element/ {
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' data: blob:; connect-src 'self' https://rave.local:3002; font-src 'self' data:; object-src 'none'; frame-src 'none'; worker-src 'self'; manifest-src 'self';" always;
-      }
-      
-      # Specific headers for Matrix API
-      location /matrix/ {
-        add_header X-Content-Type-Options nosniff always;
-        add_header X-Frame-Options DENY always;
-        add_header X-XSS-Protection "1; mode=block" always;
-      }
+      # Global security headers applied to all responses
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-Frame-Options "DENY" always;  
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';" always;
     '';
   };
   
@@ -184,7 +174,7 @@ EOF
   };
   
   # P4: Matrix administration helper scripts
-  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkForce (pkgs.writeScript "setup-agent-env-p4" ''
+  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkDefault (pkgs.writeScript "setup-agent-env-p4" ''
     #!${pkgs.bash}/bin/bash
     set -e
     
@@ -428,20 +418,7 @@ OAUTH_SETUP_EOF
     echo "P4 Matrix integration environment setup complete!"
   '');
   
-  # P4: Enhanced Prometheus monitoring for Matrix
-  services.prometheus.scrapeConfigs = lib.mkAfter [
-    {
-      job_name = "matrix-synapse";
-      static_configs = [
-        {
-          targets = [ "127.0.0.1:8008" ];
-        }
-      ];
-      metrics_path = "/_synapse/metrics";
-      scrape_interval = "30s";
-      scrape_timeout = "10s";
-    }
-  ];
+  # P4: Matrix monitoring config moved to nixos/matrix.nix to avoid duplication
   
   # P4: Grafana dashboard for Matrix monitoring
   services.grafana.provision.dashboards.settings.providers = lib.mkAfter [

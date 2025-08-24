@@ -194,16 +194,8 @@
     "fs.suid_dumpable" = false;
   };
   
-  # P1: Enhanced security headers in nginx
-  services.nginx.virtualHosts."rave.local".extraConfig = lib.mkAfter ''
-    # Security headers
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';" always;
-  '';
+  # P1: Enhanced security headers in nginx (consolidated to avoid conflicts)
+  # Note: Security headers are now managed in P4+ configurations to avoid conflicts
   
   # P1: Add security scanning tools
   environment.systemPackages = with pkgs; [
@@ -218,7 +210,7 @@
   ];
   
   # P1: Security-focused environment setup update
-  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkForce (pkgs.writeScript "setup-agent-env-p1" ''
+  systemd.services.setup-agent-environment.serviceConfig.ExecStart = lib.mkDefault (pkgs.writeScript "setup-agent-env-p1" ''
     #!${pkgs.bash}/bin/bash
     set -e
     

@@ -1,0 +1,69 @@
+# P1.2: SOPS configuration for team-based secret management
+# This file defines encryption keys and access rules for secrets.yaml
+
+keys:
+  # Team age public keys for secret access
+  # Replace with actual team member public keys
+  - &team_key_1 age1zt6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z  # Team Lead Key
+  - &team_key_2 age1ab2cd3ef4gh5ij6kl7mn8op9qr0st1uv2wx3yz4ab5cd6ef7gh8ij9kl  # DevOps Key
+  - &team_key_3 age1qr0st1uv2wx3yz4ab5cd6ef7gh8ij9kl0mn1op2qr3st4uv5wx6yz7ab  # Security Key
+  
+  # Production deployment key (generated on production server)
+  - &prod_key age1mn8op9qr0st1uv2wx3yz4ab5cd6ef7gh8ij9kl0mn1op2qr3st4uv5wx
+
+creation_rules:
+  # Main secrets file - accessible by all team keys and production
+  - path_regex: secrets\.yaml$
+    key_groups:
+    - age:
+      - *team_key_1
+      - *team_key_2
+      - *team_key_3
+      - *prod_key
+    
+  # Environment-specific secret files (if created later)
+  - path_regex: secrets-dev\.yaml$
+    key_groups:
+    - age:
+      - *team_key_1
+      - *team_key_2
+      
+  - path_regex: secrets-staging\.yaml$
+    key_groups:
+    - age:
+      - *team_key_1
+      - *team_key_2
+      - *team_key_3
+      
+  - path_regex: secrets-prod\.yaml$
+    key_groups:
+    - age:
+      - *team_key_1
+      - *team_key_3
+      - *prod_key
+
+# SETUP INSTRUCTIONS:
+# 
+# 1. Generate age keys for team members:
+#    age-keygen -o ~/.config/sops/age/keys.txt
+#    
+# 2. Share public keys securely and update this file
+# 
+# 3. Initialize secrets.yaml encryption:
+#    sops -e -i secrets.yaml
+# 
+# 4. Edit secrets (will decrypt automatically for authorized users):
+#    sops secrets.yaml
+# 
+# 5. On production server, generate production key:
+#    age-keygen -o /var/lib/sops-nix/key.txt
+#    
+# 6. Add production public key to this file and re-encrypt:
+#    sops -r secrets.yaml
+#
+# SECURITY NOTES:
+# - Keep private keys secure and backed up
+# - Rotate keys annually or when team members change
+# - Use separate keys for different environments
+# - Monitor key usage through audit logs
+# - Never commit private keys to version control

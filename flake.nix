@@ -78,6 +78,36 @@
         ];
       };
       
+      # P6 Demo image (HTTP-only for quick demo)
+      p6-demo = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ 
+          ./p6-demo-config.nix 
+          sops-nix.nixosModules.sops
+        ];
+      };
+      
+      # RAVE Demo Ready (HTTP-only GitLab with fixed nginx)
+      rave-demo-ready = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ 
+          ./p6-http-demo.nix 
+          sops-nix.nixosModules.sops
+        ];
+      };
+      
+      # RAVE Development HTTPS (Self-signed certificates for local dev)
+      rave-dev-https = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ 
+          ./p0-dev-https-config.nix 
+          sops-nix.nixosModules.sops
+        ];
+      };
+      
       # VirtualBox OVA image  
       virtualbox = nixos-generators.nixosGenerate {
         system = "x86_64-linux";

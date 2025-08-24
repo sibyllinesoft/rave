@@ -1,0 +1,357 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "RAVE Agent Performance Dashboard", 
+    "description": "P2.3 Agent Performance monitoring with OpenTelemetry tracing and task correlation",
+    "tags": ["rave", "agent", "performance", "otel", "p2"],
+    "timezone": "browser",
+    "refresh": "15s",
+    "schemaVersion": 36,
+    "version": 1,
+    "time": {
+      "from": "now-4h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Agent Task Processing Rate",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(webhook_events_processed_total[5m]) * 60",
+            "refId": "A",
+            "legendFormat": "Tasks/min"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "red",
+                  "value": 0
+                },
+                {
+                  "color": "yellow", 
+                  "value": 1
+                },
+                {
+                  "color": "green",
+                  "value": 5
+                }
+              ]
+            }
+          }
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "Task Success Rate",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "(rate(webhook_events_processed_total[5m]) / (rate(webhook_events_processed_total[5m]) + rate(webhook_errors_total[5m]))) * 100",
+            "refId": "A",
+            "legendFormat": "Success %"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "red",
+                  "value": 0
+                },
+                {
+                  "color": "yellow",
+                  "value": 95
+                },
+                {
+                  "color": "green", 
+                  "value": 99
+                }
+              ]
+            }
+          }
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 8,
+          "y": 0
+        }
+      },
+      {
+        "id": 3,
+        "title": "Average Task Duration",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "webhook_duration_seconds_sum / webhook_duration_seconds_count",
+            "refId": "A",
+            "legendFormat": "Avg Duration"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "green",
+                  "value": 0
+                },
+                {
+                  "color": "yellow",
+                  "value": 5
+                },
+                {
+                  "color": "red",
+                  "value": 30
+                }
+              ]
+            }
+          }
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 16,
+          "y": 0
+        }
+      },
+      {
+        "id": 4,
+        "title": "Task Processing Timeline",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(webhook_events_processed_total[1m])",
+            "refId": "A",
+            "legendFormat": "Tasks Processed/sec"
+          },
+          {
+            "expr": "rate(webhook_events_deduplicated_total[1m])",
+            "refId": "B",
+            "legendFormat": "Tasks Deduplicated/sec"
+          },
+          {
+            "expr": "rate(webhook_errors_total[1m])",
+            "refId": "C",
+            "legendFormat": "Task Errors/sec"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 24,
+          "x": 0,
+          "y": 6
+        }
+      },
+      {
+        "id": 5,
+        "title": "Task Duration Percentiles",
+        "type": "timeseries", 
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(webhook_duration_seconds_bucket[5m]))",
+            "refId": "A",
+            "legendFormat": "P50"
+          },
+          {
+            "expr": "histogram_quantile(0.90, rate(webhook_duration_seconds_bucket[5m]))",
+            "refId": "B",
+            "legendFormat": "P90"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(webhook_duration_seconds_bucket[5m]))",
+            "refId": "C",
+            "legendFormat": "P95"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(webhook_duration_seconds_bucket[5m]))",
+            "refId": "D",
+            "legendFormat": "P99"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 14
+        }
+      },
+      {
+        "id": 6,
+        "title": "Agent Memory Usage",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "process_resident_memory_bytes{job=\"webhook-dispatcher\"}",
+            "refId": "A",
+            "legendFormat": "Webhook Dispatcher RSS"
+          },
+          {
+            "expr": "process_virtual_memory_bytes{job=\"webhook-dispatcher\"}",
+            "refId": "B",
+            "legendFormat": "Webhook Dispatcher Virtual"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 14
+        }
+      },
+      {
+        "id": 7,
+        "title": "Agent Uptime & Restarts",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "webhook_dispatcher_uptime_seconds",
+            "refId": "A",
+            "legendFormat": "Uptime (seconds)"
+          },
+          {
+            "expr": "increase(process_start_time_seconds[1h])",
+            "refId": "B", 
+            "legendFormat": "Restarts/hour"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 22
+        }
+      },
+      {
+        "id": 8,
+        "title": "Event Store Database Size",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "node_filesystem_size_bytes{mountpoint=\"/var/lib/webhook-dispatcher\"} - node_filesystem_avail_bytes{mountpoint=\"/var/lib/webhook-dispatcher\"}",
+            "refId": "A",
+            "legendFormat": "Database Size"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes"
+          }
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 22
+        }
+      },
+      {
+        "id": 9,
+        "title": "OpenTelemetry Trace Correlation",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "increase(webhook_events_processed_total[1h])",
+            "refId": "A",
+            "format": "table",
+            "legendFormat": "Events with TraceID"
+          }
+        ],
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "displayMode": "table"
+            }
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 24,
+          "x": 0,
+          "y": 28
+        }
+      }
+    ],
+    "annotations": {
+      "list": [
+        {
+          "name": "Task Errors",
+          "datasource": "Prometheus",
+          "expr": "increase(webhook_errors_total[1m]) > 0",
+          "titleFormat": "Task Error",
+          "textFormat": "{{value}} errors in the last minute",
+          "iconColor": "red"
+        },
+        {
+          "name": "Service Restarts", 
+          "datasource": "Prometheus",
+          "expr": "resets(webhook_dispatcher_uptime_seconds[1h]) > 0",
+          "titleFormat": "Service Restart",
+          "textFormat": "Webhook dispatcher restarted", 
+          "iconColor": "orange"
+        }
+      ]
+    },
+    "templating": {
+      "list": [
+        {
+          "name": "task_id",
+          "type": "query",
+          "query": "label_values(webhook_events_processed_total, task_id)",
+          "refresh": 1,
+          "multi": true,
+          "includeAll": true
+        },
+        {
+          "name": "trace_id",
+          "type": "query", 
+          "query": "label_values(webhook_events_processed_total, trace_id)",
+          "refresh": 1,
+          "multi": true,
+          "includeAll": true
+        }
+      ]
+    }
+  },
+  "overwrite": true
+}

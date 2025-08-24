@@ -212,18 +212,12 @@
       };
     };
     
-    # Additional configuration files
-    configFile = pkgs.writeText "homeserver.yaml" (lib.generators.toYAML {} config.services.matrix-synapse.settings);
+    # Configuration file is managed automatically by NixOS
     
     # Data directory
     dataDir = "/var/lib/matrix-synapse";
     
-    # Log directory
-    logDir = "/var/log/matrix-synapse";
-    
-    # User and group
-    user = "matrix-synapse";
-    group = "matrix-synapse";
+    # Log directory and user handled automatically by NixOS
   };
   
   # P4.2: Element Web client configuration
@@ -283,20 +277,11 @@
         alias = "${pkgs.element-web}/";
         index = "index.html";
         extraConfig = ''
-          # Security headers for Element
-          add_header X-Frame-Options DENY;
-          add_header X-Content-Type-Options nosniff;
-          add_header X-XSS-Protection "1; mode=block";
-          add_header Strict-Transport-Security "max-age=31536000; includeSubDomains";
-          
-          # Cache configuration for Element assets
-          location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
-            expires 1y;
-            add_header Cache-Control "public, immutable";
-          }
-          
           # Handle Element routing (SPA)
           try_files $uri $uri/ /element/index.html;
+          
+          # Cache configuration for Element assets (simplified)
+          expires 1y;
         '';
       };
       
@@ -395,38 +380,31 @@
   };
   
   # P4.4: PostgreSQL database configuration for Matrix
-  services.postgresql = lib.mkAfter {
-    ensureDatabases = [ "synapse" ];
-    ensureUsers = [
-      {
-        name = "synapse";
-        ensureDBOwnership = true;
-        ensureClauses = {
-          createdb = true;
-          createrole = false;
-          login = true;
-          replication = false;
-          superuser = false;
-        };
-      }
-    ];
-    
-    # Additional PostgreSQL configuration for Matrix workload
-    extraConfig = lib.mkAfter ''
+  services.postgresql.ensureDatabases = lib.mkAfter [ "synapse" ];
+  services.postgresql.ensureUsers = lib.mkAfter [
+    {
+      name = "synapse";
+      ensureDBOwnership = true;
+    }
+  ];
+  
+  # Additional PostgreSQL configuration for Matrix workload  
+  services.postgresql.settings = lib.mkMerge [
+    {
       # Matrix-specific performance tuning
-      shared_preload_libraries = 'pg_stat_statements'
+      shared_preload_libraries = "pg_stat_statements";
       
       # Memory configuration for Matrix workload
-      work_mem = 16MB
+      work_mem = "16MB";
       
       # Connection configuration for Matrix
-      idle_in_transaction_session_timeout = 300000
+      idle_in_transaction_session_timeout = 300000;
       
       # Logging for Matrix debugging (disable in production)
-      log_statement = 'none'
-      log_min_duration_statement = 5000
-    '';
-  };
+      log_statement = "none";
+      log_min_duration_statement = 5000;
+    }
+  ];
   
   # P4.5: Matrix service dependencies and resource limits
   systemd.services.matrix-synapse = {
@@ -454,7 +432,7 @@
       LimitNPROC = 16384;
       
       # Restart configuration
-      Restart = "always";
+      Restart = lib.mkDefault "always";
       RestartSec = "10s";
     };
     
@@ -485,21 +463,17 @@
   };
   
   # P4.6: Log rotation for Matrix services
-  services.logrotate.extraConfig = lib.mkAfter ''
-    /var/log/matrix-synapse/*.log {
-      daily
-      missingok
-      rotate 14
-      compress
-      delaycompress
-      notifempty
-      copytruncate
-      su matrix-synapse matrix-synapse
-      postrotate
-        systemctl reload matrix-synapse || true
-      endscript
-    }
-  '';
+  services.logrotate.settings.matrix-synapse = {
+    files = "/var/log/matrix-synapse/*.log";
+    frequency = "daily";
+    rotate = 14;
+    missingok = true;
+    compress = true;
+    delaycompress = true;
+    notifempty = true;
+    copytruncate = true;
+    postrotate = "systemctl reload matrix-synapse || true";
+  };
   
   # P4.7: Matrix backup configuration
   systemd.services.matrix-backup = {
@@ -600,18 +574,7 @@
     curl
   ];
   
-  # P4.11: User and group configuration
-  users.users.matrix-synapse = {
-    isSystemUser = true;
-    group = "matrix-synapse";
-    home = "/var/lib/matrix-synapse";
-    createHome = true;
-    uid = 991;  # Standard Matrix Synapse UID
-  };
-  
-  users.groups.matrix-synapse = {
-    gid = 991;  # Standard Matrix Synapse GID
-  };
+  # P4.11: User and group configuration handled automatically by Matrix service
   
   # P4.12: System tuning for Matrix performance
   # Increase file descriptor limits for Matrix

@@ -1,0 +1,407 @@
+# P1.4: Automated Security Scanning Pipeline
+# Implements Trivy container/filesystem scanning and npm audit for production dependencies
+name: P1 Security Scanning
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run daily security scans at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  # P1.4: Security scanning configuration
+  TRIVY_CACHE_DIR: /tmp/.cache/trivy
+  TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db
+  TRIVY_NO_PROGRESS: true
+  TRIVY_QUIET: false
+
+jobs:
+  # P1.4: Trivy container image scanning
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        target:
+          - p0-production
+          - p1-production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v27
+      with:
+        nix_path: nixpkgs=channel:nixos-24.11
+        
+    - name: Setup Trivy cache
+      uses: actions/cache@v3
+      with:
+        path: ${{ env.TRIVY_CACHE_DIR }}
+        key: ${{ runner.os }}-trivy-${{ github.run_id }}
+        restore-keys: |
+          ${{ runner.os }}-trivy-
+          
+    - name: Build container image
+      run: |
+        echo "Building ${{ matrix.target }} container..."
+        nix build .#${{ matrix.target }}
+        
+        # Extract container image for scanning
+        if [ -L result ]; then
+          IMAGE_PATH=$(readlink -f result)
+          echo "IMAGE_PATH=$IMAGE_PATH" >> $GITHUB_ENV
+        else
+          echo "Error: Build result not found"
+          exit 1
+        fi
+        
+    - name: Run Trivy filesystem scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-fs-results.sarif'
+        severity: 'HIGH,CRITICAL'
+        exit-code: '1'  # P1.4: Fail on HIGH/CRITICAL vulnerabilities
+        ignore-unfixed: true
+        
+    - name: Run Trivy container image scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'image'
+        image-ref: 'file://${{ env.IMAGE_PATH }}'
+        format: 'sarif'
+        output: 'trivy-image-results.sarif'
+        severity: 'HIGH,CRITICAL'
+        exit-code: '1'  # P1.4: Fail on HIGH/CRITICAL vulnerabilities
+        ignore-unfixed: true
+        
+    - name: Upload Trivy scan results to GitHub Security
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()  # Upload results even if scan fails
+      with:
+        sarif_file: 'trivy-fs-results.sarif'
+        category: 'trivy-fs-${{ matrix.target }}'
+        
+    - name: Upload Trivy container results to GitHub Security
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-image-results.sarif'
+        category: 'trivy-image-${{ matrix.target }}'
+        
+    - name: Generate security report
+      if: always()
+      run: |
+        echo "## P1 Security Scan Results - ${{ matrix.target }}" > security-report.md
+        echo "" >> security-report.md
+        echo "### Container Image Scan" >> security-report.md
+        trivy image --format table --severity HIGH,CRITICAL file://${{ env.IMAGE_PATH }} >> security-report.md 2>/dev/null || echo "No HIGH/CRITICAL vulnerabilities found" >> security-report.md
+        echo "" >> security-report.md
+        echo "### Filesystem Scan" >> security-report.md  
+        trivy fs --format table --severity HIGH,CRITICAL . >> security-report.md 2>/dev/null || echo "No HIGH/CRITICAL vulnerabilities found" >> security-report.md
+        
+    - name: Upload security report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-report-${{ matrix.target }}
+        path: security-report.md
+        retention-days: 30
+
+  # P1.4: Node.js dependency security audit
+  npm-audit:
+    name: NPM Security Audit
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        
+    - name: Find package.json files
+      run: |
+        echo "Scanning for Node.js projects..."
+        find . -name "package.json" -not -path "*/node_modules/*" > package-files.txt
+        cat package-files.txt
+        
+    - name: Run npm audit on production dependencies
+      run: |
+        set -e
+        AUDIT_FAILED=false
+        
+        while IFS= read -r package_file; do
+          if [ -f "$package_file" ]; then
+            package_dir=$(dirname "$package_file")
+            echo "Auditing $package_file..."
+            
+            cd "$package_dir"
+            
+            # Install only production dependencies
+            npm ci --only=production --no-save 2>/dev/null || {
+              echo "Warning: npm ci failed for $package_file, trying npm install"
+              npm install --only=production --no-save 2>/dev/null || {
+                echo "Error: Could not install dependencies for $package_file"
+                continue
+              }
+            }
+            
+            # P1.4: Run audit and fail on HIGH/CRITICAL vulnerabilities
+            echo "Running security audit..."
+            if ! npm audit --audit-level=high --only=prod; then
+              echo "HIGH/CRITICAL vulnerabilities found in $package_file"
+              AUDIT_FAILED=true
+              
+              # Generate detailed report
+              npm audit --only=prod --json > "audit-report-$(basename "$package_dir").json" 2>/dev/null || true
+            else
+              echo "No HIGH/CRITICAL vulnerabilities found in $package_file"
+            fi
+            
+            # Return to root directory
+            cd - > /dev/null
+          fi
+        done < package-files.txt
+        
+        # P1.4: Fail pipeline if any HIGH/CRITICAL vulnerabilities found
+        if [ "$AUDIT_FAILED" = true ]; then
+          echo "Security audit failed due to HIGH/CRITICAL vulnerabilities"
+          exit 1
+        fi
+        
+    - name: Upload npm audit reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: npm-audit-reports
+        path: audit-report-*.json
+        retention-days: 30
+
+  # P1.4: Security configuration validation
+  security-config-check:
+    name: Security Configuration Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v27
+      with:
+        nix_path: nixpkgs=channel:nixos-24.11
+        
+    - name: Validate NixOS security configuration
+      run: |
+        echo "Validating P1 security configuration..."
+        
+        # Check for security hardening features
+        echo "## Security Configuration Check" > security-config-report.md
+        echo "" >> security-config-report.md
+        
+        # Check SSH configuration
+        if grep -q "PasswordAuthentication = false" p1-production-config.nix; then
+          echo "✅ SSH password authentication disabled" >> security-config-report.md
+        else
+          echo "❌ SSH password authentication not properly disabled" >> security-config-report.md
+          exit 1
+        fi
+        
+        if grep -q "PermitRootLogin = \"no\"" p1-production-config.nix; then
+          echo "✅ SSH root login disabled" >> security-config-report.md
+        else
+          echo "❌ SSH root login not properly disabled" >> security-config-report.md
+          exit 1
+        fi
+        
+        # Check firewall configuration
+        if grep -q "allowedTCPPorts = \[ 22 3002 \]" p1-production-config.nix; then
+          echo "✅ Firewall configured with minimal ports" >> security-config-report.md
+        else
+          echo "❌ Firewall not properly configured" >> security-config-report.md
+          exit 1
+        fi
+        
+        # Check sops-nix configuration
+        if grep -q "sops-nix" p1-production-config.nix && [ -f ".sops.yaml" ]; then
+          echo "✅ Secrets management with sops-nix configured" >> security-config-report.md
+        else
+          echo "❌ Secrets management not properly configured" >> security-config-report.md
+          exit 1
+        fi
+        
+        # Check for webhook security
+        if grep -q "verifyWebhookSignature" p1-production-config.nix; then
+          echo "✅ Webhook signature verification implemented" >> security-config-report.md
+        else
+          echo "❌ Webhook security not properly implemented" >> security-config-report.md
+          exit 1
+        fi
+        
+        # Check kernel hardening
+        if grep -q "kernel.dmesg_restrict" p1-production-config.nix; then
+          echo "✅ Kernel hardening parameters configured" >> security-config-report.md
+        else
+          echo "❌ Kernel hardening not properly configured" >> security-config-report.md
+          exit 1
+        fi
+        
+        echo "" >> security-config-report.md
+        echo "Security configuration validation completed successfully!" >> security-config-report.md
+        
+    - name: Upload security config report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-config-report
+        path: security-config-report.md
+        retention-days: 30
+
+  # P1.4: Secrets scanning (prevent accidental secret commits)
+  secrets-scan:
+    name: Secrets Detection
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for comprehensive scanning
+        
+    - name: Run TruffleHog secrets scan
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD
+        extra_args: --debug --only-verified
+        
+    - name: Check for common secret patterns
+      run: |
+        echo "Scanning for common secret patterns..."
+        
+        # P1.4: Check for accidentally committed secrets
+        SECRETS_FOUND=false
+        
+        # Check for AWS keys
+        if grep -r "AKIA[0-9A-Z]\{16\}" . --exclude-dir=.git --exclude="*.yml" --exclude="*.yaml" --exclude="p1-security-scan.yml"; then
+          echo "WARNING: Potential AWS access key found"
+          SECRETS_FOUND=true
+        fi
+        
+        # Check for private keys (excluding our template)
+        if grep -r "BEGIN.*PRIVATE KEY" . --exclude-dir=.git --exclude="secrets.yaml" --exclude="*.md"; then
+          echo "WARNING: Potential private key found"
+          SECRETS_FOUND=true
+        fi
+        
+        # Check for high-entropy strings
+        if grep -rE "['\"]([0-9a-zA-Z]{32,})['\"]" . --exclude-dir=.git --exclude="*.yml" --exclude="*.yaml" --exclude="secrets.yaml" --exclude="*.md"; then
+          echo "WARNING: High-entropy strings found (potential secrets)"
+          SECRETS_FOUND=true
+        fi
+        
+        # Check for password patterns
+        if grep -ri "password.*=" . --include="*.nix" | grep -v "password.*file\|admin_password.*file\|PLACEHOLDER"; then
+          echo "WARNING: Potential hardcoded passwords found"
+          SECRETS_FOUND=true
+        fi
+        
+        if [ "$SECRETS_FOUND" = true ]; then
+          echo "Potential secrets detected in repository!"
+          echo "Please review and ensure secrets are properly encrypted with sops-nix"
+          exit 1
+        else
+          echo "No obvious secrets detected in repository"
+        fi
+
+  # Aggregate results and create security summary
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [container-scan, npm-audit, security-config-check, secrets-scan]
+    if: always()
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      
+    - name: Generate security summary
+      run: |
+        echo "# P1 Security Scanning Summary" > SECURITY_SUMMARY.md
+        echo "" >> SECURITY_SUMMARY.md
+        echo "**Scan Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> SECURITY_SUMMARY.md
+        echo "**Commit:** ${{ github.sha }}" >> SECURITY_SUMMARY.md
+        echo "" >> SECURITY_SUMMARY.md
+        
+        # Check job results
+        echo "## Job Results" >> SECURITY_SUMMARY.md
+        echo "" >> SECURITY_SUMMARY.md
+        
+        if [ "${{ needs.container-scan.result }}" = "success" ]; then
+          echo "✅ Container Security Scan: PASSED" >> SECURITY_SUMMARY.md
+        else
+          echo "❌ Container Security Scan: FAILED" >> SECURITY_SUMMARY.md
+        fi
+        
+        if [ "${{ needs.npm-audit.result }}" = "success" ]; then
+          echo "✅ NPM Security Audit: PASSED" >> SECURITY_SUMMARY.md
+        else
+          echo "❌ NPM Security Audit: FAILED" >> SECURITY_SUMMARY.md
+        fi
+        
+        if [ "${{ needs.security-config-check.result }}" = "success" ]; then
+          echo "✅ Security Configuration Check: PASSED" >> SECURITY_SUMMARY.md
+        else
+          echo "❌ Security Configuration Check: FAILED" >> SECURITY_SUMMARY.md
+        fi
+        
+        if [ "${{ needs.secrets-scan.result }}" = "success" ]; then
+          echo "✅ Secrets Detection: PASSED" >> SECURITY_SUMMARY.md
+        else
+          echo "❌ Secrets Detection: FAILED" >> SECURITY_SUMMARY.md
+        fi
+        
+        echo "" >> SECURITY_SUMMARY.md
+        echo "## Next Steps" >> SECURITY_SUMMARY.md
+        echo "" >> SECURITY_SUMMARY.md
+        echo "1. Review any failed security checks above" >> SECURITY_SUMMARY.md
+        echo "2. Check individual job artifacts for detailed results" >> SECURITY_SUMMARY.md
+        echo "3. Address any HIGH/CRITICAL vulnerabilities immediately" >> SECURITY_SUMMARY.md
+        echo "4. Update security configurations if validation failed" >> SECURITY_SUMMARY.md
+        echo "5. Rotate any accidentally exposed secrets" >> SECURITY_SUMMARY.md
+        
+    - name: Upload security summary
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-summary
+        path: SECURITY_SUMMARY.md
+        retention-days: 90
+        
+    - name: Comment on PR with security summary
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const summary = fs.readFileSync('SECURITY_SUMMARY.md', 'utf8');
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: summary
+          });
