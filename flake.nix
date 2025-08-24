@@ -108,6 +108,13 @@
         ];
       };
       
+      # RAVE HTTPS Demo (Simplified for demonstration)
+      rave-https-demo = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ ./demo-https-config.nix ];
+      };
+      
       # VirtualBox OVA image  
       virtualbox = nixos-generators.nixosGenerate {
         system = "x86_64-linux";
