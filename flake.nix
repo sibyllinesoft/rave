@@ -26,9 +26,13 @@
       url = "github:nix-community/nixos-generators";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, nixos-generators, ... }: {
+  outputs = { self, nixpkgs, nixos-generators, sops-nix, ... }: {
     # P2.2: NixOS VM test infrastructure
     tests.x86_64-linux = {
       rave-vm = import ./tests/rave-vm.nix { pkgs = nixpkgs.legacyPackages.x86_64-linux; };
@@ -68,7 +72,10 @@
       p6-production = nixos-generators.nixosGenerate {
         system = "x86_64-linux";
         format = "qcow";
-        modules = [ ./p6-production-config.nix ];
+        modules = [ 
+          ./p6-production-config.nix 
+          sops-nix.nixosModules.sops
+        ];
       };
       
       # VirtualBox OVA image  
