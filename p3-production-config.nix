@@ -8,7 +8,7 @@
   imports = [ 
     ./p2-production-config.nix 
     ./nixos/gitlab.nix
-    <sops-nix/modules/sops>
+    # sops-nix module imported at flake level
   ];
   
   # Override hostname for P3

@@ -7,9 +7,6 @@
   services.gitlab = {
     enable = true;
     
-    # GitLab edition and version
-    edition = "ce";
-    
     # Host configuration
     host = "rave.local";
     port = 443;
@@ -105,15 +102,8 @@
       };
     };
     
-    # Database configuration - use existing PostgreSQL
-    databaseConfig = {
-      host = "/run/postgresql";
-      database = "gitlab";
-      username = "gitlab";
-      passwordFile = if config.sops.secrets ? "gitlab/db-password"
-                     then config.sops.secrets."gitlab/db-password".path
-                     else null;
-    };
+    # Database configuration will use PostgreSQL service defaults
+    # Database setup handled by NixOS GitLab module automatically
     
     # Secrets configuration (conditional on sops)
     secrets = lib.mkIf (config.sops.secrets ? "gitlab/secret-key-base") {

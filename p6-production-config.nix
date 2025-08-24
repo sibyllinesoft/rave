@@ -6,7 +6,7 @@
 {
   # Import P4 Matrix integration configuration and additional sandbox services
   imports = [ 
-    ./p4-production-config.nix 
+    ./p4-production-config.nix
   ];
   
   # Override hostname for P6
@@ -113,30 +113,8 @@
     }
   ];
   
-  # P6: Extend sops-nix secrets for sandbox operations
-  sops.secrets = lib.mkMerge [
-    {
-      # GitLab API access token for MR comments
-      "gitlab/api-token" = {
-        owner = "gitlab-runner";
-        group = "gitlab-runner";
-        mode = "0600";
-      };
-      
-      # Sandbox VM SSH keys for access
-      "sandbox/ssh-private-key" = {
-        owner = "gitlab-runner";
-        group = "gitlab-runner";
-        mode = "0600";
-      };
-      
-      "sandbox/ssh-public-key" = {
-        owner = "gitlab-runner";
-        group = "gitlab-runner";
-        mode = "0644";
-      };
-    }
-  ];
+  # P6: Secrets for sandbox operations will be configured via sops-nix at flake level
+  # GitLab API token, sandbox SSH keys managed through flake sops configuration
   
   # P6: Sandbox VM management service
   systemd.services.rave-sandbox-manager = {

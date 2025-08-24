@@ -8,7 +8,7 @@
   imports = [ 
     ./p3-production-config.nix 
     ./nixos/matrix.nix
-    <sops-nix/modules/sops>
+    # sops-nix module imported at flake level
   ];
   
   # Override hostname for P4
