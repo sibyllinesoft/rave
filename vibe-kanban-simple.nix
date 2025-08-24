@@ -1,5 +1,5 @@
-# Simple vibe-kanban derivation using NPM
-{ lib, stdenv, fetchurl, nodejs_20, pnpm, unzip }:
+# Simple vibe-kanban derivation using NPM with FHS compatibility
+{ lib, stdenv, fetchurl, nodejs_20, pnpm, unzip, steam-run }:
 
 stdenv.mkDerivation rec {
   pname = "vibe-kanban";
@@ -80,7 +80,7 @@ if (isMcpMode) {
     process.exit(1);
   }
   
-  const proc = spawn(binPath, [], { stdio: "inherit" });
+  const proc = spawn("${steam-run}/bin/steam-run", [binPath], { stdio: "inherit" });
   proc.on("exit", (c) => process.exit(c || 0));
   proc.on("error", (e) => {
     console.error("❌ MCP server error:", e.message);
@@ -107,8 +107,8 @@ if (isMcpMode) {
     process.exit(1);
   }
   
-  console.log("🚀 Launching vibe-kanban...");
-  execSync('"' + binPath + '"', { stdio: "inherit" });
+  console.log("🚀 Launching vibe-kanban with FHS compatibility...");
+  execSync('${steam-run}/bin/steam-run "' + binPath + '"', { stdio: "inherit" });
 }
 EOF
   '';

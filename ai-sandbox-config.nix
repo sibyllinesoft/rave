@@ -1,18 +1,28 @@
 # AI Agent Sandbox - NixOS Configuration
-{ config, pkgs, ... }:
+{ config, pkgs, lib, modulesPath, ... }:
 
 {
+  # Import base VM modules
+  imports = [
+    "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix"
+    "${modulesPath}/profiles/qemu-guest.nix"
+  ];
+  
   # Basic system configuration
   system.stateVersion = "24.05";
   
   # Boot configuration for VM
   boot.loader.grub.device = "/dev/vda";
   boot.loader.grub.enable = true;
+  boot.loader.timeout = 0;
   
   # Network configuration
   networking.hostName = "ai-sandbox";
   networking.networkmanager.enable = true;
-  networking.firewall.enable = false; # Disable for development VM
+  networking.firewall = {
+    enable = true;
+    allowedTCPPorts = [ 22 3000 3001 3002 ];
+  };
   
   # Time zone
   time.timeZone = "UTC";
@@ -51,19 +61,57 @@
   # Sound
   hardware.pulseaudio.enable = true;
   
-  # Enable SSH
+  # SSH Security Hardening
   services.openssh = {
     enable = true;
-    settings.PasswordAuthentication = true;
-    settings.PermitRootLogin = "no";
+    settings = {
+      # Disable password authentication - use keys only
+      PasswordAuthentication = false;
+      PermitRootLogin = "no";
+      PubkeyAuthentication = true;
+      AuthenticationMethods = "publickey";
+      
+      # Security hardening
+      PermitEmptyPasswords = false;
+      ChallengeResponseAuthentication = false;
+      UsePAM = false;
+      X11Forwarding = false;
+      
+      # Connection limits and timeouts
+      MaxAuthTries = 3;
+      ClientAliveInterval = 300;
+      ClientAliveCountMax = 2;
+      LoginGraceTime = 60;
+      MaxSessions = 10;
+    };
+  };
+
+  # Intrusion Prevention with fail2ban
+  services.fail2ban = {
+    enable = true;
+    maxretry = 3;
+    bantime = "1h";
+    jails = {
+      sshd = {
+        settings = {
+          enabled = true;
+          filter = "sshd";
+          action = "iptables[name=SSH, port=ssh, protocol=tcp]";
+          backend = "systemd";
+          maxretry = 3;
+          findtime = "10m";
+          bantime = "1h";
+        };
+      };
+    };
   };
   
-  # VNC server for remote access
-  services.x11vnc = {
-    enable = true;
-    display = 0;
-    passwordFile = "/run/secrets/vncpasswd";
-  };
+  # VNC server for remote access (commented out - service may not be available)
+  # services.x11vnc = {
+  #   enable = true;
+  #   display = 0;
+  #   passwordFile = "/run/secrets/vncpasswd";
+  # };
   
   # System packages for AI agents
   environment.systemPackages = with pkgs; [

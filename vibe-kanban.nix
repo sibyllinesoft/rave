@@ -3,38 +3,54 @@
 
 rustPlatform.buildRustPackage rec {
   pname = "vibe-kanban";
-  version = "0.0.64";
+  version = "0.0.64-20250819174325";
   
   src = fetchFromGitHub {
-    owner = "thewh1teagle";
+    owner = "BloopAI";
     repo = "vibe-kanban";
     rev = "v${version}";
-    sha256 = lib.fakeSha256; # This will fail with the correct hash to use
+    sha256 = "sha256-EUAyLy1vX8ihpFz7MR8xJYw4AfTbrop42hBBWAGLWLg=";
   };
   
-  cargoHash = lib.fakeSha256; # This will fail with the correct hash to use
+  cargoHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Placeholder for now
+  
+  # Use workspace building mode
+  cargoBuildFlags = [ "--workspace" ];
+  cargoTestFlags = [ "--workspace" ];
   
   nativeBuildInputs = [ pkg-config pnpm nodejs_20 ];
   buildInputs = [ openssl ];
   
+  # Generate Cargo.lock if missing (common for workspaces)
+  cargoPatches = [];
+  
   # Build the web frontend first
   preBuild = ''
     echo "Building frontend..."
+    cd frontend
     export HOME=$TMPDIR
     pnpm config set store-dir $TMPDIR/pnpm
     pnpm install --frozen-lockfile
     pnpm run build
+    cd ..
   '';
   
-  # Make sure the frontend build is included
+  # Install the server binary
   postInstall = ''
-    mkdir -p $out/share/vibe-kanban
-    cp -r dist/* $out/share/vibe-kanban/ 2>/dev/null || true
+    # The main binary should be 'server'
+    mkdir -p $out/bin
+    cp -f $out/bin/server $out/bin/vibe-kanban || true
+    
+    # Include frontend build if it exists
+    if [ -d frontend/dist ]; then
+      mkdir -p $out/share/vibe-kanban
+      cp -r frontend/dist/* $out/share/vibe-kanban/ 2>/dev/null || true
+    fi
   '';
   
   meta = with lib; {
     description = "A simple kanban board application";
-    homepage = "https://github.com/thewh1teagle/vibe-kanban";
+    homepage = "https://github.com/BloopAI/vibe-kanban";
     license = licenses.mit;
     maintainers = [];
     platforms = platforms.linux;

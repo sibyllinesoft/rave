@@ -21,16 +21,93 @@ in
     shell = pkgs.bash;
   };
   
-  # Enable sudo without password
+  # Enable sudo without password (consider restricting in production)
   security.sudo.wheelNeedsPassword = false;
   
-  # Basic services
-  services.openssh.enable = true;
-  services.openssh.settings.PasswordAuthentication = true;
+  # Intrusion Prevention with fail2ban
+  services.fail2ban = {
+    enable = true;
+    maxretry = 3;
+    bantime = "1h";
+    jails = {
+      sshd = {
+        settings = {
+          enabled = true;
+          filter = "sshd";
+          action = "iptables[name=SSH, port=ssh, protocol=tcp]";
+          backend = "systemd";
+          maxretry = 3;
+          findtime = "10m";
+          bantime = "1h";
+        };
+      };
+    };
+  };
   
-  # Network
+  # SSH Security Hardening
+  services.openssh = {
+    enable = true;
+    settings = {
+      # Disable password authentication - use keys only
+      PasswordAuthentication = false;
+      PermitRootLogin = "no";
+      PubkeyAuthentication = true;
+      AuthenticationMethods = "publickey";
+      
+      # Security hardening
+      PermitEmptyPasswords = false;
+      ChallengeResponseAuthentication = false;
+      UsePAM = false;
+      X11Forwarding = false;
+      
+      # Connection limits and timeouts
+      MaxAuthTries = 3;
+      ClientAliveInterval = 300;
+      ClientAliveCountMax = 2;
+      LoginGraceTime = 60;
+      MaxSessions = 10;
+      
+      # Protocol and cipher hardening
+      Protocol = 2;
+      Ciphers = [
+        "chacha20-poly1305@openssh.com"
+        "aes256-gcm@openssh.com"
+        "aes128-gcm@openssh.com"
+        "aes256-ctr"
+        "aes192-ctr"
+        "aes128-ctr"
+      ];
+      KexAlgorithms = [
+        "curve25519-sha256@libssh.org"
+        "diffie-hellman-group16-sha512"
+        "diffie-hellman-group18-sha512"
+        "diffie-hellman-group14-sha256"
+      ];
+      Macs = [
+        "hmac-sha2-256-etm@openssh.com"
+        "hmac-sha2-512-etm@openssh.com"
+        "hmac-sha2-256"
+        "hmac-sha2-512"
+      ];
+    };
+    
+    # SSH key injection mechanism for cloud deployment
+    authorizedKeysFiles = [
+      "/home/agent/.ssh/authorized_keys"
+      "/etc/ssh/authorized_keys.d/%u"
+    ];
+  };
+  
+  # Network Security
   networking.hostName = "ai-sandbox";
-  networking.firewall.enable = false;
+  networking.firewall = {
+    enable = true;
+    allowedTCPPorts = [ 22 3000 3001 3002 ];
+    # Restrict SSH access to specific interfaces if needed
+    interfaces = {
+      # Allow SSH from any interface for now, restrict in production
+    };
+  };
   
   # Minimal desktop
   services.xserver.enable = true;
@@ -108,6 +185,75 @@ in
     vibe-kanban
   ];
   
+  # SSH key setup service for cloud deployment
+  systemd.services.setup-ssh-keys = {
+    description = "Setup SSH keys from cloud metadata or environment";
+    before = [ "sshd.service" ];
+    wants = [ "network-online.target" ];
+    after = [ "network-online.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      User = "root";
+      ExecStart = pkgs.writeScript "setup-ssh-keys" ''
+        #!${pkgs.bash}/bin/bash
+        set -e
+        
+        # Create SSH directory for agent user
+        mkdir -p /home/agent/.ssh
+        chmod 700 /home/agent/.ssh
+        chown agent:users /home/agent/.ssh
+        
+        # Try to get SSH keys from cloud metadata (AWS, GCP, etc.)
+        SSH_KEY_ENV="SSH_PUBLIC_KEY"
+        SSH_KEY_FILE="/etc/ssh-public-key"
+        AUTHORIZED_KEYS_FILE="/home/agent/.ssh/authorized_keys"
+        
+        # Check for environment variable
+        if [ -n "''${!SSH_KEY_ENV}" ]; then
+          echo "Adding SSH key from environment variable"
+          echo "''${!SSH_KEY_ENV}" > "$AUTHORIZED_KEYS_FILE"
+          chmod 600 "$AUTHORIZED_KEYS_FILE"
+          chown agent:users "$AUTHORIZED_KEYS_FILE"
+          echo "SSH key configured from environment"
+        # Check for key file
+        elif [ -f "$SSH_KEY_FILE" ]; then
+          echo "Adding SSH key from file"
+          cp "$SSH_KEY_FILE" "$AUTHORIZED_KEYS_FILE"
+          chmod 600 "$AUTHORIZED_KEYS_FILE" 
+          chown agent:users "$AUTHORIZED_KEYS_FILE"
+          echo "SSH key configured from file"
+        # Try cloud metadata services
+        elif command -v curl >/dev/null; then
+          # AWS EC2 metadata
+          if curl -f -m 10 -s http://169.254.169.254/latest/meta-data/public-keys/0/openssh-key 2>/dev/null > "$AUTHORIZED_KEYS_FILE"; then
+            chmod 600 "$AUTHORIZED_KEYS_FILE"
+            chown agent:users "$AUTHORIZED_KEYS_FILE"
+            echo "SSH key configured from AWS metadata"
+          # GCP metadata  
+          elif curl -f -m 10 -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/ssh-keys 2>/dev/null > "$AUTHORIZED_KEYS_FILE"; then
+            chmod 600 "$AUTHORIZED_KEYS_FILE"
+            chown agent:users "$AUTHORIZED_KEYS_FILE"
+            echo "SSH key configured from GCP metadata"
+          else
+            echo "WARNING: No SSH keys found! SSH access will not work."
+            echo "Please provide SSH key via:"
+            echo "  - SSH_PUBLIC_KEY environment variable"
+            echo "  - /etc/ssh-public-key file"
+            echo "  - Cloud provider metadata"
+          fi
+        else
+          echo "WARNING: No SSH keys configured and curl not available"
+        fi
+        
+        # Set up system-wide authorized keys directory
+        mkdir -p /etc/ssh/authorized_keys.d
+        chmod 755 /etc/ssh/authorized_keys.d
+      '';
+      RemainAfterExit = true;
+    };
+    wantedBy = [ "multi-user.target" ];
+  };
+
   # Install Claude tools via npm at system startup
   systemd.services.install-claude-tools = {
     description = "Install Claude Code ecosystem tools";
@@ -150,12 +296,12 @@ in
   # Vibe Kanban service (precompiled from npm)
   systemd.services.vibe-kanban = {
     description = "Vibe Kanban Project Management";
-    after = [ "install-claude-tools.service" "network-online.target" ];
+    after = [ "setup-agent-environment.service" "network-online.target" ];
     wants = [ "network-online.target" ];
     serviceConfig = {
       Type = "simple";
       User = "agent";
-      WorkingDirectory = "/home/agent/projects";
+      WorkingDirectory = "/home/agent";
       Environment = [
         "PATH=/home/agent/.local/bin:${pkgs.nodejs_20}/bin:/run/current-system/sw/bin"
         "HOME=/home/agent"
@@ -171,7 +317,7 @@ in
   # Auto-start Claude Code Router service
   systemd.services.claude-code-router = {
     description = "Claude Code Router Multi-Provider AI";
-    after = [ "install-claude-tools.service" "network-online.target" ];
+    after = [ "setup-agent-environment.service" "network-online.target" ];
     wants = [ "network-online.target" ];
     serviceConfig = {
       Type = "simple";
@@ -184,9 +330,10 @@ in
         "PATH=/home/agent/.local/bin:${pkgs.nodejs_20}/bin:/run/current-system/sw/bin"
         "HOME=/home/agent"
       ];
+      ExecStartPre = "${pkgs.coreutils}/bin/sleep 5";
       ExecStart = "/home/agent/.local/bin/ccr start";
       Restart = "always";
-      RestartSec = 5;
+      RestartSec = 10;
     };
     wantedBy = [ "multi-user.target" ];
   };
@@ -232,11 +379,7 @@ in
       "baseURL": "http://localhost:11434"
     }
   },
-  "defaultProvider": "ollama",
-  "server": {
-    "host": "0.0.0.0",
-    "port": 3456
-  }
+  "defaultProvider": "ollama"
 }
 EOF
         
@@ -337,8 +480,8 @@ EOF
         server_name _;
         
         # Route /ccr-ui to Claude Code Router
-        location /ccr-ui {
-          proxy_pass http://127.0.0.1:3456;
+        location /ccr-ui/ {
+          proxy_pass http://127.0.0.1:3456/ui/;
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -353,9 +496,11 @@ EOF
           proxy_connect_timeout 60s;
           proxy_send_timeout 60s;
           proxy_read_timeout 60s;
-          
-          # Rewrite path for upstream
-          rewrite ^/ccr-ui/(.*) /$1 break;
+        }
+        
+        # Redirect /ccr-ui to /ccr-ui/
+        location = /ccr-ui {
+          return 301 /ccr-ui/;
         }
         
         # Default route to vibe-kanban
@@ -380,6 +525,4 @@ EOF
     '';
   };
   
-  # Open firewall for web services
-  networking.firewall.allowedTCPPorts = [ 3000 3001 3002 ];
 }
