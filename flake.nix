@@ -115,6 +115,31 @@
         modules = [ ./demo-https-config.nix ];
       };
       
+      # RAVE Minimal Demo (nginx + HTTPS certificates only)
+      rave-minimal-demo = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ 
+          ./minimal-nginx-demo.nix 
+        ];
+      };
+      
+      # Minimal GitLab Demo (HTTP only, fast startup)
+      minimal-gitlab-demo = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ 
+          ./minimal-gitlab-demo.nix 
+        ];
+      };
+      
+      # GitLab with nginx redirect fix applied
+      gitlab-redirect-fixed = nixos-generators.nixosGenerate {
+        system = "x86_64-linux";
+        format = "qcow";
+        modules = [ ./minimal-gitlab-fixed.nix ];
+      };
+      
       # VirtualBox OVA image  
       virtualbox = nixos-generators.nixosGenerate {
         system = "x86_64-linux";
