@@ -162,12 +162,11 @@ EOF
         "/" = {
           proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket";
           extraConfig = ''
-            proxy_set_header Host $host;
+            proxy_set_header Host $host:$server_port;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto https;
-            proxy_set_header X-Forwarded-Ssl on;
-            proxy_set_header X-Forwarded-Port 8080;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Port $server_port;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "upgrade";
             proxy_http_version 1.1;
@@ -199,7 +198,7 @@ EOF
     enable = true;
     host = "localhost";
     port = 8080;
-    https = true;  # Enable HTTPS mode
+    https = false;  # Disable HTTPS mode for HTTP external_url
     
     initialRootPasswordFile = pkgs.writeText "gitlab-root-password" "rave-demo-password";
     
@@ -226,7 +225,7 @@ EOF
         };
       };
       
-      external_url = "https://localhost:8080";
+      external_url = "http://localhost:8080";
       
       nginx = {
         enable = false;  # Use system nginx instead

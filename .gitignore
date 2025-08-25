@@ -36,4 +36,5 @@ tmp/
 temp/
 
 .serena/*.qcow2
+*.qcow2
 result
