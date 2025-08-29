@@ -1,0 +1,166 @@
+version: '3.8'
+
+services:
+  synapse:
+    image: matrixdotorg/synapse:latest
+    restart: unless-stopped
+    user: "0:0"  # Run as root to avoid permission issues in development
+    ports:
+      - "8008:8008"  # HTTP port for Synapse
+      - "8448:8448"  # HTTPS federation port (if needed)
+    volumes:
+      - "./data:/data"
+      - "./data/homeserver-oauth.yaml:/data/homeserver.yaml"
+    environment:
+      - SYNAPSE_SERVER_NAME=localhost
+      - SYNAPSE_REPORT_STATS=no
+      - SYNAPSE_ENABLE_REGISTRATION=no  # Disabled for OAuth-only
+      - SYNAPSE_LOG_LEVEL=INFO
+      
+      # GitLab OAuth Configuration
+      - GITLAB_URL=${GITLAB_URL:-http://localhost:8080}
+      - GITLAB_OAUTH_CLIENT_ID=${GITLAB_OAUTH_CLIENT_ID}
+      - GITLAB_OAUTH_CLIENT_SECRET=${GITLAB_OAUTH_CLIENT_SECRET}
+      
+      # Email configuration (optional)
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-25}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_TLS=${SMTP_TLS:-false}
+      - DOMAIN=${DOMAIN:-localhost}
+      
+    networks:
+      - matrix-network
+    depends_on:
+      postgres-matrix:
+        condition: service_healthy
+      gitlab:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  element:
+    image: vectorim/element-web:latest
+    restart: unless-stopped
+    ports:
+      - "8009:80"  # Element web client on port 8009
+    volumes:
+      - "./element-config-oauth.json:/app/config.json:ro"
+    environment:
+      - GITLAB_URL=${GITLAB_URL:-http://localhost:8080}
+    depends_on:
+      - synapse
+    networks:
+      - matrix-network
+
+  postgres-matrix:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: synapse
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: matrix_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - 'matrix-postgres-data:/var/lib/postgresql/data'
+    networks:
+      - matrix-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse -d synapse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # GitLab instance (if not using external GitLab)
+  gitlab:
+    image: gitlab/gitlab-ee:17.6.0-ee.0
+    restart: unless-stopped
+    hostname: 'gitlab.localhost'
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:8080'
+        
+        # OAuth2 Provider Settings
+        gitlab_rails['omniauth_enabled'] = true
+        gitlab_rails['omniauth_allow_single_sign_on'] = ['oauth2_generic']
+        gitlab_rails['omniauth_block_auto_created_users'] = false
+        
+        # API Settings
+        gitlab_rails['api_rate_limit_enabled'] = true
+        gitlab_rails['api_rate_limit_requests_per_period'] = 600
+        gitlab_rails['api_rate_limit_period'] = 60
+        
+        # Security Settings
+        gitlab_rails['webhook_timeout'] = 10
+        gitlab_rails['gitlab_default_can_create_group'] = false
+        
+        # Performance Settings
+        unicorn['worker_processes'] = 2
+        sidekiq['max_concurrency'] = 10
+        
+        # Monitoring
+        prometheus_monitoring['enable'] = false
+        
+        # Disable unused features for development
+        registry['enable'] = false
+        mattermost['enable'] = false
+        gitlab_kas['enable'] = false
+        
+        # Root password (change in production!)
+        gitlab_rails['initial_root_password'] = 'gitlab_admin_password'
+        
+    ports:
+      - '8080:80'      # GitLab web interface
+      - '8022:22'      # GitLab SSH
+    volumes:
+      - 'gitlab-config:/etc/gitlab'
+      - 'gitlab-logs:/var/log/gitlab'
+      - 'gitlab-data:/var/opt/gitlab'
+    networks:
+      - matrix-network
+    shm_size: '256m'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/-/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # Redis for GitLab (required by GitLab)
+  redis-gitlab:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - 'redis-gitlab-data:/data'
+    networks:
+      - matrix-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+networks:
+  matrix-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+
+volumes:
+  matrix-postgres-data:
+    external: false
+  gitlab-config:
+    external: false
+  gitlab-logs:
+    external: false
+  gitlab-data:
+    external: false
+  redis-gitlab-data:
+    external: false

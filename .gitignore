@@ -1,19 +1,140 @@
-# Environment variables
+# =============================================================================
+# RAVE Project .gitignore - Comprehensive artifact exclusion
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Environment & Configuration
+# -----------------------------------------------------------------------------
 .env
+.env.*
+!.env.example
+*.secret
+secrets/
+config/*.key
+config/*.cert
+config/*.pem
 
-# Node modules
-node_modules/
-npm-debug.log*
+# -----------------------------------------------------------------------------
+# NixOS & Build Artifacts  
+# -----------------------------------------------------------------------------
+# VM Images (all formats)
+*.qcow2
+*.vdi
+*.vmdk
+*.iso
+*.img
+*.raw
 
-# Docker
-.dockerignore
+# Nix build artifacts
+result
+result-*
+*.drv
+.nix-build/
+/nix/store/
 
-# Workspace files
-workspace/
-
-# Logs
+# -----------------------------------------------------------------------------
+# Logs & Runtime Files
+# -----------------------------------------------------------------------------
+# All log files
 *.log
 logs/
+log/
+*.log.*
+*.out
+
+# Process ID files
+*.pid
+*.lock
+
+# -----------------------------------------------------------------------------
+# Docker & Container Artifacts
+# -----------------------------------------------------------------------------
+# Docker Compose persistent data
+gitlab-complete/
+postgres-data/
+redis-data/
+/data/
+docker-volumes/
+volumes/
+
+# Container logs and state
+.docker/
+docker-compose.override.yml
+.dockerignore
+
+# -----------------------------------------------------------------------------
+# Python Artifacts
+# -----------------------------------------------------------------------------
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+.tox/
+htmlcov/
+*.cover
+
+# -----------------------------------------------------------------------------
+# Node.js Artifacts
+# -----------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.node_repl_history
+
+# -----------------------------------------------------------------------------
+# Backup & Archive Files
+# -----------------------------------------------------------------------------
+*.backup
+*.backup.*
+*.old
+*.orig
+*.bak
+*.tmp
+*~
+*.swp
+*.swo
+*-old/
+*-backup/
+*backup*
+
+# -----------------------------------------------------------------------------
+# Cache & Temporary Directories
+# -----------------------------------------------------------------------------
+tmp/
+temp/
+cache/
+.cache/
+*.cache/
+artifacts/
+workspace/
+
+# -----------------------------------------------------------------------------
+# Development Tools
+# -----------------------------------------------------------------------------
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+.spyderproject
+.spyproject
 
 # OS generated files
 .DS_Store
@@ -23,18 +144,51 @@ logs/
 .Trashes
 ehthumbs.db
 Thumbs.db
+desktop.ini
 
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Temporary files
-tmp/
-temp/
-
+# -----------------------------------------------------------------------------
+# Claude Code & AI Tools
+# -----------------------------------------------------------------------------
+# Serena cache
+.serena/cache/
 .serena/*.qcow2
-*.qcow2
-result
+
+# Claude Code context (should be in repo root only)
+**/CLAUDE.md
+
+# -----------------------------------------------------------------------------
+# Security & Secrets
+# -----------------------------------------------------------------------------
+# SSH keys
+*.key
+*.pem
+*.pub
+id_rsa*
+id_ed25519*
+*.crt
+
+# GPG
+*.gpg
+*.asc
+
+# SSL/TLS certificates
+*.cert
+*.csr
+ssl/
+
+# -----------------------------------------------------------------------------
+# Runtime & Service Data
+# -----------------------------------------------------------------------------
+# GitLab specific
+/gitlab/
+/postgres/
+/redis/
+
+# Monitor scripts output
+vm-*.log
+*-vm.log
+monitor-*.log
+
+# Service state files
+*.state
+*.status
