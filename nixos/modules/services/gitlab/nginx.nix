@@ -77,16 +77,12 @@ with lib;
               access_log off;
               proxy_set_header Host $host;
               
-              # Return simplified health status
+              # Return simplified health status - intercept only error responses
               proxy_intercept_errors on;
-              error_page 200 = @gitlab_healthy;
               error_page 500 502 503 504 = @gitlab_unhealthy;
             '';
           };
           
-          "@gitlab_healthy" = {
-            return = "200 \"GitLab: OK\"";
-          };
           
           "@gitlab_unhealthy" = {
             return = "503 \"GitLab: Unavailable\"";

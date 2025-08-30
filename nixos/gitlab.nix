@@ -15,6 +15,10 @@
       dbFile = pkgs.writeText "gitlab-db-secret" "dummy-db-secret-key";
       otpFile = pkgs.writeText "gitlab-otp-secret" "dummy-otp-secret-key";
       jwsFile = pkgs.writeText "gitlab-jws-secret" "dummy-jws-private-key";
+      # Add missing secrets that cause build warnings
+      activeRecordPrimaryKeyFile = pkgs.writeText "gitlab-ar-primary" "dummy-active-record-primary-key";
+      activeRecordDeterministicKeyFile = pkgs.writeText "gitlab-ar-deterministic" "dummy-active-record-deterministic-key";
+      activeRecordSaltFile = pkgs.writeText "gitlab-ar-salt" "dummy-active-record-salt";
     };
   };
   

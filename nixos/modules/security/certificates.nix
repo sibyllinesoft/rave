@@ -162,17 +162,11 @@ in
       
       # Security headers
       commonHttpConfig = ''
-        # Security headers
-        add_header X-Frame-Options DENY always;
-        add_header X-Content-Type-Options nosniff always;
-        add_header X-XSS-Protection "1; mode=block" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' wss: https:;" always;
-        
-        # HSTS (HTTP Strict Transport Security)
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        
-        # Hide nginx version (server_tokens off is set by default in NixOS)
+        # Security headers - only for HTTPS sites
+        map $scheme $security_headers {
+          "https" "1";
+          default "";
+        }
         
         # Rate limiting
         limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
@@ -194,9 +188,17 @@ in
         
         # Default location
         locations."/" = {
-          return = "200 'RAVE System Online'";
           extraConfig = ''
             access_log off;
+            # Security headers for HTTPS
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' wss: https:;" always;
+            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+            add_header Content-Type text/html;
+            return 200 'RAVE System Online';
           '';
         };
         
@@ -216,6 +218,39 @@ in
         listen = [{ addr = "0.0.0.0"; port = 80; }];
         locations."/" = {
           return = "301 https://$host$request_uri";
+        };
+      };
+
+      # Localhost-only HTTP listener (no SSL warnings) - GitLab proxy
+      virtualHosts."localhost-plain" = {
+        serverName = "_"; # Default server - matches any hostname
+        listen = [{ addr = "0.0.0.0"; port = 8888; }];
+        default = true; # Make this the default server for port 8888
+        locations."/" = {
+          proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:/";
+          extraConfig = ''
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Ssl off;
+            # GitLab specific headers
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            # Handle large file uploads (artifacts, LFS)
+            client_max_body_size 1G;
+            proxy_request_buffering off;
+            proxy_read_timeout 300;
+            proxy_connect_timeout 300;
+            proxy_send_timeout 300;
+          '';
+        };
+        locations."/health" = {
+          extraConfig = ''
+            access_log off;
+            add_header Content-Type text/plain;
+            return 200 'OK';
+          '';
         };
       };
     };
@@ -260,6 +295,6 @@ in
     };
 
     # Open HTTPS port in firewall
-    networking.firewall.allowedTCPPorts = [ 443 ];
+    networking.firewall.allowedTCPPorts = [ 443 8888 ];
   };
 }

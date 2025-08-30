@@ -12,11 +12,13 @@
     # Service modules (choose which services to enable for development)
     ../modules/services/gitlab   # Enable GitLab for development
     ../modules/services/nats     # Enable NATS JetStream
+    # ../modules/services/penpot   # Enable Penpot design tool (disabled for rebuild)
     # ../modules/services/matrix    # Uncomment if needed for development
     # ../modules/services/monitoring # Uncomment if needed for development
     
     # Minimal security (no hardening in development)
     ../modules/security/certificates.nix
+    # ../modules/security/secrets.nix
   ];
 
   # Development-specific settings
@@ -36,6 +38,9 @@
     redis.servers.default.enable = true;
   };
   
+  # Enable secret generation for development
+  # services.rave.secrets.enable = true;
+
   # Enable GitLab service for development
   services.rave.gitlab = {
     enable = true;
@@ -64,6 +69,19 @@
       maxPayload = 1048576;   # 1MB payload limit
     };
   };
+
+  # Enable Penpot design tool for development (disabled for rebuild)
+  # services.rave.penpot = {
+  #   enable = true;
+  #   host = "rave.local";
+  #   useSecrets = false;  # Disable sops-nix secrets for development
+  #   
+  #   oidc = {
+  #     enable = true;
+  #     gitlabUrl = "https://rave.local/gitlab";
+  #     clientId = "penpot";
+  #   };
+  # };
   
   # GitLab port is managed by the service module
 
@@ -113,6 +131,10 @@
       8080  # GitLab
       4222  # NATS client connections
       8222  # NATS HTTP monitoring
+      3449  # Penpot Frontend
+      6060  # Penpot Backend
+      6061  # Penpot Exporter
+      6380  # Redis for Penpot
       3000  # Grafana (if monitoring enabled)
       9090  # Prometheus (if monitoring enabled)
       8008  # Matrix (if enabled)

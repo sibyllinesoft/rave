@@ -60,25 +60,38 @@ with lib;
         
       databasePasswordFile = if config.services.rave.gitlab.useSecrets
         then config.sops.secrets."gitlab/db-password".path or "/run/secrets/gitlab-db-password"
-        else pkgs.writeText "gitlab-db-password" "gitlabdbpass";
+        else pkgs.writeText "gitlab-db-password" "development-db-password-dummy";
         
       # All required secrets for GitLab
       secrets = {
         secretFile = if config.services.rave.gitlab.useSecrets
           then config.sops.secrets."gitlab/secret-key-base".path or "/run/secrets/gitlab-secret"
-          else pkgs.writeText "gitlab-secret" "development-secret-key-base";
+          else pkgs.writeText "gitlab-secret-key-base" "development-secret-key-base-dummy";
           
         otpFile = if config.services.rave.gitlab.useSecrets
           then config.sops.secrets."gitlab/otp-key-base".path or "/run/secrets/gitlab-otp"
-          else pkgs.writeText "gitlab-otp" "development-otp-key-base";
+          else pkgs.writeText "gitlab-otp-key-base" "development-otp-key-base-dummy";
           
         dbFile = if config.services.rave.gitlab.useSecrets
           then config.sops.secrets."gitlab/db-key-base".path or "/run/secrets/gitlab-db"
-          else pkgs.writeText "gitlab-db" "development-db-key-base";
+          else pkgs.writeText "gitlab-db-key-base" "development-db-key-base-dummy";
           
         jwsFile = if config.services.rave.gitlab.useSecrets
           then config.sops.secrets."gitlab/jws-key-base".path or "/run/secrets/gitlab-jws"
-          else pkgs.writeText "gitlab-jws" "development-jws-key-base";
+          else pkgs.writeText "jwt-signing-key" "development-jwt-signing-key-dummy";
+        
+        # Add missing Active Record secrets to prevent build warnings
+        activeRecordPrimaryKeyFile = if config.services.rave.gitlab.useSecrets
+          then config.sops.secrets."gitlab/active-record-primary".path or "/run/secrets/gitlab-ar-primary"
+          else pkgs.writeText "gitlab-ar-primary" "development-active-record-primary-key-dummy";
+          
+        activeRecordDeterministicKeyFile = if config.services.rave.gitlab.useSecrets
+          then config.sops.secrets."gitlab/active-record-deterministic".path or "/run/secrets/gitlab-ar-deterministic"
+          else pkgs.writeText "gitlab-ar-deterministic" "development-active-record-deterministic-key-dummy";
+          
+        activeRecordSaltFile = if config.services.rave.gitlab.useSecrets
+          then config.sops.secrets."gitlab/active-record-salt".path or "/run/secrets/gitlab-ar-salt"
+          else pkgs.writeText "gitlab-ar-salt" "development-active-record-salt-dummy";
       };
       
       # Prevent nginx conflicts - we handle nginx separately

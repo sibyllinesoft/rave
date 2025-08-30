@@ -110,9 +110,32 @@
           sops-nix.nixosModules.sops
         ];
       };
+      
+      # RAVE CLI - Main management interface
+      rave-cli = nixpkgs.legacyPackages.x86_64-linux.writeShellScriptBin "rave" ''
+        export PATH="${nixpkgs.legacyPackages.x86_64-linux.python3.withPackages (ps: [ ps.click ])}/bin:$PATH"
+        cd ${./.}
+        exec python3 cli/rave "$@"
+      '';
     };
 
     # Default package (production configuration)
     defaultPackage.x86_64-linux = self.packages.x86_64-linux.production;
+    
+    # Development shell with CLI
+    devShells.x86_64-linux.default = nixpkgs.legacyPackages.x86_64-linux.mkShell {
+      buildInputs = with nixpkgs.legacyPackages.x86_64-linux; [
+        python3
+        python3Packages.click
+        qemu
+        nix
+      ];
+      
+      shellHook = ''
+        export PATH="$PATH:$(pwd)/cli"
+        echo "🚀 RAVE Development Environment"
+        echo "CLI available at: $(pwd)/cli/rave"
+      '';
+    };
   };
 }

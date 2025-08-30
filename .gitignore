@@ -17,13 +17,16 @@ config/*.pem
 # -----------------------------------------------------------------------------
 # NixOS & Build Artifacts  
 # -----------------------------------------------------------------------------
-# VM Images (all formats)
+# VM Images (all formats) - CRITICAL: These can be 12GB+ each!
 *.qcow2
 *.vdi
 *.vmdk
 *.iso
 *.img
 *.raw
+*-dev.qcow2
+*-prod.qcow2
+*-demo.qcow2
 
 # Nix build artifacts
 result
@@ -31,6 +34,10 @@ result-*
 *.drv
 .nix-build/
 /nix/store/
+
+# CLI generated VM configs
+*.json
+!cli/requirements.txt
 
 # -----------------------------------------------------------------------------
 # Logs & Runtime Files
@@ -183,6 +190,7 @@ ssl/
 /gitlab/
 /postgres/
 /redis/
+gitlab-complete/
 
 # Monitor scripts output
 vm-*.log
@@ -192,3 +200,22 @@ monitor-*.log
 # Service state files
 *.state
 *.status
+
+# -----------------------------------------------------------------------------
+# CLI & User Configuration
+# -----------------------------------------------------------------------------
+# RAVE CLI configuration
+.config/rave/
+~/.config/rave/
+
+# -----------------------------------------------------------------------------
+# Build Artifacts & VM Images (organized)
+# -----------------------------------------------------------------------------
+# VM images in any directory
+**/*.qcow2
+**/*.vdi
+**/*.vmdk
+
+# Build artifacts
+**/result
+**/result-*

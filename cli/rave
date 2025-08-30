@@ -1,0 +1,565 @@
+#!/usr/bin/env python3
+"""
+RAVE CLI - Reproducible AI Virtual Environment Management
+Comprehensive CLI for managing company development environments, users, and OAuth integration.
+"""
+
+import os
+import sys
+import json
+import subprocess
+import click
+from pathlib import Path
+from typing import Dict, List, Optional
+
+# Add the cli directory to Python path for imports
+CLI_DIR = Path(__file__).parent
+sys.path.insert(0, str(CLI_DIR))
+
+from vm_manager import VMManager
+from user_manager import UserManager
+from oauth_manager import OAuthManager
+
+# Global configuration
+CONFIG_DIR = Path.home() / ".config" / "rave"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+VMS_DIR = CONFIG_DIR / "vms"
+
+def ensure_config_dir():
+    """Ensure configuration directory exists."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    VMS_DIR.mkdir(parents=True, exist_ok=True)
+
+def load_config() -> Dict:
+    """Load RAVE configuration."""
+    if not CONFIG_FILE.exists():
+        return {}
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
+
+def save_config(config: Dict):
+    """Save RAVE configuration."""
+    ensure_config_dir()
+    CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+@click.group()
+@click.version_option(version="1.0.0")
+@click.pass_context
+def cli(ctx):
+    """RAVE - Reproducible AI Virtual Environment Management
+    
+    Manage company development environments, users, and OAuth integration.
+    """
+    ensure_config_dir()
+    ctx.ensure_object(dict)
+    ctx.obj['config'] = load_config()
+    ctx.obj['vm_manager'] = VMManager(VMS_DIR)
+    ctx.obj['user_manager'] = UserManager()
+    ctx.obj['oauth_manager'] = OAuthManager()
+
+# System Commands
+@cli.command()
+@click.pass_context
+def prerequisites(ctx):
+    """Check system prerequisites for RAVE operations."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    click.echo("🔍 Checking RAVE system prerequisites...")
+    
+    result = vm_manager.check_prerequisites()
+    
+    if result['success']:
+        click.echo("✅ All prerequisites satisfied!")
+    else:
+        click.echo("❌ Missing prerequisites:")
+        for item in result['missing']:
+            click.echo(f"   • {item}")
+    
+    if result['warnings']:
+        click.echo("⚠️  Warnings:")
+        for warning in result['warnings']:
+            click.echo(f"   • {warning}")
+    
+    if not result['success']:
+        click.echo("\n📖 See docs/MACOS-SETUP.md for installation instructions")
+        sys.exit(1)
+
+# VM Management Commands
+@cli.group()
+def vm():
+    """Virtual Machine management commands."""
+    pass
+
+@vm.command()
+@click.argument('company_name')
+@click.option('--keypair', required=True, help='Path to SSH keypair for VM access')
+@click.pass_context
+def create(ctx, company_name: str, keypair: str):
+    """Create a new company development environment VM."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    click.echo(f"🚀 Creating development environment for {company_name}...")
+    click.echo(f"🔑 Using SSH keypair: {keypair}")
+    
+    try:
+        result = vm_manager.create_vm(company_name, keypair)
+        if result['success']:
+            click.echo(f"✅ VM '{company_name}' created successfully!")
+            click.echo(f"   SSH access: rave vm ssh {company_name}")
+            click.echo(f"   Status: rave vm status {company_name}")
+        else:
+            click.echo(f"❌ Failed to create VM: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error creating VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.pass_context
+def start(ctx, company_name: str):
+    """Start a company VM."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    click.echo(f"▶️  Starting VM '{company_name}'...")
+    try:
+        result = vm_manager.start_vm(company_name)
+        if result['success']:
+            click.echo(f"✅ VM '{company_name}' started successfully!")
+        else:
+            click.echo(f"❌ Failed to start VM: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error starting VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.pass_context
+def stop(ctx, company_name: str):
+    """Stop a company VM."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    click.echo(f"⏹️  Stopping VM '{company_name}'...")
+    try:
+        result = vm_manager.stop_vm(company_name)
+        if result['success']:
+            click.echo(f"✅ VM '{company_name}' stopped successfully!")
+        else:
+            click.echo(f"❌ Failed to stop VM: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error stopping VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name', required=False)
+@click.option('--all', is_flag=True, help='Show status of all VMs')
+@click.pass_context
+def status(ctx, company_name: Optional[str], all: bool):
+    """Show VM status."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    try:
+        if all or not company_name:
+            results = vm_manager.status_all_vms()
+            if not results:
+                click.echo("No VMs found.")
+                return
+                
+            click.echo("🖥️  VM Status Overview:")
+            for vm_name, status in results.items():
+                status_icon = "🟢" if status['running'] else "🔴"
+                click.echo(f"   {status_icon} {vm_name}: {status['status']}")
+        else:
+            result = vm_manager.status_vm(company_name)
+            if result['success']:
+                status_icon = "🟢" if result['running'] else "🔴"
+                click.echo(f"{status_icon} VM '{company_name}': {result['status']}")
+                if result['running']:
+                    click.echo(f"   SSH: rave vm ssh {company_name}")
+                    click.echo(f"   Logs: rave vm logs {company_name}")
+            else:
+                click.echo(f"❌ VM '{company_name}' not found")
+                sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting VM status: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.pass_context
+def reset(ctx, company_name: str):
+    """Reset VM to clean default state."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    click.echo(f"🔄 Resetting VM '{company_name}' to default state...")
+    if not click.confirm("This will reset all data in the VM. Continue?"):
+        click.echo("Reset cancelled.")
+        return
+    
+    try:
+        result = vm_manager.reset_vm(company_name)
+        if result['success']:
+            click.echo(f"✅ VM '{company_name}' reset successfully!")
+        else:
+            click.echo(f"❌ Failed to reset VM: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error resetting VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.pass_context
+def ssh(ctx, company_name: str):
+    """SSH into company VM."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    try:
+        result = vm_manager.ssh_vm(company_name)
+        if not result['success']:
+            click.echo(f"❌ {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error connecting to VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.argument('service', required=False)
+@click.option('--follow', '-f', is_flag=True, help='Follow log output')
+@click.option('--tail', '-t', default=50, help='Number of lines to show')
+@click.option('--since', '-s', help='Show logs since time (e.g., 1h, 30m)')
+@click.option('--all', is_flag=True, help='Show logs from all services')
+@click.pass_context
+def logs(ctx, company_name: str, service: Optional[str], follow: bool, tail: int, since: Optional[str], all: bool):
+    """View VM service logs."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    try:
+        result = vm_manager.get_logs(
+            company_name, 
+            service=service, 
+            follow=follow, 
+            tail=tail, 
+            since=since, 
+            all_services=all
+        )
+        if not result['success']:
+            click.echo(f"❌ {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting logs: {e}")
+        sys.exit(1)
+
+# User Management Commands
+@cli.group()
+def user():
+    """User management commands."""
+    pass
+
+@user.command()
+@click.argument('email')
+@click.option('--oauth-id', required=True, help='GitLab OAuth ID')
+@click.option('--access', default='developer', help='Access level (admin/developer/guest)')
+@click.option('--company', help='Company name')
+@click.pass_context
+def add(ctx, email: str, oauth_id: str, access: str, company: Optional[str]):
+    """Add a new user via GitLab OAuth."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"👤 Adding user {email} (OAuth ID: {oauth_id})...")
+    try:
+        result = user_manager.add_user(email, oauth_id, access, company)
+        if result['success']:
+            click.echo(f"✅ User {email} added successfully!")
+        else:
+            click.echo(f"❌ Failed to add user: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error adding user: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.pass_context
+def remove(ctx, email: str):
+    """Remove a user."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"🗑️  Removing user {email}...")
+    if not click.confirm(f"Remove user {email}?"):
+        click.echo("User removal cancelled.")
+        return
+    
+    try:
+        result = user_manager.remove_user(email)
+        if result['success']:
+            click.echo(f"✅ User {email} removed successfully!")
+        else:
+            click.echo(f"❌ Failed to remove user: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error removing user: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.option('--company', help='Filter by company')
+@click.pass_context
+def list(ctx, company: Optional[str]):
+    """List all users."""
+    user_manager = ctx.obj['user_manager']
+    
+    try:
+        result = user_manager.list_users(company)
+        if result['success']:
+            users = result['users']
+            if not users:
+                click.echo("No users found.")
+                return
+                
+            click.echo("👥 Users:")
+            for user in users:
+                company_info = f" ({user['company']})" if user.get('company') else ""
+                click.echo(f"   • {user['email']}{company_info} - {user['access']}")
+        else:
+            click.echo(f"❌ Failed to list users: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error listing users: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.option('--access', help='New access level (admin/developer/guest)')
+@click.pass_context
+def config(ctx, email: str, access: Optional[str]):
+    """Configure user settings."""
+    user_manager = ctx.obj['user_manager']
+    
+    if not access:
+        click.echo("No configuration options provided.")
+        return
+    
+    click.echo(f"⚙️  Configuring user {email}...")
+    try:
+        result = user_manager.config_user(email, access=access)
+        if result['success']:
+            click.echo(f"✅ User {email} configured successfully!")
+        else:
+            click.echo(f"❌ Failed to configure user: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error configuring user: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.pass_context
+def show(ctx, email: str):
+    """Show user details."""
+    user_manager = ctx.obj['user_manager']
+    
+    try:
+        result = user_manager.get_user(email)
+        if result['success']:
+            user = result['user']
+            click.echo(f"👤 User Details:")
+            click.echo(f"   Email: {user['email']}")
+            click.echo(f"   OAuth ID: {user['oauth_id']}")
+            click.echo(f"   Access: {user['access']}")
+            if user.get('company'):
+                click.echo(f"   Company: {user['company']}")
+        else:
+            click.echo(f"❌ User {email} not found")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting user: {e}")
+        sys.exit(1)
+
+@user.command(name='bulk-add')
+@click.argument('file', type=click.Path(exists=True))
+@click.option('--company', help='Company name for all users')
+@click.pass_context
+def bulk_add(ctx, file: str, company: Optional[str]):
+    """Add multiple users from CSV/JSON file."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"📁 Adding users from {file}...")
+    try:
+        result = user_manager.bulk_add_users(file, company)
+        if result['success']:
+            added = result['added']
+            failed = result['failed']
+            click.echo(f"✅ Added {added} users successfully!")
+            if failed > 0:
+                click.echo(f"⚠️  {failed} users failed to add (see logs)")
+        else:
+            click.echo(f"❌ Failed to bulk add users: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error bulk adding users: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.pass_context
+def activity(ctx, email: str):
+    """Show user activity from GitLab."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"📊 Getting activity for {email}...")
+    try:
+        result = user_manager.get_user_activity(email)
+        if result['success']:
+            activity = result['activity']
+            if not activity:
+                click.echo("No activity found.")
+                return
+                
+            click.echo(f"📈 Recent Activity for {email}:")
+            for item in activity[:10]:  # Show last 10 activities
+                click.echo(f"   • {item.get('created_at', 'N/A')} - {item.get('action_name', 'Unknown')}")
+        else:
+            click.echo(f"❌ Failed to get activity: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting activity: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.pass_context
+def permissions(ctx, email: str):
+    """Show user permissions across projects."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"🔑 Getting permissions for {email}...")
+    try:
+        result = user_manager.get_user_permissions(email)
+        if result['success']:
+            permissions = result['permissions']
+            if not permissions:
+                click.echo("No project permissions found.")
+                return
+                
+            click.echo(f"🔒 Project Permissions for {email}:")
+            for perm in permissions:
+                access_level = perm.get('access_level', 'Unknown')
+                project_name = perm.get('project_name', 'Unknown Project')
+                click.echo(f"   • {project_name}: {access_level}")
+        else:
+            click.echo(f"❌ Failed to get permissions: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting permissions: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.pass_context
+def sync(ctx):
+    """Sync local users with GitLab."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo("🔄 Syncing users with GitLab...")
+    try:
+        result = user_manager.sync_users_with_gitlab()
+        if result['success']:
+            synced = result['synced']
+            added = result['added']
+            updated = result['updated']
+            click.echo(f"✅ Sync complete!")
+            click.echo(f"   Synced: {synced} users")
+            click.echo(f"   Added: {added} new users")
+            click.echo(f"   Updated: {updated} users")
+        else:
+            click.echo(f"❌ Failed to sync users: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error syncing users: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('file', type=click.Path())
+@click.option('--format', type=click.Choice(['csv', 'json']), default='csv', help='Export format')
+@click.option('--company', help='Filter by company')
+@click.pass_context
+def export(ctx, file: str, format: str, company: Optional[str]):
+    """Export users to CSV/JSON file."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"📤 Exporting users to {file} ({format})...")
+    try:
+        result = user_manager.export_users(file, format, company)
+        if result['success']:
+            exported = result['exported']
+            click.echo(f"✅ Exported {exported} users to {file}")
+        else:
+            click.echo(f"❌ Failed to export users: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error exporting users: {e}")
+        sys.exit(1)
+
+# OAuth Management Commands
+@cli.group()
+def oauth():
+    """OAuth configuration commands."""
+    pass
+
+@oauth.command()
+@click.argument('service', type=click.Choice(['penpot', 'element']))
+@click.option('--provider', default='gitlab', help='OAuth provider')
+@click.option('--client-id', required=True, help='OAuth client ID')
+@click.option('--client-secret', required=True, help='OAuth client secret')
+@click.option('--redirect-uri', help='OAuth redirect URI')
+@click.pass_context
+def config(ctx, service: str, provider: str, client_id: str, client_secret: str, redirect_uri: Optional[str]):
+    """Configure OAuth for services."""
+    oauth_manager = ctx.obj['oauth_manager']
+    
+    click.echo(f"🔐 Configuring {service} OAuth with {provider}...")
+    try:
+        result = oauth_manager.configure_service(
+            service, provider, client_id, client_secret, redirect_uri
+        )
+        if result['success']:
+            click.echo(f"✅ OAuth configured for {service}!")
+        else:
+            click.echo(f"❌ Failed to configure OAuth: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error configuring OAuth: {e}")
+        sys.exit(1)
+
+@oauth.command()
+@click.argument('service', required=False)
+@click.pass_context
+def status(ctx, service: Optional[str]):
+    """Show OAuth configuration status."""
+    oauth_manager = ctx.obj['oauth_manager']
+    
+    try:
+        result = oauth_manager.get_status(service)
+        if result['success']:
+            configs = result['configs']
+            if not configs:
+                click.echo("No OAuth configurations found.")
+                return
+                
+            click.echo("🔐 OAuth Status:")
+            for svc, config in configs.items():
+                status_icon = "🟢" if config['configured'] else "🔴"
+                click.echo(f"   {status_icon} {svc}: {config['provider']} - {config['status']}")
+        else:
+            click.echo(f"❌ Failed to get OAuth status: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting OAuth status: {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    cli()
