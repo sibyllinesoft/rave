@@ -7,8 +7,7 @@ with lib;
 {
   # Only configure nginx if Penpot service is enabled
   config = mkIf config.services.rave.penpot.enable {
-    services.nginx.virtualHosts."${config.services.rave.penpot.host}" = {
-      locations = mkMerge [
+    services.nginx.virtualHosts."${config.services.rave.penpot.host}".locations = mkMerge [
         {
           # Penpot main application - frontend at /penpot/
           "/penpot/" = {
@@ -175,9 +174,8 @@ with lib;
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
               
-              # Return simplified health status
+              # Return simplified health status for error conditions only
               proxy_intercept_errors on;
-              error_page 200 = @penpot_healthy;
               error_page 401 = @penpot_healthy;  # Unauthenticated is still healthy
               error_page 500 502 503 504 = @penpot_unhealthy;
               
@@ -198,7 +196,6 @@ with lib;
           };
         }
       ];
-    };
     
     # Add Penpot-specific nginx configuration
     services.nginx.appendHttpConfig = ''
@@ -209,46 +206,5 @@ with lib;
       # Caching for Penpot static assets
       proxy_cache_path /var/cache/nginx/penpot levels=1:2 keys_zone=penpot_assets:10m max_size=1g inactive=30d use_temp_path=off;
     '';
-    
-    # Apply rate limiting to specific Penpot endpoints
-    services.nginx.virtualHosts."${config.services.rave.penpot.host}".locations = {
-      # Rate limit API calls
-      "~ ^/penpot/api/rpc/" = {
-        proxyPass = "http://127.0.0.1:6060";
-        extraConfig = ''
-          limit_req zone=penpot_api burst=10 nodelay;
-          
-          proxy_set_header Host $host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          
-          # Rewrite path to remove /penpot prefix
-          rewrite ^/penpot(/api/.*)$ $1 break;
-          
-          client_max_body_size 100M;
-          proxy_request_buffering off;
-        '';
-      };
-      
-      # Rate limit file uploads more strictly
-      "~ ^/penpot/api/.*upload" = {
-        proxyPass = "http://127.0.0.1:6060";
-        extraConfig = ''
-          limit_req zone=penpot_upload burst=3 nodelay;
-          
-          proxy_set_header Host $host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          
-          # Rewrite path to remove /penpot prefix
-          rewrite ^/penpot(/api/.*)$ $1 break;
-          
-          client_max_body_size 500M;
-          proxy_request_buffering off;
-        '';
-      };
-    };
   };
 }

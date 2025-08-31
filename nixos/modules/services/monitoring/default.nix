@@ -50,10 +50,6 @@ with lib;
     environment.systemPackages = with pkgs; [
       prometheus
       grafana
-      alertmanager
-      # Additional monitoring tools from P2
-      promtool  # Prometheus config validation
-      grafana-cli  # Grafana command line
     ];
 
     # Create monitoring user for shared access
@@ -74,7 +70,6 @@ with lib;
     networking.firewall.allowedTCPPorts = [
       3000  # Grafana
       9090  # Prometheus (internal only in production)
-      9093  # Alertmanager
       9100  # Node Exporter
     ];
 

@@ -12,9 +12,9 @@
     # Service modules (choose which services to enable for development)
     ../modules/services/gitlab   # Enable GitLab for development
     ../modules/services/nats     # Enable NATS JetStream
-    # ../modules/services/penpot   # Enable Penpot design tool (disabled for rebuild)
-    # ../modules/services/matrix    # Uncomment if needed for development
-    # ../modules/services/monitoring # Uncomment if needed for development
+    ../modules/services/penpot   # Enable Penpot design tool
+    # ../modules/services/matrix   # Enable Matrix/Element for development (temporarily disabled)
+    ../modules/services/monitoring # Enable Grafana monitoring stack
     
     # Minimal security (no hardening in development)
     ../modules/security/certificates.nix
@@ -70,18 +70,36 @@
     };
   };
 
-  # Enable Penpot design tool for development (disabled for rebuild)
-  # services.rave.penpot = {
+  # Enable Penpot design tool for development
+  services.rave.penpot = {
+    enable = true;
+    host = "rave.local";
+    useSecrets = false;  # Disable sops-nix secrets for development
+    
+    oidc = {
+      enable = true;
+      gitlabUrl = "https://rave.local/gitlab";
+      clientId = "penpot";
+    };
+  };
+
+  # Enable Matrix/Element for development (temporarily disabled)
+  # services.rave.matrix = {
   #   enable = true;
-  #   host = "rave.local";
+  #   serverName = "rave.local";
   #   useSecrets = false;  # Disable sops-nix secrets for development
   #   
   #   oidc = {
   #     enable = true;
   #     gitlabUrl = "https://rave.local/gitlab";
-  #     clientId = "penpot";
   #   };
   # };
+  
+  # Enable monitoring stack for development
+  services.rave.monitoring = {
+    enable = true;
+    safeMode = true;  # Enable SAFE mode with memory limits for development
+  };
   
   # GitLab port is managed by the service module
 
@@ -120,6 +138,240 @@
     locations."/" = {
       return = "200 \"Hello from RAVE VM!\"";
     };
+  };
+
+  # Override the main rave.local root location to serve the dashboard
+  services.nginx.virtualHosts."rave.local".locations."/" = lib.mkForce {
+    root = "/var/www/html";
+    index = "dashboard.html";
+    tryFiles = "$uri $uri/ /dashboard.html";
+    extraConfig = ''
+      access_log off;
+      # Security headers for HTTPS
+      add_header X-Frame-Options DENY always;
+      add_header X-Content-Type-Options nosniff always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' wss: https:;" always;
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+    '';
+  };
+
+  # Services are now enabled and routed by their respective modules
+
+  # Setup dashboard files in the VM  
+  environment.etc."dashboard.html".text = ''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAVE Development Environment</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Michroma:wght@400&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            background: linear-gradient(135deg, #2d2d2d 0%, #3a3a3a 50%, #2d2d2d 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+        }
+        .header {
+            background: linear-gradient(135deg, #3a3a3a 0%, #4a4a4a 50%, #3a3a3a 100%);
+            padding: 2rem 0;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            border-bottom: 1px solid #4a4a4a;
+        }
+        .header h1 {
+            font-family: 'Michroma', monospace;
+            font-size: 2.5rem;
+            color: #3498db;
+            margin: 0;
+        }
+        .header p {
+            font-family: 'Inter', sans-serif;
+            font-size: 1.1rem;
+            color: #bdc3c7;
+            margin: 0.5rem 0 0 0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 3rem 1rem;
+        }
+        .services-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+        }
+        .service-card {
+            background: linear-gradient(135deg, #3a3a3a 0%, #404040 100%);
+            border: 1px solid #4a4a4a;
+            border-radius: 16px;
+            padding: 2rem;
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+            cursor: pointer;
+            display: block;
+        }
+        .service-card:hover {
+            transform: translateY(-8px) scale(1.02);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), 
+                        0 0 0 1px rgba(52, 152, 219, 0.3);
+            border-color: #3498db;
+        }
+        .service-card.disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+        .service-card.disabled:hover {
+            transform: none;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            background: linear-gradient(135deg, #3a3a3a, #2d2d2d);
+            border-color: #4a4a4a;
+        }
+        .service-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .service-title {
+            font-family: 'Inter', sans-serif;
+            color: #ecf0f1;
+            font-size: 1.25rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            transition: color 0.3s ease;
+        }
+        .service-card:hover .service-title {
+            color: #3498db;
+        }
+        .service-icon {
+            width: 24px;
+            height: 24px;
+            color: #3498db;
+            transition: transform 0.3s ease;
+        }
+        .service-card:hover .service-icon {
+            transform: scale(1.1);
+        }
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+            transition: all 0.3s ease;
+        }
+        .service-card:hover .status-dot {
+            transform: scale(1.2);
+        }
+        .status-active {
+            background: #27ae60;
+            box-shadow: 0 0 8px rgba(39, 174, 96, 0.4);
+        }
+        .status-inactive {
+            background: #e74c3c;
+            box-shadow: 0 0 8px rgba(231, 76, 60, 0.4);
+        }
+        .service-description {
+            font-family: 'Inter', sans-serif;
+            color: #bdc3c7;
+            line-height: 1.6;
+            margin-bottom: 1.5rem;
+            transition: color 0.3s ease;
+        }
+        .service-card:hover .service-description {
+            color: #ecf0f1;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>RAVE Development Environment</h1>
+        <p>Reproducible AI Virtual Environment - Development Instance</p>
+    </div>
+    <div class="container">
+        <div class="services-grid">
+            <a href="/gitlab/" class="service-card">
+                <div class="status-dot status-active"></div>
+                <div class="service-header">
+                    <h3 class="service-title">
+                        <i data-lucide="git-branch" class="service-icon"></i>
+                        GitLab
+                    </h3>
+                </div>
+                <p class="service-description">Complete DevOps platform with Git repositories, CI/CD pipelines, and issue tracking.</p>
+            </a>
+            <a href="/grafana/" class="service-card">
+                <div class="status-dot status-active"></div>
+                <div class="service-header">
+                    <h3 class="service-title">
+                        <i data-lucide="bar-chart" class="service-icon"></i>
+                        Grafana
+                    </h3>
+                </div>
+                <p class="service-description">Observability and monitoring platform with dashboards for metrics, logs, and traces.</p>
+            </a>
+            <a href="/element/" class="service-card">
+                <div class="status-dot status-active"></div>
+                <div class="service-header">
+                    <h3 class="service-title">
+                        <i data-lucide="message-circle" class="service-icon"></i>
+                        Matrix/Element
+                    </h3>
+                </div>
+                <p class="service-description">Secure, decentralized communication platform for team collaboration.</p>
+            </a>
+            <a href="/penpot/" class="service-card">
+                <div class="status-dot status-active"></div>
+                <div class="service-header">
+                    <h3 class="service-title">
+                        <i data-lucide="palette" class="service-icon"></i>
+                        Penpot
+                    </h3>
+                </div>
+                <p class="service-description">Open-source design and prototyping platform for UI/UX design collaboration.</p>
+            </a>
+        </div>
+    </div>
+    <script>lucide.createIcons();</script>
+</body>
+</html>
+  '';
+
+  systemd.services.setup-dashboard = {
+    description = "Setup RAVE dashboard files";
+    wantedBy = [ "multi-user.target" ];
+    before = [ "nginx.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script = ''
+      # Create web directory
+      mkdir -p /var/www/html
+      
+      # Copy dashboard from /etc
+      cp /etc/dashboard.html /var/www/html/dashboard.html
+      
+      # Set proper permissions
+      chown -R nginx:nginx /var/www/html
+      chmod 755 /var/www/html
+      chmod 644 /var/www/html/dashboard.html
+      
+      echo "✅ Dashboard files setup completed"
+    '';
   };
 
   # Development-friendly networking

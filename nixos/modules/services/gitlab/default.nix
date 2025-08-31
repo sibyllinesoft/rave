@@ -104,6 +104,9 @@ with lib;
           port = 443;
           https = true;
           
+          # Enable relative URL root for subdirectory routing
+          relative_url_root = "/gitlab";
+          
           # Large file handling
           max_request_size = "10G";
           
@@ -285,6 +288,11 @@ with lib;
       MemoryMax = "8G";
       CPUQuota = "50%";
       OOMScoreAdjust = "50";
+    };
+    
+    # Enable Rails relative URL root for subdirectory routing
+    systemd.services.gitlab.environment = {
+      RAILS_RELATIVE_URL_ROOT = "/gitlab";
     };
     
     systemd.services.gitlab-runner.serviceConfig = mkIf config.services.rave.gitlab.runner.enable {

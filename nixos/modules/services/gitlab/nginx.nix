@@ -10,7 +10,7 @@ with lib;
     services.nginx.virtualHosts."${config.services.rave.gitlab.host}" = {
       locations = mkMerge [
         {
-          # GitLab main interface - from P3 config
+          # GitLab main interface - strip /gitlab prefix when forwarding
           "/gitlab/" = {
             proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:/";
             extraConfig = ''
@@ -36,6 +36,32 @@ with lib;
           # GitLab redirect
           "= /gitlab" = {
             return = "301 /gitlab/";
+          };
+          
+          # GitLab static assets (CSS, JS, images)
+          "~ ^/(assets)/" = {
+            proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+            extraConfig = ''
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              
+              # Static asset caching
+              expires 1y;
+              add_header Cache-Control "public, immutable";
+            '';
+          };
+          
+          # GitLab uploads and user content
+          "~ ^/(uploads|files)/" = {
+            proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+            extraConfig = ''
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+            '';
           };
           
           # GitLab CI/CD artifacts and LFS - from P3 config

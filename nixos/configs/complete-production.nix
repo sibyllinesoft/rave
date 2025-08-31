@@ -45,8 +45,8 @@
   services.openssh = {
     enable = true;
     settings = {
-      PasswordAuthentication = true;
-      PermitRootLogin = "yes";
+      PasswordAuthentication = lib.mkForce true;  # Override security hardening
+      PermitRootLogin = lib.mkForce "yes";       # Override networking module
       X11Forwarding = false;
     };
   };
@@ -59,12 +59,12 @@
     package = pkgs.postgresql_15;
     
     # Pre-create ALL required databases and users
-    ensureDatabases = [ "gitlab" "grafana" "penpot" "matrix_synapse" ];
+    ensureDatabases = [ "gitlab" "grafana" "penpot" ]; # matrix_synapse disabled
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
       { name = "grafana"; }
       { name = "penpot"; ensureDBOwnership = true; }
-      { name = "matrix_synapse"; ensureDBOwnership = true; }
+      # { name = "matrix_synapse"; ensureDBOwnership = true; } # disabled
     ];
     
     # Optimized settings for VM environment
@@ -99,7 +99,7 @@
       GRANT ALL PRIVILEGES ON DATABASE penpot TO penpot;
       
       -- Matrix database setup
-      GRANT ALL PRIVILEGES ON DATABASE matrix_synapse TO matrix_synapse;
+      -- GRANT ALL PRIVILEGES ON DATABASE matrix_synapse TO matrix_synapse; -- disabled
     '';
   };
 
@@ -111,7 +111,7 @@
       settings = {
         maxmemory = "512MB";
         maxmemory-policy = "allkeys-lru";
-        save = "900 1 300 10 60 10000";
+        save = lib.mkForce [ "900 1" "300 10" "60 10000" ];
       };
     };
     
@@ -121,7 +121,7 @@
       settings = {
         maxmemory = "256MB";
         maxmemory-policy = "allkeys-lru";
-        save = "60 1000";
+        save = lib.mkForce [ "60 1000" ];
       };
     };
     
@@ -341,62 +341,12 @@
   };
 
   # ===== MATRIX SYNAPSE =====
-
-  services.matrix-synapse = {
-    enable = true;
-    server_name = "localhost";
-    
-    database = {
-      type = "psycopg2";
-      args = {
-        user = "matrix_synapse";
-        password = "matrix-production-password";
-        database = "matrix_synapse";
-        host = "localhost";
-        port = 5432;
-        cp_min = 5;
-        cp_max = 10;
-      };
-    };
-    
-    settings = {
-      public_baseurl = "https://localhost:8443/matrix/";
-      serve_server_wellknown = true;
-      
-      listeners = [
-        {
-          port = 8008;
-          bind_addresses = [ "127.0.0.1" ];
-          type = "http";
-          tls = false;
-          x_forwarded = true;
-          resources = [
-            {
-              names = [ "client" "federation" ];
-              compress = true;
-            }
-          ];
-        }
-      ];
-      
-      # Registration and federation
-      enable_registration = true;
-      enable_registration_without_verification = true;
-      federation_domain_whitelist = [];
-      
-      # Media settings
-      max_upload_size = "50M";
-      max_image_pixels = "32M";
-      dynamic_thumbnails = true;
-      
-      # Redis configuration
-      redis = {
-        enabled = true;
-        host = "localhost";
-        port = 6381;
-      };
-    };
-  };
+  # Disabled pending configuration fix for NixOS 24.11
+  
+  # services.matrix-synapse = {
+  #   enable = false;
+  #   # ... configuration commented out for now
+  # };
 
   # ===== NGINX CONFIGURATION =====
 
@@ -693,7 +643,7 @@ EOF
     
     # Development tools
     docker-compose
-    python3 nodejs npm
+    python3 nodejs nodePackages.npm
     
     # SSL utilities
     openssl
@@ -751,16 +701,16 @@ EOF
     grafana.after = [ "postgresql.service" "generate-localhost-certs.service" ];
     grafana.requires = [ "postgresql.service" ];
     
-    # Matrix depends on database and certificates
-    matrix-synapse.after = [ "postgresql.service" "redis-matrix.service" "generate-localhost-certs.service" ];
-    matrix-synapse.requires = [ "postgresql.service" "redis-matrix.service" ];
+    # Matrix disabled
+    # matrix-synapse.after = [ "postgresql.service" "redis-matrix.service" "generate-localhost-certs.service" ];
+    # matrix-synapse.requires = [ "postgresql.service" "redis-matrix.service" ];
     
     # nginx depends on certificates and all backend services
     nginx.after = [ 
       "generate-localhost-certs.service" 
       "gitlab.service"
       "grafana.service" 
-      "matrix-synapse.service"
+      # "matrix-synapse.service" # disabled
       "prometheus.service"
       "nats.service"
     ];

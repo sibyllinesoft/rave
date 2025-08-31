@@ -224,7 +224,7 @@ with lib;
       settings = {
         maxmemory = "256MB";
         maxmemory-policy = "allkeys-lru";
-        save = "60 1000"; # Save every minute if at least 1000 keys changed
+        save = mkForce "60 1000"; # Save every minute if at least 1000 keys changed
       };
     };
 

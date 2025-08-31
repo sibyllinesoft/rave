@@ -71,7 +71,7 @@ with lib;
           metrics_path = "/gitlab/-/metrics";
           scrape_interval = "30s";
         }
-      ] ++ optionals config.services.rave.matrix.enable [
+      ] ++ optionals (hasAttr "matrix" config.services.rave && config.services.rave.matrix.enable or false) [
         # Matrix Synapse metrics (if Matrix enabled)
         {
           job_name = "matrix-synapse";
@@ -169,7 +169,7 @@ with lib;
     };
 
     # Configure Matrix Synapse metrics (if Matrix enabled)
-    services.matrix-synapse.settings = mkIf config.services.rave.matrix.enable {
+    services.matrix-synapse.settings = mkIf (hasAttr "matrix" config.services.rave && config.services.rave.matrix.enable or false) {
       enable_metrics = true;
       metrics_port = 9000;
       listeners = [{

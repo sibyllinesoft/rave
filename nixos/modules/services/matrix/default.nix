@@ -87,7 +87,7 @@ with lib;
           name = "psycopg2";
           args = {
             user = "matrix-synapse";
-            database = "synapse";
+            database = "matrix-synapse";
             host = "localhost";
             cp_min = 5;
             cp_max = 10;
@@ -191,7 +191,7 @@ with lib;
     # Required dependencies for Matrix
     services.postgresql = {
       enable = true;
-      ensureDatabases = [ "synapse" ];
+      ensureDatabases = [ "matrix-synapse" ];
       ensureUsers = [{
         name = "matrix-synapse";
         ensureDBOwnership = true;
