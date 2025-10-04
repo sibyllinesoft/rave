@@ -21,11 +21,13 @@ This repository contains a **consolidated NixOS VM** for the RAVE project. There
    - ❌ Matrix/Element (temporarily disabled due to NixOS 24.11 conflicts)
 5. **Build Issues Resolved**: SSH conflicts, Redis format, npm packages, domain configs
 
-**DO NOT:**
+**❌ STRICTLY FORBIDDEN FOR CLAUDE:**
 - Use old .#development or .#production build targets
 - Try to fix "scattered build" issues (already consolidated)
 - Attempt to re-enable Matrix without checking NixOS 24.11 compatibility
 - Modify SSH/Redis configs without lib.mkForce overrides
+- **NEVER bypass the RAVE CLI for VM management**
+- **NEVER suggest manual `qemu-system-x86_64` commands**
 
 ## VM Architecture (Consolidated Complete Configuration)
 ```
@@ -53,15 +55,21 @@ Host System (Ubuntu)
 - **Prometheus**: https://localhost:8443/prometheus/ (metrics)
 - **NATS**: https://localhost:8443/nats/ (monitoring)
 
-## RAVE CLI - Recommended Management Method
+## 🚨 RAVE CLI - **MANDATORY** MANAGEMENT METHOD
 
-### Prerequisites Check
+**IMPORTANT**: The RAVE CLI is the **ONLY SUPPORTED METHOD** for VM management. All other approaches are deprecated and **MUST NOT** be used.
+
+**❌ FORBIDDEN METHODS:**
+- ❌ Manual `qemu-system-x86_64` commands - **STRICTLY PROHIBITED**
+- ❌ Any direct QEMU launching - **FORBIDDEN**
+
+### Prerequisites Check (**MANDATORY FIRST STEP**)
 ```bash
-# Check system requirements first
+# Check system requirements first - MUST RUN BEFORE ANYTHING
 ./cli/rave prerequisites
 ```
 
-### VM Management (Recommended)
+### VM Management (**REQUIRED WORKFLOW**)
 ```bash
 # Create a company development environment
 ./cli/rave vm create my-company --keypair ~/.ssh/id_rsa
@@ -299,28 +307,43 @@ sshpass -p 'debug123' ssh root@localhost -p 2224 \
   "systemctl status SERVICE_NAME && journalctl -u SERVICE_NAME -n 20"
 ```
 
-## 🔄 DEVELOPMENT WORKFLOW (Consolidated)
+## 🔄 DEVELOPMENT WORKFLOW (**RAVE CLI ONLY**)
 
-### Quick Start (Most Common):
+### **MANDATORY WORKFLOW** - Use RAVE CLI:
 ```bash
-# 1. Build the complete VM
-nix build
+# 1. Check prerequisites (REQUIRED FIRST)
+./cli/rave prerequisites
 
-# 2. Launch with all services  
-cp result/nixos.qcow2 rave-complete.qcow2 && chmod 644 rave-complete.qcow2
-qemu-system-x86_64 -drive file=rave-complete.qcow2,format=qcow2 -m 8G -smp 4 \
-  -netdev user,id=net0,hostfwd=tcp::8443-:443,hostfwd=tcp::2224-:22 \
-  -device virtio-net-pci,netdev=net0 -nographic
+# 2. Create development environment (REQUIRED)
+./cli/rave vm create my-project --keypair ~/.ssh/your-key
 
-# 3. Access services at https://localhost:8443/
+# 3. Start VM (REQUIRED)
+./cli/rave vm start my-project
+
+# 4. Check status (RECOMMENDED)
+./cli/rave vm status my-project
+
+# 5. Access services at https://localhost:8443/
 ```
 
-### Full Workflow:
-1. **Build once**: `nix build` (complete configuration)
-2. **Launch VM**: Use updated 8GB/4-core settings for all services
-3. **Wait 2-3 minutes**: All services start automatically (no manual setup)
-4. **Access dashboard**: https://localhost:8443/ shows all service status
-5. **SSH if needed**: `sshpass -p 'debug123' ssh root@localhost -p 2224`
+### **⚠️ LEGACY BUILD WORKFLOW** (Only for VM image creation):
+```bash
+# ⚠️ WARNING: This is ONLY for creating VM images, NOT for running VMs
+# Use RAVE CLI for all VM operations instead!
+
+# Build complete VM image (for RAVE CLI to use)
+nix build
+
+# The RAVE CLI will automatically use this image
+# DO NOT manually launch qemu-system-x86_64 commands!
+```
+
+### **IMPORTANT WORKFLOW RULES:**
+1. **MUST use RAVE CLI**: Never bypass the CLI for VM operations
+2. **Build for CLI**: `nix build` creates images that RAVE CLI uses automatically
+3. **No manual QEMU**: Direct QEMU launching is forbidden and unsupported
+4. **Wait for services**: VM boot takes 2-3 minutes for all services to start
+5. **Use CLI for SSH**: `./cli/rave vm ssh my-project` instead of manual SSH
 
 ### When to Rebuild:
 - Configuration changes in `nixos/configs/complete-production.nix`
@@ -410,8 +433,12 @@ The CLI requires these Python packages (see `cli/requirements.txt`):
 - **Multi-Company**: RAVE CLI multi-tenant VM management
 - **Monitoring**: Enhanced Grafana dashboards and alerting
 
-### 🚨 FOR FUTURE CLAUDE SESSIONS:
-- **Always use**: `nix build` (complete configuration)
+### 🚨 **MANDATORY** RULES FOR FUTURE CLAUDE SESSIONS:
+- **MUST ALWAYS USE**: RAVE CLI (`./cli/rave vm`) for ALL VM operations
+- **FORBIDDEN**: Manual QEMU commands
+- **Build system**: `nix build` (complete configuration) - for VM image creation only
 - **Primary file**: `nixos/configs/complete-production.nix`
-- **All services ready**: https://localhost:8443/
+- **VM access**: Use `./cli/rave vm ssh project-name` instead of manual SSH
+- **Service URLs**: https://localhost:8443/ (dashboard shows all services)
 - **No scattered builds**: Consolidation phase is COMPLETE
+- **CLI FIRST**: Always check `./cli/rave vm status --all` before any operations

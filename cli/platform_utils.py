@@ -2,6 +2,7 @@
 Platform-specific utilities for RAVE CLI
 Handles differences between macOS, Linux, and potentially Windows
 """
+import os
 import platform
 import subprocess
 import shutil
@@ -116,31 +117,48 @@ class PlatformManager:
             "warnings": warnings
         }
     
-    def get_vm_start_command(self, image_path: str, memory_gb: int = 4, 
-                           port_forwards: List[Tuple[int, int]] = None) -> List[str]:
-        """Generate QEMU command for starting VM."""
+    def get_vm_start_command(self, image_path: str, memory_gb: int = 4,
+                             port_forwards: List[Tuple[int, int]] = None) -> Tuple[List[str], Optional[Dict[str, str]]]:
+        """Generate command and environment for starting a VM."""
+        repo_root = Path(__file__).resolve().parent.parent
+        nix_vm_launcher = repo_root / "result" / "bin" / "run-rave-complete-vm"
+
+        if self.is_linux() and nix_vm_launcher.exists():
+            env = os.environ.copy()
+            env["NIX_DISK_IMAGE"] = str(Path(image_path).resolve())
+
+            if port_forwards:
+                hostfwd_rules = [
+                    f"hostfwd=tcp::{host_port}-:{guest_port}"
+                    for host_port, guest_port in port_forwards
+                ]
+                env["QEMU_NET_OPTS"] = ",".join(hostfwd_rules)
+
+            return [str(nix_vm_launcher)], env
+
         qemu_binary = self.get_qemu_binary()
         if not qemu_binary:
             raise RuntimeError("QEMU not available")
-        
+
         cmd = [qemu_binary]
-        
+
         # Basic VM settings
         cmd.extend([
             "-drive", f"file={image_path},format=qcow2",
             "-m", f"{memory_gb}G",
             "-smp", "2"
         ])
-        
+
         # Hardware acceleration
         cmd.extend(self.get_acceleration_flags())
-        
+
         # Network with port forwarding
         if port_forwards:
-            hostfwd_rules = []
-            for host_port, guest_port in port_forwards:
-                hostfwd_rules.append(f"hostfwd=tcp::{host_port}-:{guest_port}")
-            
+            hostfwd_rules = [
+                f"hostfwd=tcp::{host_port}-:{guest_port}"
+                for host_port, guest_port in port_forwards
+            ]
+
             netdev = f"user,id=net0,{','.join(hostfwd_rules)}"
             cmd.extend([
                 "-netdev", netdev,
@@ -151,7 +169,7 @@ class PlatformManager:
                 "-netdev", "user,id=net0",
                 "-device", "virtio-net-pci,netdev=net0"
             ])
-        
+
         # Platform-specific optimizations
         if self.is_macos():
             # macOS-specific QEMU optimizations
@@ -162,11 +180,10 @@ class PlatformManager:
         else:
             # Linux-specific optimizations
             cmd.extend([
-                "-display", "none",
-                "-nographic"
+                "-display", "none"
             ])
-        
-        return cmd
+
+        return cmd, None
     
     def get_temp_dir(self) -> Path:
         """Get platform-appropriate temporary directory."""

@@ -81,17 +81,8 @@ with lib;
           else pkgs.writeText "jwt-signing-key" "development-jwt-signing-key-dummy";
         
         # Add missing Active Record secrets to prevent build warnings
-        activeRecordPrimaryKeyFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/active-record-primary".path or "/run/secrets/gitlab-ar-primary"
-          else pkgs.writeText "gitlab-ar-primary" "development-active-record-primary-key-dummy";
-          
-        activeRecordDeterministicKeyFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/active-record-deterministic".path or "/run/secrets/gitlab-ar-deterministic"
-          else pkgs.writeText "gitlab-ar-deterministic" "development-active-record-deterministic-key-dummy";
-          
-        activeRecordSaltFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/active-record-salt".path or "/run/secrets/gitlab-ar-salt"
-          else pkgs.writeText "gitlab-ar-salt" "development-active-record-salt-dummy";
+        # Note: activeRecord secrets options removed in NixOS 24.11
+        # Using database secret file instead for minimal configuration
       };
       
       # Prevent nginx conflicts - we handle nginx separately

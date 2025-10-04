@@ -21,9 +21,9 @@
   };
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     nixos-generators = {
-      url = "github:nix-community/nixos-generators";
+      url = "github:nix-community/nixos-generators/1.8.0";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     sops-nix = {
@@ -38,48 +38,19 @@
       rave-vm = import ./tests/rave-vm.nix { pkgs = nixpkgs.legacyPackages.x86_64-linux; };
     };
 
-    # VM image packages - Streamlined build targets
+    # VM image packages - Production only
     packages.x86_64-linux = {
-      # === PRIMARY BUILD TARGET ===
       # Complete production image - ALL services pre-configured and ready
       default = nixos-generators.nixosGenerate {
         system = "x86_64-linux";
-        format = "qcow";
+        format = "vm";
         modules = [ 
           ./nixos/configs/complete-production.nix
           sops-nix.nixosModules.sops
-        ];
-      };
-      
-      # === STRIPPED-DOWN OPTIONS (when needed) ===
-      
-      # Minimal development - Just nginx, SSH, basic services
-      minimal = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "qcow";
-        modules = [ 
-          ./nixos/configs/demo.nix
-          sops-nix.nixosModules.sops
-        ];
-      };
-      
-      # Monitoring-only - Just observability stack (Grafana, Prometheus)
-      monitoring = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "qcow";
-        modules = [ 
-          ./nixos/configs/monitoring-only.nix
-          sops-nix.nixosModules.sops
-        ];
-      };
-      
-      # === LEGACY COMPATIBILITY (deprecated) ===
-      complete = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "qcow";
-        modules = [ 
-          ./nixos/configs/complete-production.nix
-          sops-nix.nixosModules.sops
+          {
+            virtualisation.diskSize = 20 * 1024; # 20GB
+            virtualisation.memorySize = 8192;
+          }
         ];
       };
       

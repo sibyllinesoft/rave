@@ -6,8 +6,10 @@ RAVE provides isolated, production-ready development VMs with GitLab, NATS JetSt
 
 ## ✨ Quick Start
 
-### Install RAVE CLI
+### Use RAVE CLI (**MANDATORY METHOD**)
 ```bash
+# The RAVE CLI is the ONLY supported method for VM management
+# All direct QEMU commands are FORBIDDEN
 cd cli && pip install -r requirements.txt
 export PATH="$PATH:$(pwd)"
 ```

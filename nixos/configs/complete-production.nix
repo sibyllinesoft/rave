@@ -10,7 +10,7 @@
     ../modules/foundation/nix-config.nix
     
     # Security modules
-    ../modules/security/certificates.nix
+    # ../modules/security/certificates.nix  # DISABLED: Using inline certificate generation instead
     ../modules/security/hardening.nix
   ];
 
@@ -26,6 +26,7 @@
   # System
   system.stateVersion = "24.11";
   networking.hostName = "rave-complete";
+  system.autoUpgrade.enable = lib.mkForce false;
 
   # Virtual filesystems
   fileSystems."/" = {
@@ -37,7 +38,7 @@
   users.users.root = {
     hashedPassword = "$6$rounds=1000000$NhXVkh6kn4DMVG.U$zKJT5GkhLdU6.7yPb2H2VfSVvK9DjjBYsJWQ8jc6MaTGHr/e.3PjNSghhNE3YqjfLp0KOkVXqy/vbhKn.e7aS0";  # "debug123"
     openssh.authorizedKeys.keys = [
-      "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC7... # Add your SSH key here"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKAmBj5iZFV2inopUhgTX++Wue6g5ePry+DiE3/XLxe2 rave-vm-access"
     ];
   };
 
@@ -62,7 +63,7 @@
     ensureDatabases = [ "gitlab" "grafana" "penpot" ]; # matrix_synapse disabled
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
-      { name = "grafana"; }
+      { name = "grafana"; ensureDBOwnership = true; }
       { name = "penpot"; ensureDBOwnership = true; }
       # { name = "matrix_synapse"; ensureDBOwnership = true; } # disabled
     ];
@@ -90,11 +91,14 @@
       GRANT ALL PRIVILEGES ON DATABASE gitlab TO gitlab;
       
       -- Grafana permissions
-      GRANT CONNECT ON DATABASE postgres TO grafana;
-      GRANT USAGE ON SCHEMA public TO grafana;
-      GRANT SELECT ON ALL TABLES IN SCHEMA public TO grafana;
-      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO grafana;
-      
+      GRANT CONNECT ON DATABASE grafana TO grafana;
+      GRANT ALL PRIVILEGES ON DATABASE grafana TO grafana;
+      ALTER DATABASE grafana OWNER TO grafana;
+      GRANT USAGE, CREATE ON SCHEMA public TO grafana;
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO grafana;
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO grafana;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO grafana;
+
       -- Penpot database setup  
       GRANT ALL PRIVILEGES ON DATABASE penpot TO penpot;
       
@@ -103,35 +107,16 @@
     '';
   };
 
-  # Redis with multiple instances for different services
-  services.redis.servers = {
-    gitlab = {
-      enable = true;
-      port = 6379;
-      settings = {
-        maxmemory = "512MB";
-        maxmemory-policy = "allkeys-lru";
-        save = lib.mkForce [ "900 1" "300 10" "60 10000" ];
-      };
-    };
-    
-    penpot = {
-      enable = true;
-      port = 6380;
-      settings = {
-        maxmemory = "256MB";
-        maxmemory-policy = "allkeys-lru";
-        save = lib.mkForce [ "60 1000" ];
-      };
-    };
-    
-    matrix = {
-      enable = true;
-      port = 6381;
-      settings = {
-        maxmemory = "256MB";
-        maxmemory-policy = "allkeys-lru";
-      };
+  # Single Redis instance (simplified - no clustering)
+  services.redis.servers.main = {
+    enable = true;
+    port = 6379;
+    settings = {
+      maxmemory = "1GB";
+      maxmemory-policy = "allkeys-lru";
+      save = [ "900 1" "300 10" "60 10000" ];
+      # Allow multiple databases
+      databases = 16;
     };
   };
 
@@ -158,11 +143,7 @@
       # Monitoring
       http_port = 8222;
       
-      # Cluster settings
-      cluster = {
-        name = "rave-cluster";
-        listen = "0.0.0.0:6222";
-      };
+      # Cluster configuration disabled for single-node VM deployment
     };
   };
 
@@ -368,8 +349,8 @@
       enableACME = false;
       
       # Use manual certificate configuration
-      sslCertificate = "/var/lib/acme/rave.local/cert.pem";
-      sslCertificateKey = "/var/lib/acme/rave.local/key.pem";
+      sslCertificate = "/var/lib/acme/localhost/cert.pem";
+      sslCertificateKey = "/var/lib/acme/localhost/key.pem";
       
       # Root location - dashboard
       locations."/" = {
@@ -496,8 +477,15 @@
       
       # Matrix client well-known
       locations."/.well-known/matrix/client" = {
-        return = ''200 '{"m.homeserver":{"base_url":"https://localhost:8443/matrix/"}}'';
-        extraConfig = "add_header Content-Type application/json;";
+        return = "200 '{\"m.homeserver\":{\"base_url\":\"https://localhost:8443/matrix/\"}}'";
+        extraConfig = ''
+          add_header Content-Type application/json;
+          add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+          add_header X-Content-Type-Options "nosniff" always;
+          add_header X-Frame-Options "DENY" always;  
+          add_header X-XSS-Protection "1; mode=block" always;
+          add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        '';
       };
       
       # Prometheus reverse proxy
@@ -536,7 +524,7 @@
     virtualHosts."localhost-http" = {
       listen = [ { addr = "0.0.0.0"; port = 80; } ];
       locations."/" = {
-        return = "301 https://localhost:8443$request_uri";
+        return = "301 https://localhost$request_uri";
       };
     };
   };
@@ -558,7 +546,7 @@
     script = ''
       set -e
       
-      CERT_DIR="/var/lib/acme/rave.local"
+      CERT_DIR="/var/lib/acme/localhost"
       
       # Create certificate directory
       mkdir -p "$CERT_DIR"
@@ -658,6 +646,7 @@ EOF
     };
   };
 
+
   # Firewall configuration
   networking.firewall = {
     enable = true;
@@ -694,8 +683,8 @@ EOF
     '';
     
     # GitLab depends on database and certificates
-    gitlab.after = [ "postgresql.service" "redis-gitlab.service" "generate-localhost-certs.service" ];
-    gitlab.requires = [ "postgresql.service" "redis-gitlab.service" ];
+    gitlab.after = [ "postgresql.service" "redis-main.service" "generate-localhost-certs.service" ];
+    gitlab.requires = [ "postgresql.service" "redis-main.service" ];
     
     # Grafana depends on database and certificates
     grafana.after = [ "postgresql.service" "generate-localhost-certs.service" ];
@@ -746,7 +735,7 @@ echo "   GitLab root:    admin123456"
 echo "   Grafana:        admin/admin123"
 echo ""
 echo "🔧 Service Status:"
-systemctl status postgresql redis-gitlab redis-penpot redis-matrix nats prometheus grafana gitlab matrix-synapse nginx --no-pager -l
+systemctl status postgresql redis-main nats prometheus grafana gitlab nginx --no-pager -l
 echo ""
 echo "🌐 Dashboard: https://localhost:8443/"
 echo ""
