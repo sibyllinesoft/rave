@@ -277,7 +277,7 @@ generate_deployment_guide() {
 - [ ] sops-nix installed on deployment server
 - [ ] SSH access to production server configured
 - [ ] GitLab OAuth application created
-- [ ] Matrix homeserver deployed (if using)
+- [ ] Mattermost chat service deployed (if using)
 
 ## Deployment Steps
 

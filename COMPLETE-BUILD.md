@@ -28,7 +28,7 @@ qemu-system-x86_64 \
 - **Dashboard**: https://localhost:8443/
 - **GitLab**: https://localhost:8443/gitlab/ (root:admin123456)
 - **Grafana**: https://localhost:8443/grafana/ (admin:admin123)
-- **Matrix**: https://localhost:8443/matrix/
+- **Mattermost**: https://localhost:8443/mattermost/
 - **Prometheus**: https://localhost:8443/prometheus/
 - **NATS**: https://localhost:8443/nats/
 
@@ -52,14 +52,14 @@ qemu-system-x86_64 \
 
 ### Core Infrastructure
 - **nginx**: Reverse proxy with SSL termination
-- **PostgreSQL 15**: All databases pre-created (gitlab, grafana, penpot, matrix_synapse)
-- **Redis**: Multiple instances (GitLab:6379, Penpot:6380, Matrix:6381)
+- **PostgreSQL 15**: All databases pre-created (gitlab, grafana, penpot, mattermost)
+- **Redis**: Multiple instances (GitLab:6379, Penpot:6380)
 - **NATS**: JetStream messaging with monitoring on port 8222
 
 ### Application Services
 - **GitLab**: Full CI/CD with container registry
 - **Grafana**: Monitoring dashboards with PostgreSQL + Prometheus datasources
-- **Matrix Synapse**: Secure communications server
+- **Mattermost**: Secure team chat and agent control (auto-provisions `/rave` slash command)
 - **Prometheus**: Metrics collection with exporters
 
 ### Service Dependencies
@@ -67,7 +67,7 @@ qemu-system-x86_64 \
 nginx (443) → All services
 ├── GitLab (8080) → PostgreSQL + Redis
 ├── Grafana (3000) → PostgreSQL + Prometheus
-├── Matrix (8008) → PostgreSQL + Redis
+├── Mattermost (8065) → PostgreSQL
 ├── Prometheus (9090) → Node/Nginx/Postgres exporters
 └── NATS (4222) → JetStream storage
 ```
@@ -82,7 +82,7 @@ All PostgreSQL databases and users are created during build:
 gitlab (owner: gitlab, password: gitlab-production-password)
 grafana (owner: grafana, password: grafana-production-password)  
 penpot (owner: penpot, password: penpot-production-password)
-matrix_synapse (owner: matrix_synapse, password: matrix-production-password)
+mattermost (owner: mattermost, password: mattermost-production-password)
 ```
 
 ### SSL Certificates
@@ -100,13 +100,12 @@ External (via nginx):
 Internal services:
 - 8080/tcp → GitLab
 - 3000/tcp → Grafana  
-- 8008/tcp → Matrix Synapse
+- 8065/tcp → Mattermost
 - 9090/tcp → Prometheus
 - 4222/tcp → NATS
 - 8222/tcp → NATS monitoring
 - 6379/tcp → Redis (GitLab)
 - 6380/tcp → Redis (Penpot) 
-- 6381/tcp → Redis (Matrix)
 - 5432/tcp → PostgreSQL
 ```
 
@@ -118,7 +117,7 @@ Internal services:
 sshpass -p 'debug123' ssh root@localhost -p 2224
 
 # Check all services
-systemctl status postgresql redis-gitlab redis-matrix nats prometheus grafana gitlab matrix-synapse nginx
+systemctl status postgresql redis-gitlab redis-penpot nats prometheus grafana gitlab mattermost rave-chat-bridge nginx
 
 # View logs
 journalctl -u SERVICE_NAME -f
@@ -159,8 +158,8 @@ If a service fails to start:
 systemctl list-dependencies SERVICE_NAME
 
 # Restart in dependency order
-systemctl restart postgresql redis-gitlab redis-matrix
-systemctl restart gitlab grafana matrix-synapse  
+systemctl restart postgresql redis-gitlab redis-penpot
+systemctl restart gitlab grafana mattermost  
 systemctl restart nginx
 ```
 
@@ -175,7 +174,7 @@ systemctl restart nginx
 ### Service Resource Limits
 - **GitLab**: 8GB memory, 50% CPU
 - **Grafana**: Default (PostgreSQL backend)
-- **Matrix**: Default with Redis cache
+- **Mattermost**: Default configuration with webhook integration
 - **PostgreSQL**: 512MB shared_buffers, 200 max_connections
 - **Redis instances**: 256-512MB per instance
 

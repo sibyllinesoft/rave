@@ -1,5 +1,5 @@
 """
-Adaptive Rate Limiter for Matrix Bridge
+Adaptive Rate Limiter for Chat Control
 Implements sophisticated rate limiting with adaptive thresholds.
 
 Security Features:

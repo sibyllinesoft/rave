@@ -4,12 +4,12 @@
 keys:
   # Team age public keys for secret access
   # Replace with actual team member public keys
-  - &team_key_1 age1zt6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z7z6z  # Team Lead Key
-  - &team_key_2 age1ab2cd3ef4gh5ij6kl7mn8op9qr0st1uv2wx3yz4ab5cd6ef7gh8ij9kl  # DevOps Key
-  - &team_key_3 age1qr0st1uv2wx3yz4ab5cd6ef7gh8ij9kl0mn1op2qr3st4uv5wx6yz7ab  # Security Key
+  - &team_key_1 age1pnd2ym48q79gxt0qdxapyz3e3uj8vn4ddlyy5tctwgejdfytsymsj20z2e  # Team Lead Key (generated 2024-11-24)
+  # - &team_key_2 age1exampleexampleexampleexampleexampleexampleexampleexample  # DevOps Key
+  # - &team_key_3 age1exampleexampleexampleexampleexampleexampleexampleexample  # Security Key
   
   # Production deployment key (generated on production server)
-  - &prod_key age1mn8op9qr0st1uv2wx3yz4ab5cd6ef7gh8ij9kl0mn1op2qr3st4uv5wx
+  # - &prod_key age1exampleexampleexampleexampleexampleexampleexampleexample
 
 creation_rules:
   # Main secrets file - accessible by all team keys and production
@@ -17,30 +17,30 @@ creation_rules:
     key_groups:
     - age:
       - *team_key_1
-      - *team_key_2
-      - *team_key_3
-      - *prod_key
+      # - *team_key_2
+      # - *team_key_3
+      # - *prod_key
     
   # Environment-specific secret files (if created later)
   - path_regex: secrets-dev\.yaml$
     key_groups:
     - age:
       - *team_key_1
-      - *team_key_2
+      # - *team_key_2
       
   - path_regex: secrets-staging\.yaml$
     key_groups:
     - age:
       - *team_key_1
-      - *team_key_2
-      - *team_key_3
+      # - *team_key_2
+      # - *team_key_3
       
   - path_regex: secrets-prod\.yaml$
     key_groups:
     - age:
       - *team_key_1
-      - *team_key_3
-      - *prod_key
+      # - *team_key_3
+      # - *prod_key
 
 # SETUP INSTRUCTIONS:
 # 

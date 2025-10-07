@@ -1,5 +1,5 @@
 """
-Security Audit Logging for Matrix Bridge
+Security Audit Logging for Chat Control
 Implements comprehensive audit logging with tamper-resistant storage.
 
 Security Features:
@@ -84,7 +84,7 @@ class SecurityAuditLogger:
     
     def __init__(
         self,
-        log_file: str = "/var/log/matrix-bridge/audit.log",
+        log_file: str = "/var/log/mattermost-bridge/audit.log",
         hmac_key: Optional[str] = None,
         max_file_size: int = 100 * 1024 * 1024,  # 100MB
         backup_count: int = 10,

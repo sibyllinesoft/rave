@@ -1,13 +1,15 @@
-"""
-User Manager - Handles GitLab OAuth user management within VMs
-"""
+"""User Manager - Handles GitLab OAuth user management within VMs."""
 
+import copy
 import json
+import re
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from vm_manager import VMManager
 
 
 class UserManager:
@@ -52,56 +54,180 @@ class UserManager:
         
         # Build SSH command to execute GitLab rails command
         ports = config["ports"]
+        ruby_script = "\n".join(command)
+
         ssh_cmd = [
             "ssh", "-i", config["keypair"], "-o", "StrictHostKeyChecking=no",
             "-p", str(ports["ssh"]), "root@localhost",
-            "gitlab-rails", "runner"
-        ] + command
-        
+            "gitlab-rails", "runner", "-"
+        ]
+
         try:
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                ssh_cmd,
+                input=ruby_script,
+                capture_output=True,
+                text=True,
+                check=True
+            )
             return {"success": True, "output": result.stdout}
         except subprocess.CalledProcessError as e:
             return {"success": False, "error": f"GitLab command failed: {e.stderr}"}
     
-    def add_user(self, email: str, oauth_id: str, access: str, company: Optional[str] = None) -> Dict[str, any]:
-        """Add a new user via GitLab OAuth."""
-        users_data = self._load_users()
-        
-        # Check if user already exists
-        if self._find_user(users_data, email):
-            return {"success": False, "error": f"User {email} already exists"}
-        
-        # Validate access level
+    def add_user(
+        self,
+        email: str,
+        oauth_id: str,
+        access: str,
+        company: Optional[str] = None,
+        *,
+        name: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        update_existing: bool = False,
+    ) -> Dict[str, any]:
+        """Add or update a GitLab OAuth user."""
+
+        access_level = access.lower()
         valid_access = ["admin", "developer", "guest"]
-        if access not in valid_access:
-            return {"success": False, "error": f"Invalid access level. Use: {', '.join(valid_access)}"}
-        
-        # Create user object
-        user = {
-            "email": email,
-            "oauth_id": oauth_id,
-            "access": access,
-            "company": company,
-            "created_at": time.time()
-        }
-        
-        # If company is specified, try to add user to GitLab in that VM
-        if company:
-            # GitLab Rails command to create user
-            gitlab_cmd = [
-                f"user = User.create!(email: '{email}', name: '{email.split('@')[0]}', username: '{email.split('@')[0]}', external: true, provider: 'oauth2_generic', extern_uid: '{oauth_id}')"
+        if access_level not in valid_access:
+            return {
+                "success": False,
+                "error": f"Invalid access level. Use: {', '.join(valid_access)}",
+            }
+
+        users_data = self._load_users()
+        existing_user = self._find_user(users_data, email)
+        is_update = existing_user is not None
+
+        if is_update and not update_existing:
+            return {"success": False, "error": f"User {email} already exists"}
+
+        now = time.time()
+        incoming_oauth = (oauth_id or "").strip() or email.split("@")[0]
+
+        if is_update and existing_user.get("oauth_id") and existing_user["oauth_id"] != incoming_oauth:
+            return {
+                "success": False,
+                "error": (
+                    f"OAuth ID mismatch for {email}: existing {existing_user['oauth_id']}, "
+                    f"incoming {incoming_oauth}"
+                ),
+            }
+
+        if is_update:
+            user_record = copy.deepcopy(existing_user)
+        else:
+            user_record = {
+                "email": email,
+                "created_at": now,
+            }
+
+        user_record["oauth_id"] = existing_user.get("oauth_id") if is_update and existing_user.get("oauth_id") else incoming_oauth
+        user_record["access"] = access_level
+        user_record.setdefault("created_at", now)
+        user_record["updated_at"] = now
+
+        if company is not None:
+            user_record["company"] = company
+
+        if name is not None:
+            display_name = name.strip()
+            if display_name:
+                user_record["name"] = display_name
+            else:
+                user_record.pop("name", None)
+
+        if metadata is not None:
+            filtered_metadata = {
+                str(k): str(v)
+                for k, v in metadata.items()
+                if v is not None and str(v).strip()
+            }
+            if filtered_metadata:
+                user_record["metadata"] = filtered_metadata
+            else:
+                user_record.pop("metadata", None)
+
+        vm_company = company if company is not None else user_record.get("company")
+        if vm_company:
+            username_base = email.split("@")[0]
+            username_base = re.sub(r"[^a-zA-Z0-9_]", "-", username_base)
+            if not username_base:
+                username_base = "user"
+
+            display_name_literal = (
+                json.dumps(user_record.get("name"))
+                if user_record.get("name")
+                else "nil"
+            )
+
+            script_lines = [
+                "require 'securerandom'",
+                "",
+                f"email = {json.dumps(email)}",
+                f"oauth_id = {json.dumps(user_record['oauth_id'])}",
+                f"username_base = {json.dumps(username_base)}",
+                "username = username_base",
+                "suffix = 0",
+                "while User.exists?(username: username)",
+                "  suffix += 1",
+                "  username = \"#{username_base}-#{suffix}\"",
+                "end",
+                f"display_name = {display_name_literal}",
+                "",
+                "password = SecureRandom.hex(20)",
+                "user = User.find_by(email: email)",
+                "",
+                "if user",
+                "  user.external = true",
+                "  user.name = display_name if display_name && !display_name.empty?",
+                "  if user.encrypted_password.blank?",
+                "    user.password = password",
+                "    user.password_confirmation = password",
+                "  end",
+                "  user.skip_confirmation! if user.respond_to?(:skip_confirmation!)",
+                "  user.build_namespace(path: username, name: username) unless user.namespace",
+                "  user.save!",
+                "else",
+                "  user = User.new(",
+                "    email: email,",
+                "    name: display_name || username,",
+                "    username: username,",
+                "    external: true,",
+                "    password: password,",
+                "    password_confirmation: password",
+                "  )",
+                "  user.skip_confirmation! if user.respond_to?(:skip_confirmation!)",
+                "  user.build_namespace(path: username, name: username)",
+                "  user.save!",
+                "end",
+                "",
+                "identity = user.identities.find_or_initialize_by(provider: 'oauth2_generic')",
+                "identity.extern_uid = oauth_id",
+                "identity.save!",
+                "",
+                "puts user.id",
             ]
-            
-            result = self._execute_gitlab_command(company, gitlab_cmd)
+
+            gitlab_cmd = ["\n".join(script_lines)]
+            result = self._execute_gitlab_command(vm_company, gitlab_cmd)
             if not result["success"]:
                 return result
-        
-        # Add to local user database
-        users_data["users"].append(user)
+
+        if is_update:
+            existing_user.clear()
+            existing_user.update(user_record)
+        else:
+            users_data["users"].append(user_record)
+
         self._save_users(users_data)
-        
-        return {"success": True, "user": user}
+
+        payload = {"success": True, "user": user_record.copy()}
+        if is_update:
+            payload["updated"] = True
+        else:
+            payload["created"] = True
+        return payload
     
     def remove_user(self, email: str) -> Dict[str, any]:
         """Remove a user."""
@@ -185,14 +311,34 @@ class UserManager:
 
     # Enhanced user management features
     
-    def bulk_add_users(self, users_file: str, company: Optional[str] = None) -> Dict[str, any]:
+    def bulk_add_users(
+        self,
+        users_file: str,
+        company: Optional[str] = None,
+        default_metadata: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, any]:
         """Add multiple users from CSV/JSON file."""
         file_path = Path(users_file).expanduser()
         if not file_path.exists():
             return {"success": False, "error": f"File not found: {file_path}"}
         
-        results = {"success": True, "added": [], "failed": [], "skipped": []}
-        
+        added_users: List[Dict[str, any]] = []
+        updated_users: List[Dict[str, any]] = []
+        failed_users: List[Dict[str, any]] = []
+        skipped_users: List[Dict[str, any]] = []
+
+        def _clean_metadata(meta: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+            if not meta:
+                return None
+            cleaned = {
+                str(k): str(v)
+                for k, v in meta.items()
+                if v is not None and str(v).strip()
+            }
+            return cleaned or None
+
+        default_meta_clean = _clean_metadata(default_metadata)
+
         try:
             if file_path.suffix.lower() == '.json':
                 import_data = json.loads(file_path.read_text())
@@ -203,44 +349,103 @@ class UserManager:
                 with open(file_path, 'r') as csvfile:
                     reader = csv.DictReader(csvfile)
                     for row in reader:
+                        base_fields = {"email", "oauth_id", "access", "name"}
+                        metadata = {
+                            key: value
+                            for key, value in row.items()
+                            if key not in base_fields and value is not None and value.strip()
+                        }
                         users_to_add.append({
                             "email": row.get("email", "").strip(),
                             "oauth_id": row.get("oauth_id", row.get("email", "").split("@")[0]),
                             "access": row.get("access", "developer").lower(),
-                            "name": row.get("name", "")
+                            "name": row.get("name", "").strip(),
+                            "metadata": metadata
                         })
             else:
                 return {"success": False, "error": "Unsupported file format. Use .json or .csv"}
             
             for user_data in users_to_add:
-                email = user_data.get("email")
+                email = (user_data.get("email") or "").strip()
                 if not email:
-                    results["failed"].append({"error": "Missing email", "data": user_data})
+                    failed_users.append({"error": "Missing email", "data": user_data})
                     continue
-                
-                # Check if user already exists
-                existing_user = self._find_user(self._load_users(), email)
-                if existing_user:
-                    results["skipped"].append({"email": email, "reason": "User already exists"})
-                    continue
-                
-                # Add user
+
+                oauth_value = (user_data.get("oauth_id") or email.split("@")[0]).strip()
+                access_value = (user_data.get("access") or "developer").lower()
+
+                raw_name = user_data.get("name")
+                if isinstance(raw_name, str):
+                    cleaned_name = raw_name.strip()
+                    name_value: Optional[str] = cleaned_name or None
+                elif raw_name is None:
+                    name_value = None
+                else:
+                    name_value = str(raw_name).strip() or None
+
+                metadata_value = user_data.get("metadata")
+                if isinstance(metadata_value, dict):
+                    metadata_value = _clean_metadata(metadata_value)
+                elif metadata_value is None:
+                    base_fields = {"email", "oauth_id", "access", "name", "metadata", "company"}
+                    inferred = {
+                        key: value
+                        for key, value in user_data.items()
+                        if key not in base_fields and value is not None and str(value).strip()
+                    }
+                    metadata_value = _clean_metadata(inferred)
+                else:
+                    metadata_value = None
+
+                combined_metadata = None
+                if default_meta_clean:
+                    combined_metadata = dict(default_meta_clean)
+                if metadata_value:
+                    combined_metadata = combined_metadata or {}
+                    combined_metadata.update(metadata_value)
+
+                row_company = user_data.get("company")
+                if isinstance(row_company, str):
+                    row_company = row_company.strip() or None
+                elif row_company is not None:
+                    row_company = str(row_company).strip() or None
+
+                target_company = company or row_company
+
                 add_result = self.add_user(
                     email=email,
-                    oauth_id=user_data.get("oauth_id", email.split("@")[0]),
-                    access=user_data.get("access", "developer"),
-                    company=company
+                    oauth_id=oauth_value,
+                    access=access_value,
+                    company=target_company,
+                    name=name_value,
+                    metadata=combined_metadata,
+                    update_existing=True,
                 )
                 
                 if add_result["success"]:
-                    results["added"].append(add_result["user"])
+                    if add_result.get("updated"):
+                        updated_users.append(add_result["user"])
+                    else:
+                        added_users.append(add_result["user"])
                 else:
-                    results["failed"].append({"email": email, "error": add_result["error"]})
+                    failed_users.append({"email": email, "error": add_result["error"]})
                     
         except Exception as e:
             return {"success": False, "error": f"Failed to process file: {e}"}
         
-        return results
+        return {
+            "success": True,
+            "added": len(added_users),
+            "updated": len(updated_users),
+            "failed": len(failed_users),
+            "skipped": len(skipped_users),
+            "details": {
+                "added": added_users,
+                "updated": updated_users,
+                "failed": failed_users,
+                "skipped": skipped_users,
+            },
+        }
     
     def get_user_activity(self, email: str, company: str) -> Dict[str, any]:
         """Get user activity from GitLab."""
@@ -396,13 +601,14 @@ class UserManager:
         gitlab_cmd = [
             """
             users = User.all.map do |user|
+              identity = user.identities.find_by(provider: 'oauth2_generic')
               {
                 id: user.id,
                 email: user.email,
                 name: user.name,
                 username: user.username,
-                provider: user.provider,
-                extern_uid: user.extern_uid,
+                provider: identity&.provider,
+                extern_uid: identity&.extern_uid,
                 created_at: user.created_at&.iso8601,
                 last_sign_in_at: user.last_sign_in_at&.iso8601,
                 admin: user.admin?,
@@ -488,7 +694,3 @@ class UserManager:
             
         except Exception as e:
             return {"success": False, "error": f"Failed to export users: {e}"}
-
-
-# Import after class definition to avoid circular import
-from vm_manager import VMManager

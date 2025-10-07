@@ -4,8 +4,8 @@ Handles differences between macOS, Linux, and potentially Windows
 """
 import os
 import platform
-import subprocess
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -86,6 +86,14 @@ class PlatformManager:
             else:
                 missing.append("qemu-system-x86_64")
         
+        # Check secrets tooling
+        if not shutil.which("sops"):
+            missing.append("sops (https://github.com/getsops/sops/releases)")
+
+        age_present = shutil.which("age") or shutil.which("age-keygen")
+        if not age_present:
+            missing.append("age / age-keygen (https://github.com/FiloSottile/age/releases)")
+
         # Check virtualization support
         if self.is_macos():
             # Check if HVF is available
@@ -116,6 +124,70 @@ class PlatformManager:
             "missing": missing,
             "warnings": warnings
         }
+
+    # TLS / mkcert helpers -------------------------------------------------
+
+    def ensure_mkcert_installed(self) -> Dict[str, any]:
+        """Ensure mkcert is available on the host, installing it if possible."""
+
+        if shutil.which("mkcert"):
+            return {"success": True, "installed": False}
+
+        install_steps: List[List[str]] = []
+
+        if self.is_macos() and shutil.which("brew"):
+            install_steps.append(["brew", "install", "mkcert", "nss"])
+        elif self.is_linux():
+            if shutil.which("apt-get"):
+                install_steps.append(["sudo", "apt-get", "update"])
+                install_steps.append(["sudo", "apt-get", "install", "-y", "mkcert", "libnss3-tools"])
+            elif shutil.which("dnf"):
+                install_steps.append(["sudo", "dnf", "install", "-y", "mkcert", "nss-tools"])
+            elif shutil.which("pacman"):
+                install_steps.append(["sudo", "pacman", "-Sy", "mkcert", "nss"])
+
+        if not install_steps:
+            return {
+                "success": False,
+                "error": "mkcert not found and automatic installation is unavailable",
+                "hint": "Install mkcert manually (see https://github.com/FiloSottile/mkcert) and rerun."
+            }
+
+        for step in install_steps:
+            try:
+                result = subprocess.run(step, check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as exc:
+                stderr = exc.stderr.strip() if exc.stderr else "unknown error"
+                return {
+                    "success": False,
+                    "error": f"Failed to run '{' '.join(step)}': {stderr}"
+                }
+
+        if shutil.which("mkcert"):
+            return {"success": True, "installed": True}
+
+        return {
+            "success": False,
+            "error": "mkcert installation attempted but the binary is still missing."
+        }
+
+    def mkcert_caroot(self) -> Optional[Path]:
+        """Return the mkcert CA root directory if available."""
+
+        if not shutil.which("mkcert"):
+            return None
+
+        try:
+            result = subprocess.run(
+                ["mkcert", "-CAROOT"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError:
+            return None
+
+        return Path(result.stdout.strip())
     
     def get_vm_start_command(self, image_path: str, memory_gb: int = 4,
                              port_forwards: List[Tuple[int, int]] = None) -> Tuple[List[str], Optional[Dict[str, str]]]:

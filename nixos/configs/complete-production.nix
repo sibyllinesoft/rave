@@ -8,11 +8,16 @@
     ../modules/foundation/base.nix
     ../modules/foundation/networking.nix
     ../modules/foundation/nix-config.nix
-    
+
     # Security modules
     # ../modules/security/certificates.nix  # DISABLED: Using inline certificate generation instead
     ../modules/security/hardening.nix
   ];
+
+  sops = {
+    defaultSopsFile = ../../config/secrets.yaml;
+    age.keyFile = "/var/lib/sops-nix/key.txt";
+  };
 
   # ===== SYSTEM FOUNDATION =====
   
@@ -60,12 +65,11 @@
     package = pkgs.postgresql_15;
     
     # Pre-create ALL required databases and users
-    ensureDatabases = [ "gitlab" "grafana" "penpot" ]; # matrix_synapse disabled
+    ensureDatabases = [ "gitlab" "grafana" "penpot" ];
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
       { name = "grafana"; ensureDBOwnership = true; }
       { name = "penpot"; ensureDBOwnership = true; }
-      # { name = "matrix_synapse"; ensureDBOwnership = true; } # disabled
     ];
     
     # Optimized settings for VM environment
@@ -101,9 +105,6 @@
 
       -- Penpot database setup  
       GRANT ALL PRIVILEGES ON DATABASE penpot TO penpot;
-      
-      -- Matrix database setup
-      -- GRANT ALL PRIVILEGES ON DATABASE matrix_synapse TO matrix_synapse; -- disabled
     '';
   };
 
@@ -263,6 +264,11 @@
     };
   };
 
+  systemd.services.gitlab.environment = {
+    RAILS_RELATIVE_URL_ROOT = "/gitlab";
+    GITLAB_RELATIVE_URL_ROOT = "/gitlab";
+  };
+
   # ===== GRAFANA SERVICE =====
 
   services.grafana = {
@@ -271,7 +277,7 @@
       server = {
         http_port = 3000;
         domain = "localhost";  # Changed from rave.local to localhost  
-        root_url = "https://localhost:8443/grafana/";
+        root_url = "https://localhost:8221/grafana/";
         serve_from_sub_path = true;
       };
 
@@ -321,13 +327,53 @@
     };
   };
 
-  # ===== MATRIX SYNAPSE =====
-  # Disabled pending configuration fix for NixOS 24.11
-  
-  # services.matrix-synapse = {
-  #   enable = false;
-  #   # ... configuration commented out for now
-  # };
+  # ===== MATTERMOST CHAT =====
+
+  services.mattermost = {
+    enable = true;
+    siteUrl = "https://chat.localtest.me:8221";
+    siteName = "RAVE Mattermost";
+    # Use Mattermost defaults for data and log directories
+
+    environmentFile = config.sops.secrets."mattermost/env".path;
+
+  };
+
+  sops.secrets."mattermost/env" = {
+    owner = "mattermost";
+    group = "mattermost";
+    mode = "0600";
+  };
+
+  sops.secrets."mattermost/admin-username" = {
+    owner = "root";
+    group = "root";
+    mode = "0400";
+  };
+
+  sops.secrets."mattermost/admin-email" = {
+    owner = "root";
+    group = "root";
+    mode = "0400";
+  };
+
+  sops.secrets."mattermost/admin-password" = {
+    owner = "root";
+    group = "root";
+    mode = "0400";
+  };
+
+  sops.secrets."oidc/chat-control-client-secret" = {
+    owner = "root";
+    group = "root";
+    mode = "0400";
+  };
+
+  sops.secrets."gitlab/api-token" = {
+    owner = "root";
+    group = "root";
+    mode = "0400";
+  };
 
   # ===== NGINX CONFIGURATION =====
 
@@ -338,8 +384,9 @@
     clientMaxBodySize = "10G";
     recommendedGzipSettings = true;
     recommendedOptimisation = true;
-    recommendedProxySettings = true;
+    recommendedProxySettings = false;
     recommendedTlsSettings = true;
+    logError = "/var/log/nginx/error.log debug";
     
     # Status page for monitoring
     statusPage = true;
@@ -394,31 +441,31 @@
                       <a href="/gitlab/" class="service-card">
                           <div class="service-title">🦊 GitLab</div>
                           <div class="service-desc">Git repository management and CI/CD</div>
-                          <div class="service-url">https://localhost:8443/gitlab/</div>
+                          <div class="service-url">https://localhost:8221/gitlab/</div>
                           <span class="status active">Active</span>
                       </a>
                       <a href="/grafana/" class="service-card">
                           <div class="service-title">📊 Grafana</div>
                           <div class="service-desc">Monitoring dashboards and analytics</div>
-                          <div class="service-url">https://localhost:8443/grafana/</div>
+                          <div class="service-url">https://localhost:8221/grafana/</div>
                           <span class="status active">Active</span>
                       </a>
-                      <a href="/matrix/" class="service-card">
-                          <div class="service-title">💬 Matrix Synapse</div>
-                          <div class="service-desc">Secure communications server</div>
-                          <div class="service-url">https://localhost:8443/matrix/</div>
+                      <a href="/mattermost/" class="service-card">
+                          <div class="service-title">💬 Mattermost</div>
+                          <div class="service-desc">Secure team chat and agent control</div>
+                          <div class="service-url">https://chat.localtest.me:8221/</div>
                           <span class="status active">Active</span>
                       </a>
                       <a href="/prometheus/" class="service-card">
                           <div class="service-title">🔍 Prometheus</div>
                           <div class="service-desc">Metrics collection and monitoring</div>
-                          <div class="service-url">https://localhost:8443/prometheus/</div>
+                          <div class="service-url">https://localhost:8221/prometheus/</div>
                           <span class="status active">Active</span>
                       </a>
                       <a href="/nats/" class="service-card">
                           <div class="service-title">⚡ NATS JetStream</div>
                           <div class="service-desc">High-performance messaging system</div>
-                          <div class="service-url">https://localhost:8443/nats/</div>
+                          <div class="service-url">https://localhost:8221/nats/</div>
                           <span class="status active">Active</span>
                       </a>
                   </div>
@@ -430,25 +477,77 @@
       
       # GitLab reverse proxy
       locations."/gitlab/" = {
-        proxyPass = "http://127.0.0.1:8080/gitlab/";
+        proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
         proxyWebsockets = true;
         extraConfig = ''
           proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
           proxy_set_header X-Forwarded-Ssl on;
-          
+
           # GitLab specific headers
           proxy_set_header Upgrade $http_upgrade;
           proxy_set_header Connection $connection_upgrade;
           proxy_cache_bypass $http_upgrade;
-          
+
+          # Preserve sub-path context for relative_url_root
+          proxy_set_header X-Script-Name /gitlab;
+          proxy_set_header X-Forwarded-Script-Name /gitlab;
+          proxy_set_header X-Forwarded-Prefix /gitlab;
+          proxy_set_header X-Forwarded-Port 443;
+
           # File upload support
           client_max_body_size 10G;
           proxy_connect_timeout 300s;
           proxy_send_timeout 300s;
           proxy_read_timeout 300s;
+        '';
+      };
+
+      # GitLab static assets (CSS, JS, images)
+      locations."~ ^/gitlab/assets/(.*)$" = {
+        alias = "${config.services.gitlab.packages.gitlab}/share/gitlab/public/assets/$1";
+        extraConfig = ''
+          expires 1y;
+        '';
+      };
+
+      # GitLab uploads and user content
+      locations."~ ^/gitlab/(uploads|files)/" = {
+        proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+        extraConfig = ''
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Ssl on;
+          proxy_set_header X-Script-Name /gitlab;
+          proxy_set_header X-Forwarded-Script-Name /gitlab;
+          proxy_set_header X-Forwarded-Prefix /gitlab;
+          proxy_set_header X-Forwarded-Port 443;
+        '';
+      };
+
+      # GitLab CI/CD artifacts and LFS - from P3 config
+      locations."~ ^/gitlab/.*/-/(artifacts|archive|raw)/" = {
+        proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+        extraConfig = ''
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Ssl on;
+          proxy_set_header X-Script-Name /gitlab;
+          proxy_set_header X-Forwarded-Script-Name /gitlab;
+          proxy_set_header X-Forwarded-Prefix /gitlab;
+          proxy_set_header X-Forwarded-Port 443;
+
+          client_max_body_size 10G;
+          proxy_request_buffering off;
         '';
       };
       
@@ -461,30 +560,6 @@
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
-        '';
-      };
-      
-      # Matrix Synapse reverse proxy
-      locations."/matrix/" = {
-        proxyPass = "http://127.0.0.1:8008/";
-        extraConfig = ''
-          proxy_set_header Host $host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-        '';
-      };
-      
-      # Matrix client well-known
-      locations."/.well-known/matrix/client" = {
-        return = "200 '{\"m.homeserver\":{\"base_url\":\"https://localhost:8443/matrix/\"}}'";
-        extraConfig = ''
-          add_header Content-Type application/json;
-          add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-          add_header X-Content-Type-Options "nosniff" always;
-          add_header X-Frame-Options "DENY" always;  
-          add_header X-XSS-Protection "1; mode=block" always;
-          add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         '';
       };
       
@@ -517,6 +592,7 @@
         add_header X-Frame-Options "DENY" always;  
         add_header X-XSS-Protection "1; mode=block" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        absolute_redirect off;
       '';
     };
     
@@ -526,6 +602,91 @@
       locations."/" = {
         return = "301 https://localhost$request_uri";
       };
+    };
+
+    virtualHosts."chat.localtest.me" = {
+      forceSSL = false;
+      enableACME = false;
+      listen = [ { addr = "0.0.0.0"; port = 443; ssl = true; } ];
+      http2 = true;
+      sslCertificate = "/var/lib/acme/localhost/cert.pem";
+      sslCertificateKey = "/var/lib/acme/localhost/key.pem";
+      extraConfig = ''
+        ssl_certificate /var/lib/acme/localhost/cert.pem;
+        ssl_certificate_key /var/lib/acme/localhost/key.pem;
+      '';
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:8065";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Host $http_host;
+          proxy_set_header X-Forwarded-Ssl on;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          client_max_body_size 100M;
+          proxy_redirect off;
+        '';
+      };
+    };
+
+    virtualHosts."chat.localtest.me-http" = {
+      listen = [ { addr = "0.0.0.0"; port = 80; } ];
+      serverName = "chat.localtest.me";
+      locations."/" = {
+        return = "301 https://chat.localtest.me$request_uri";
+      };
+    };
+  };
+
+  # Ensure GitLab is started after the database configuration completes.
+  systemd.services."gitlab-db-config".unitConfig.OnSuccess = [ "gitlab-autostart.service" ];
+
+  systemd.services."gitlab-autostart" = {
+    description = "Ensure GitLab starts after database configuration";
+    wantedBy = [ "multi-user.target" ];
+    after = [
+      "postgresql.service"
+      "redis-main.service"
+      "gitlab-config.service"
+      "gitlab-db-config.service"
+    ];
+    wants = [ "gitlab-db-config.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = pkgs.writeShellScript "gitlab-autostart.sh" ''
+        set -euo pipefail
+
+        systemctl_bin='${lib.getExe' pkgs.systemd "systemctl"}'
+        attempts=0
+        max_attempts=12
+
+        # Wait (with retries) for gitlab-db-config to report active.
+        while ! "$systemctl_bin" is-active --quiet gitlab-db-config.service; do
+          if (( attempts >= max_attempts )); then
+            echo "gitlab-db-config.service did not become active" >&2
+            exit 1
+          fi
+
+          # If the config unit is in failed state, reset it so systemd can retry.
+          if "$systemctl_bin" is-failed --quiet gitlab-db-config.service; then
+            "$systemctl_bin" reset-failed gitlab-db-config.service || true
+            "$systemctl_bin" start gitlab-db-config.service || true
+          fi
+
+          attempts=$(( attempts + 1 ))
+          sleep $(( 5 * attempts ))
+        done
+
+        "$systemctl_bin" reset-failed gitlab.service || true
+        "$systemctl_bin" start gitlab.service
+      '';
+      Restart = "on-failure";
+      RestartSec = 30;
     };
   };
 
@@ -583,13 +744,14 @@ OU = Dev
 CN = localhost
 
 [v3_req]
-keyUsage = keyEncipherment, dataEncipherment
+keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 
 [alt_names]
 DNS.1 = localhost
 DNS.2 = rave.local
+DNS.3 = chat.localtest.me
 IP.1 = 127.0.0.1
 IP.2 = ::1
 EOF
@@ -657,7 +819,7 @@ EOF
       8443  # HTTPS (alternate)
       8080  # GitLab internal
       3000  # Grafana internal
-      8008  # Matrix internal
+      8065  # Mattermost internal
       9090  # Prometheus internal
       8222  # NATS monitoring
       4222  # NATS
@@ -675,7 +837,6 @@ EOF
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER gitlab PASSWORD 'gitlab-production-password';" || true
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER grafana PASSWORD 'grafana-production-password';" || true  
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER penpot PASSWORD 'penpot-production-password';" || true
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER matrix_synapse PASSWORD 'matrix-production-password';" || true
       
       # Grant additional permissions
       ${pkgs.postgresql}/bin/psql -U postgres -c "GRANT CONNECT ON DATABASE postgres TO grafana;" || true
@@ -690,16 +851,12 @@ EOF
     grafana.after = [ "postgresql.service" "generate-localhost-certs.service" ];
     grafana.requires = [ "postgresql.service" ];
     
-    # Matrix disabled
-    # matrix-synapse.after = [ "postgresql.service" "redis-matrix.service" "generate-localhost-certs.service" ];
-    # matrix-synapse.requires = [ "postgresql.service" "redis-matrix.service" ];
-    
     # nginx depends on certificates and all backend services
     nginx.after = [ 
       "generate-localhost-certs.service" 
       "gitlab.service"
       "grafana.service" 
-      # "matrix-synapse.service" # disabled
+      "mattermost.service"
       "prometheus.service"
       "nats.service"
     ];
@@ -724,20 +881,20 @@ echo "🚀 RAVE Complete Production Environment"
 echo "====================================="
 echo ""
 echo "✅ All Services Ready:"
-echo "   🦊 GitLab:      https://localhost:8443/gitlab/"
-echo "   📊 Grafana:     https://localhost:8443/grafana/"  
-echo "   💬 Matrix:      https://localhost:8443/matrix/"
-echo "   🔍 Prometheus:  https://localhost:8443/prometheus/"
-echo "   ⚡ NATS:        https://localhost:8443/nats/"
+echo "   🦊 GitLab:      https://localhost:8221/gitlab/"
+echo "   📊 Grafana:     https://localhost:8221/grafana/"  
+echo "   💬 Mattermost:  https://chat.localtest.me:8221/"
+echo "   🔍 Prometheus:  https://localhost:8221/prometheus/"
+echo "   ⚡ NATS:        https://localhost:8221/nats/"
 echo ""
 echo "🔑 Default Credentials:"
 echo "   GitLab root:    admin123456"
 echo "   Grafana:        admin/admin123"
 echo ""
 echo "🔧 Service Status:"
-systemctl status postgresql redis-main nats prometheus grafana gitlab nginx --no-pager -l
+systemctl status postgresql redis-main nats prometheus grafana gitlab mattermost rave-chat-bridge nginx --no-pager -l
 echo ""
-echo "🌐 Dashboard: https://localhost:8443/"
+echo "🌐 Dashboard: https://localhost:8221/"
 echo ""
 EOF
       chmod +x /root/welcome.sh

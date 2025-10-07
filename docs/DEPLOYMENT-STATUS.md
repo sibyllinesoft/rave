@@ -1,5 +1,7 @@
 # GitLab 18.3.0 & Matrix/Element Deployment Status
 
+> **Note**: Matrix/Element has been superseded by the Mattermost-based chat control stack. This document is retained for historical reference.
+
 ## ✅ COMPLETED TASKS
 
 ### Task 1: GitLab Upgrade to 18.3.0 ✅

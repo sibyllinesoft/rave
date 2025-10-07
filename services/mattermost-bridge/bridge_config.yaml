@@ -1,0 +1,28 @@
+# Mattermost bridge configuration template
+# Replace placeholder values with real secrets during deployment.
+
+gitlab_url: "https://rave.local/gitlab"
+oidc_client_id: "chat-control"
+oidc_client_secret: "${OIDC_CLIENT_SECRET}"
+gitlab_api_token: "${GITLAB_API_TOKEN}"
+
+mattermost_url: "https://rave.local/mattermost"
+outgoing_token: "${MATTERMOST_OUTGOING_TOKEN}"
+bot_access_token: "${MATTERMOST_BOT_TOKEN}"
+
+allowed_groups:
+  - "rave-agent-admins"
+allowed_agent_services:
+  - "backend-architect"
+  - "frontend-developer"
+  - "test-writer-fixer"
+  - "ui-designer"
+  - "devops-automator"
+  - "api-tester"
+
+rate_limit_rpm: 30
+rate_limit_burst: 5
+audit_log_file: "/var/log/mattermost-bridge/audit.log"
+
+host: "127.0.0.1"
+port: 9100

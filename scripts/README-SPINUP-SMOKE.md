@@ -15,9 +15,9 @@ The primary hermetic validation script that orchestrates all testing phases:
 - **Phase 1**: Configuration Validation (Nix flake, P6 config, secrets management)
 - **Phase 2**: VM Build Validation (P6 production image build and integrity)
 - **Phase 3**: VM Boot Validation (NixOS VM integration tests)
-- **Phase 4**: Service Health Validation (PostgreSQL, GitLab, Matrix, Grafana)
-- **Phase 5**: OIDC Authentication Validation (GitLab ↔ Matrix ↔ Grafana)
-- **Phase 6**: Agent Control Validation (Matrix bridge functionality)
+- **Phase 4**: Service Health Validation (PostgreSQL, GitLab, Mattermost, Grafana)
+- **Phase 5**: OIDC Authentication Validation (GitLab ↔ Mattermost ↔ Grafana)
+- **Phase 6**: Agent Control Validation (Mattermost bridge functionality)
 - **Phase 7**: Sandbox Provisioning Validation (VM provisioning workflow)
 - **Phase 8**: End-to-End Workflow Validation (Hello World project flow)
 - **Phase 9**: Performance and Resource Validation (SAFE mode constraints)
@@ -40,14 +40,14 @@ Individual service health validation scripts:
 - Storage and permissions
 - OIDC configuration validation
 
-#### `check_matrix.sh`
-- Matrix Synapse service status
+#### `check_mattermost.sh`
+- Mattermost service status
 - Configuration file validation
 - Database connectivity
 - HTTP endpoint validation
 - Client API functionality
-- Element web client validation
-- Matrix bridge configuration
+- Mattermost web client validation
+- Mattermost bridge configuration
 - Federation security (should be disabled)
 - Media repository health
 - OIDC integration validation
@@ -56,7 +56,7 @@ Individual service health validation scripts:
 - PostgreSQL service status
 - Version and configuration validation
 - Process and resource monitoring
-- RAVE-specific database checks (GitLab, Synapse, Grafana)
+- RAVE-specific database checks (GitLab, Mattermost, Grafana)
 - User permissions validation
 - Performance metrics monitoring
 - Maintenance configuration
@@ -81,26 +81,26 @@ End-to-end workflow validation scripts:
 
 #### `hello_world_flow.sh`
 Complete autonomous development workflow simulation:
-1. Matrix command processing (`!rave create project hello-world`)
+1. Mattermost command processing (`!rave create project hello-world`)
 2. GitLab project creation
 3. Code structure generation
 4. Git repository operations
 5. Merge request creation
 6. CI/CD pipeline trigger
 7. Sandbox VM provisioning
-8. Matrix room notification
+8. Mattermost channel notification
 9. User sandbox testing
 10. Merge approval and cleanup
 
 #### `agent_control_test.sh`
-Matrix bridge and agent functionality testing:
-- Matrix bridge code validation
+Mattermost bridge and agent functionality testing:
+- Mattermost bridge code validation
 - Command parsing logic testing
 - Agent response generation
 - Bridge configuration validation
 - Security and permissions testing
 - PM agent integration
-- Matrix room management
+- Mattermost channel management
 - Error handling and recovery
 
 ### 4. Boot Transcript System
@@ -113,7 +113,7 @@ Comprehensive signed validation report including:
 - **Test Results**: All validation phases with pass/fail/warn status
 - **Service Health**: Detailed health status for all services
 - **Authentication Tests**: OIDC flow validation results
-- **Agent Control Tests**: Matrix bridge functionality validation
+- **Agent Control Tests**: Mattermost bridge functionality validation
 - **Sandbox Tests**: VM provisioning workflow validation
 - **Performance Metrics**: Resource usage and timing data
 - **Security Validation**: Comprehensive security posture assessment
@@ -151,7 +151,7 @@ export VALIDATION_TIMEOUT=2400
 ```bash
 # Run individual health checks
 ./scripts/health_checks/check_gitlab.sh
-./scripts/health_checks/check_matrix.sh
+./scripts/health_checks/check_mattermost.sh
 ./scripts/health_checks/check_database.sh
 ./scripts/health_checks/check_networking.sh
 
@@ -165,7 +165,7 @@ export VALIDATION_TIMEOUT=2400
 ### Success Criteria
 - ✅ All services healthy within 10 minutes of boot
 - ✅ OIDC authentication working end-to-end
-- ✅ Matrix commands successfully control agent services
+- ✅ Mattermost commands successfully control agent services
 - ✅ Sandbox VM provisioning completes within 20 minutes
 - ✅ Boot transcript properly signed and validated
 - ✅ Zero critical security or functionality issues
@@ -286,7 +286,7 @@ free -m
 **Service Health Failures**
 ```bash
 # Check systemd services
-systemctl status postgresql gitlab matrix-synapse
+systemctl status postgresql gitlab mattermost-synapse
 
 # Verify network connectivity
 ./scripts/health_checks/check_networking.sh
@@ -323,7 +323,7 @@ DEBUG=1 ./scripts/health_checks/check_gitlab.sh
 The validation system is specifically designed for the P6 production configuration, which includes:
 
 - GitLab CE with PostgreSQL backend
-- Matrix Synapse homeserver with Element client
+- Mattermost homeserver with Mattermost client
 - GitLab OIDC authentication integration
 - Automated sandbox VM provisioning
 - Grafana monitoring and observability

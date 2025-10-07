@@ -116,8 +116,7 @@ in
         extraDomainNames = [
           "*.${config.rave.certificates.domain}"
           "gitlab.${config.rave.certificates.domain}"
-          "matrix.${config.rave.certificates.domain}"
-          "element.${config.rave.certificates.domain}"
+          "mattermost.${config.rave.certificates.domain}"
           "grafana.${config.rave.certificates.domain}"
         ];
         

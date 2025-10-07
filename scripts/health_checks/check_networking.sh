@@ -13,7 +13,7 @@ INTERNAL_SERVICES=(
     "localhost:5432"    # PostgreSQL
     "localhost:3030"    # Grafana
     "localhost:9090"    # Prometheus
-    "localhost:8008"    # Matrix Synapse
+    "localhost:8065"    # Mattermost
 )
 
 # Colors

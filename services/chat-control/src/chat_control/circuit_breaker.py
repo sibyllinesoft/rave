@@ -1,5 +1,5 @@
 """
-Circuit Breaker Pattern Implementation for Matrix Bridge
+Circuit Breaker Pattern Implementation for Chat Control
 Provides resilience and fault tolerance for external dependencies.
 
 Security Features:

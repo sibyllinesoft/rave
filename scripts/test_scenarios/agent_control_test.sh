@@ -1,14 +1,14 @@
 #!/bin/bash
 # Agent Control Integration Test
-# Tests Matrix bridge functionality and agent command processing
+# Tests Mattermost bridge functionality and agent command processing
 
 set -euo pipefail
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
-BRIDGE_DIR="$PROJECT_DIR/services/matrix-bridge"
-MATRIX_BASE_URL="https://localhost:3002/matrix"
+BRIDGE_DIR="$PROJECT_DIR/services/mattermost-bridge"
+MATTERMOST_BASE_URL="https://localhost:8443/mattermost"
 TIMEOUT_SECONDS=30
 
 # Colors
@@ -54,18 +54,17 @@ agent_test_result() {
     [[ -n "$details" ]] && echo "   └─ $details"
 }
 
-# Test Matrix bridge code validation
+# Test Mattermost bridge code validation
 test_bridge_code_validation() {
-    log_test "Testing Matrix bridge code validation..."
+    log_test "Testing Mattermost bridge code validation..."
     
     if [[ -d "$BRIDGE_DIR" ]]; then
         # Check main bridge files
         local bridge_files=(
             "src/main.py"
-            "src/bridge.py" 
-            "src/commands.py"
+            "setup_baseline.sh"
+            "requirements.txt"
             "bridge_config.yaml"
-            "registration.yaml"
         )
         
         local missing_files=()
@@ -238,16 +237,16 @@ test_agent_response_generation() {
     fi
 }
 
-# Test Matrix bridge configuration
+# Test Mattermost bridge configuration
 test_bridge_configuration() {
-    log_test "Testing Matrix bridge configuration..."
+    log_test "Testing Mattermost bridge configuration..."
     
     if [[ -f "$BRIDGE_DIR/bridge_config.yaml" ]]; then
         # Check for required configuration sections
         local required_sections=(
             "homeserver"
             "bridge"
-            "matrix"
+            "mattermost"
             "rave"
         )
         
@@ -389,9 +388,9 @@ test_pm_agent_integration() {
     return 0
 }
 
-# Test Matrix room management
-test_matrix_room_management() {
-    log_test "Testing Matrix room management..."
+# Test Mattermost channel management
+test_mattermost_room_management() {
+    log_test "Testing Mattermost channel management..."
     
     # Test room operations
     local room_operations=(
@@ -408,7 +407,7 @@ test_matrix_room_management() {
         # Simulate room operation
         case "$operation" in
             "join_room")
-                room_results+=("✓ Agent can join Matrix rooms")
+                room_results+=("✓ Agent can join Mattermost channels")
                 ;;
             "send_message")
                 room_results+=("✓ Agent can send formatted messages")
@@ -432,9 +431,9 @@ test_matrix_room_management() {
     local total_room_ops=${#room_operations[@]}
     
     if [[ $successful_room_ops -eq $total_room_ops ]]; then
-        agent_test_result "Matrix room management" "SIMULATE" "All $total_room_ops room operations supported"
+        agent_test_result "Mattermost channel management" "SIMULATE" "All $total_room_ops room operations supported"
     else
-        agent_test_result "Matrix room management" "FAIL" "$successful_room_ops/$total_room_ops room operations working"
+        agent_test_result "Mattermost channel management" "FAIL" "$successful_room_ops/$total_room_ops room operations working"
     fi
     
     return 0
@@ -449,7 +448,7 @@ test_error_handling() {
         "Invalid command format"
         "Missing project name"
         "GitLab API timeout"
-        "Matrix homeserver disconnection"
+        "Mattermost server disconnection"
         "Insufficient permissions"
         "Resource limits exceeded"
     )
@@ -468,7 +467,7 @@ test_error_handling() {
             "GitLab API timeout")
                 error_results+=("✓ Retries with exponential backoff")
                 ;;
-            "Matrix homeserver disconnection")
+            "Mattermost server disconnection")
                 error_results+=("✓ Attempts reconnection and notifies user")
                 ;;
             "Insufficient permissions")
@@ -503,7 +502,7 @@ main() {
     if [[ "$mode" == "test-mode" ]]; then
         log_info "Running in test mode - validating agent control logic"
     else
-        log_info "Running live agent control tests (requires Matrix bridge)"
+        log_info "Running live agent control tests (requires Mattermost bridge)"
     fi
     
     echo ""
@@ -549,9 +548,9 @@ main() {
     fi
     echo ""
     
-    # Test 7: Matrix Room Management
-    if ! test_matrix_room_management; then
-        log_error "Matrix room management test failed"
+    # Test 7: Mattermost Room Management
+    if ! test_mattermost_room_management; then
+        log_error "Mattermost channel management test failed"
     fi
     echo ""
     
@@ -573,7 +572,7 @@ main() {
     
     if [[ $AGENT_FAILED -eq 0 ]]; then
         log_success "🎉 All agent control tests passed!"
-        log_success "✅ Matrix bridge and agent functionality validated"
+        log_success "✅ Mattermost bridge and agent functionality validated"
         exit 0
     else
         log_error "❌ Agent control tests failed"
@@ -591,26 +590,26 @@ Usage: $0 [MODE]
 
 MODES:
     test-mode   Run in test mode (validates logic without live services)
-    live        Run with live Matrix bridge (requires running services)
+    live        Run with live Mattermost bridge (requires running services)
     help        Show this help message
 
 DESCRIPTION:
-    Tests Matrix bridge functionality and agent command processing capabilities.
-    Validates the integration between Matrix homeserver and RAVE agents.
+    Tests Mattermost bridge functionality and agent command processing capabilities.
+    Validates the integration between Mattermost server and RAVE agents.
 
 TEST AREAS:
-    1. Matrix bridge code validation
+    1. Mattermost bridge code validation
     2. Command parsing logic
     3. Agent response generation
     4. Bridge configuration
     5. Security and permissions
     6. PM agent integration
-    7. Matrix room management
+    7. Mattermost channel management
     8. Error handling and recovery
 
 EXAMPLES:
-    $0 test-mode    # Test agent logic without live Matrix bridge
-    $0 live         # Full integration test with running Matrix services
+    $0 test-mode    # Test agent logic without live Mattermost bridge
+    $0 live         # Full integration test with running Mattermost services
     $0 help         # Show this help
 
 EOF

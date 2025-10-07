@@ -1,6 +1,5 @@
 """
-GitLab OIDC Authentication and Authorization System
-Implements comprehensive security validation for Matrix bridge users.
+GitLab authentication and authorization utilities for chat control.
 
 Security Features:
 - JWT token validation with cryptographic verification
@@ -79,7 +78,8 @@ class GitLabOIDCValidator:
         client_secret: str,
         allowed_groups: Optional[List[str]] = None,
         cache_ttl: int = 300,  # 5 minutes
-        max_cache_size: int = 1000
+        max_cache_size: int = 1000,
+        api_token: Optional[str] = None,
     ):
         """
         Initialize GitLab OIDC validator.
@@ -98,6 +98,7 @@ class GitLabOIDCValidator:
         self.allowed_groups = set(allowed_groups) if allowed_groups else None
         self.cache_ttl = cache_ttl
         self.max_cache_size = max_cache_size
+        self.api_token = api_token
         
         self.log = logger.bind(component="oidc_validator")
         
@@ -128,14 +129,16 @@ class GitLabOIDCValidator:
         self.log.info("OIDC validator initialized",
                      gitlab_url=self.gitlab_url,
                      allowed_groups=list(self.allowed_groups) if self.allowed_groups else "all",
-                     cache_ttl=self.cache_ttl)
+                     cache_ttl=self.cache_ttl,
+                     api_token=bool(self.api_token))
     
-    async def validate_user(self, matrix_user_id: str) -> UserInfo:
+    async def validate_user(self, user_identifier: str) -> UserInfo:
         """
-        Validate Matrix user against GitLab OIDC.
+        Validate a chat user against GitLab.
         
         Args:
-            matrix_user_id: Matrix user ID (e.g., @user:domain.com)
+            user_identifier: Identifier supplied by the chat adapter. For Matrix this
+                is the Matrix user ID, for Mattermost it can simply be the username.
             
         Returns:
             UserInfo: Validated user information
@@ -144,20 +147,20 @@ class GitLabOIDCValidator:
             AuthenticationError: If authentication fails
             AuthorizationError: If user is not authorized
         """
-        self.log.debug("Validating user", user_id=matrix_user_id)
+        self.log.debug("Validating user", user_id=user_identifier)
         
         try:
             # 1. Check rate limiting for this user
-            self._check_rate_limiting(matrix_user_id)
+            self._check_rate_limiting(user_identifier)
             
             # 2. Check token cache first
-            cached_info = self._get_cached_user(matrix_user_id)
+            cached_info = self._get_cached_user(user_identifier)
             if cached_info:
-                self.log.debug("Using cached user info", user_id=matrix_user_id)
+                self.log.debug("Using cached user info", user_id=user_identifier)
                 return cached_info
             
-            # 3. Extract username from Matrix user ID
-            username = self._extract_username(matrix_user_id)
+            # 3. Extract a GitLab username from the supplied identifier
+            username = self._extract_username(user_identifier)
             
             # 4. Get user information from GitLab
             user_info = await self._get_gitlab_user_info(username)
@@ -166,13 +169,13 @@ class GitLabOIDCValidator:
             self._validate_authorization(user_info)
             
             # 6. Create UserInfo object with roles
-            validated_user = self._create_user_info(user_info, matrix_user_id)
+            validated_user = self._create_user_info(user_info, user_identifier)
             
             # 7. Cache the validated user
-            self._cache_user(matrix_user_id, validated_user)
+            self._cache_user(user_identifier, validated_user)
             
             self.log.info("User validation successful",
-                         user_id=matrix_user_id,
+                         user_id=user_identifier,
                          username=validated_user.username,
                          groups=validated_user.groups,
                          roles=list(validated_user.roles))
@@ -180,16 +183,16 @@ class GitLabOIDCValidator:
             return validated_user
             
         except (AuthenticationError, AuthorizationError) as e:
-            self._record_failed_validation(matrix_user_id)
+            self._record_failed_validation(user_identifier)
             self.log.warning("User validation failed",
-                           user_id=matrix_user_id,
+                           user_id=user_identifier,
                            error=str(e))
             raise
             
         except Exception as e:
-            self._record_failed_validation(matrix_user_id)
+            self._record_failed_validation(user_identifier)
             self.log.error("Unexpected error in user validation",
-                         user_id=matrix_user_id,
+                         user_id=user_identifier,
                          error=str(e))
             raise AuthenticationError(f"Validation failed: {str(e)}")
     
@@ -243,26 +246,25 @@ class GitLabOIDCValidator:
             self.log.error("JWT validation error", error=str(e))
             raise TokenValidationError(f"Token validation failed: {str(e)}")
     
-    def _extract_username(self, matrix_user_id: str) -> str:
-        """Extract username from Matrix user ID."""
-        # Matrix user ID format: @username:homeserver.domain
-        if not matrix_user_id.startswith('@'):
-            raise AuthenticationError("Invalid Matrix user ID format")
-        
-        # Remove @ prefix and split on :
-        user_part = matrix_user_id[1:]
-        if ':' not in user_part:
-            raise AuthenticationError("Invalid Matrix user ID format")
-        
-        username = user_part.split(':', 1)[0]
-        
-        if not username:
-            raise AuthenticationError("Empty username in Matrix user ID")
-        
-        # Validate username format
+    def _extract_username(self, user_identifier: str) -> str:
+        """Derive a GitLab username from the chat user identifier."""
+        if not user_identifier:
+            raise AuthenticationError("Empty user identifier")
+
+        username = user_identifier
+
+        if user_identifier.startswith('@') and ':' in user_identifier:
+            # Matrix user ID format: @username:homeserver.domain
+            user_part = user_identifier[1:]
+            username = user_part.split(':', 1)[0]
+
+        if user_identifier.startswith('@') and ':' not in user_identifier:
+            # Matrix style without homeserver – treat the remainder as username
+            username = user_identifier[1:]
+
         if not self._is_valid_username(username):
             raise AuthenticationError(f"Invalid username format: {username}")
-        
+
         return username
     
     def _is_valid_username(self, username: str) -> bool:
@@ -342,10 +344,13 @@ class GitLabOIDCValidator:
         """Get headers for GitLab API requests."""
         # For now, use basic headers
         # In production, you might want to use a personal access token
-        return {
-            'User-Agent': 'RAVE-Matrix-Bridge/1.0',
+        headers = {
+            'User-Agent': 'RAVE-Chat-Control/1.0',
             'Accept': 'application/json'
         }
+        if self.api_token:
+            headers['PRIVATE-TOKEN'] = self.api_token
+        return headers
     
     def _validate_authorization(self, user_info: Dict[str, Any]) -> None:
         """Validate user authorization based on groups."""
@@ -361,7 +366,7 @@ class GitLabOIDCValidator:
                 f"Allowed: {list(self.allowed_groups)}"
             )
     
-    def _create_user_info(self, gitlab_user: Dict[str, Any], matrix_user_id: str) -> UserInfo:
+    def _create_user_info(self, gitlab_user: Dict[str, Any], user_identifier: str) -> UserInfo:
         """Create UserInfo object from GitLab user data."""
         now = time.time()
         
@@ -385,7 +390,7 @@ class GitLabOIDCValidator:
             roles.update(self.role_mappings['viewer'])
         
         return UserInfo(
-            user_id=matrix_user_id,
+            user_id=user_identifier,
             username=gitlab_user.get('username', ''),
             email=gitlab_user.get('email', ''),
             name=gitlab_user.get('name', ''),

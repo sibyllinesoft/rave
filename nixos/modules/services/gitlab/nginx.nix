@@ -10,15 +10,20 @@ with lib;
     services.nginx.virtualHosts."${config.services.rave.gitlab.host}" = {
       locations = mkMerge [
         {
-          # GitLab main interface - strip /gitlab prefix when forwarding
+          # GitLab main interface - preserve /gitlab prefix for upstream
           "/gitlab/" = {
-            proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:/";
+            proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
             extraConfig = ''
               proxy_set_header Host $host;
+              proxy_set_header X-Forwarded-Host $host;
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
               proxy_set_header X-Forwarded-Ssl on;
+              proxy_set_header X-Script-Name /gitlab;
+              proxy_set_header X-Forwarded-Script-Name /gitlab;
+              proxy_set_header X-Forwarded-Prefix /gitlab;
+              proxy_set_header X-Forwarded-Port 443;
               
               # GitLab specific headers
               proxy_set_header Upgrade $http_upgrade;
@@ -39,28 +44,27 @@ with lib;
           };
           
           # GitLab static assets (CSS, JS, images)
-          "~ ^/(assets)/" = {
-            proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+          "~ ^/gitlab/assets/(.*)$" = {
+            alias = "${cfg.packages.gitlab}/share/gitlab/public/assets/$1";
             extraConfig = ''
-              proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-              
-              # Static asset caching
               expires 1y;
-              add_header Cache-Control "public, immutable";
             '';
           };
           
           # GitLab uploads and user content
-          "~ ^/(uploads|files)/" = {
+          "~ ^/gitlab/(uploads|files)/" = {
             proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
             extraConfig = ''
               proxy_set_header Host $host;
+              proxy_set_header X-Forwarded-Host $host;
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Ssl on;
+              proxy_set_header X-Script-Name /gitlab;
+              proxy_set_header X-Forwarded-Script-Name /gitlab;
+              proxy_set_header X-Forwarded-Prefix /gitlab;
+              proxy_set_header X-Forwarded-Port 443;
             '';
           };
           
@@ -69,9 +73,15 @@ with lib;
             proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
             extraConfig = ''
               proxy_set_header Host $host;
+              proxy_set_header X-Forwarded-Host $host;
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Ssl on;
+              proxy_set_header X-Script-Name /gitlab;
+              proxy_set_header X-Forwarded-Script-Name /gitlab;
+              proxy_set_header X-Forwarded-Prefix /gitlab;
+              proxy_set_header X-Forwarded-Port 443;
               
               # Large file handling
               client_max_body_size 10G;

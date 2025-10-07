@@ -2,9 +2,12 @@
 VM Manager - Handles RAVE virtual machine lifecycle operations
 """
 
+import base64
 import json
+import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -42,7 +45,108 @@ class VMManager:
         """Save VM configuration."""
         config_path = self._get_vm_config_path(company_name)
         config_path.write_text(json.dumps(config, indent=2))
-    
+
+    def _build_ssh_command(
+        self,
+        config: Dict,
+        remote_script: str,
+        *,
+        connect_timeout: int = 10,
+    ) -> Dict[str, any]:
+        """Construct an SSH command for running a remote script."""
+
+        ports = config["ports"]
+        keypair_path = config.get("keypair")
+
+        ssh_common = [
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            f"ConnectTimeout={connect_timeout}",
+            "-p",
+            str(ports["ssh"]),
+            "root@localhost",
+            "bash",
+            "-lc",
+            remote_script,
+        ]
+
+        if keypair_path and Path(keypair_path).exists():
+            command = ["ssh", "-i", keypair_path, *ssh_common]
+            return {"success": True, "command": command}
+
+        if not shutil.which("sshpass"):
+            return {
+                "success": False,
+                "error": "sshpass not available; provide an SSH keypair for VM access",
+            }
+
+        command = [
+            "sshpass",
+            "-p",
+            "debug123",
+            "ssh",
+            *ssh_common,
+        ]
+        return {"success": True, "command": command}
+
+    def _run_remote_script(
+        self,
+        config: Dict,
+        remote_script: str,
+        *,
+        timeout: int,
+        description: str,
+        connect_timeout: int = 10,
+        max_attempts: int = 5,
+        initial_delay: float = 1.0,
+        max_delay: float = 16.0,
+    ) -> Dict[str, any]:
+        """Execute a remote script over SSH with exponential backoff."""
+
+        delay = initial_delay
+        last_error = ""
+
+        for attempt in range(1, max_attempts + 1):
+            build_result = self._build_ssh_command(
+                config, remote_script, connect_timeout=connect_timeout
+            )
+            if not build_result.get("success"):
+                return build_result
+
+            ssh_cmd = build_result["command"]
+
+            try:
+                result = subprocess.run(
+                    ssh_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                last_error = (
+                    f"{description} attempt {attempt} timed out after {timeout} seconds"
+                )
+            else:
+                if result.returncode == 0:
+                    return {"success": True, "result": result}
+
+                stderr = result.stderr.strip()
+                stdout = result.stdout.strip()
+                last_error = (
+                    stderr
+                    or stdout
+                    or f"{description} failed with exit code {result.returncode}"
+                )
+
+            if attempt < max_attempts:
+                time.sleep(delay)
+                delay = min(delay * 2, max_delay)
+
+        return {"success": False, "error": last_error or description}
+
     def _get_next_port_range(self) -> tuple:
         """Get next available port range for VM."""
         # Start from 8100 and increment by 10 for each VM
@@ -58,26 +162,67 @@ class VMManager:
     def _build_vm_image(self, company_name: str = None, ssh_public_key: str = None) -> Dict[str, any]:
         """Build VM image using Nix."""
         try:
-            if company_name and ssh_public_key:
-                # Build custom company VM with injected SSH key
-                result = self._build_company_vm(company_name, ssh_public_key)
-            else:
-                # Get platform-specific build command
-                nix_cmd = self.platform.get_nix_build_command()
-                nix_cmd.extend(["--show-trace"])
-                
-                # Build the standard development VM image
-                result = subprocess.run(
-                    nix_cmd, 
-                    cwd=Path.cwd(),  # Use current working directory instead of hardcoded path
-                    capture_output=True, 
-                    text=True
-                )
-            
+            # For now, custom company builds reuse the shared qcow2 artifact.
+            nix_cmd = self.platform.get_nix_build_command()
+            nix_cmd.extend(["--show-trace", ".#rave-qcow2"])
+
+            result = subprocess.run(
+                nix_cmd,
+                cwd=Path.cwd(),
+                capture_output=True,
+                text=True,
+            )
+
+            warning: Optional[str] = None
+
             if result.returncode != 0:
-                return {"success": False, "error": f"Failed to build VM image: {result.stderr}"}
-            
-            return {"success": True}
+                warning = (
+                    "nix build .#rave-qcow2 failed; falling back to default build"
+                )
+                fallback_cmd = self.platform.get_nix_build_command()
+                fallback_cmd.extend(["--show-trace"])
+                result = subprocess.run(
+                    fallback_cmd,
+                    cwd=Path.cwd(),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    return {
+                        "success": False,
+                        "error": result.stderr.strip() or "Failed to build VM image",
+                    }
+
+            result_dir = Path.cwd() / "result"
+            if not result_dir.exists():
+                return {
+                    "success": True,
+                    "image": None,
+                    "warning": "nix build completed but no 'result' symlink was created",
+                }
+
+            candidates = list(result_dir.glob("*.qcow2"))
+            if not candidates:
+                return {
+                    "success": True,
+                    "image": None,
+                    "warning": "nix build produced no qcow2 artifacts",
+                }
+
+            # Prefer a deterministic filename if present.
+            image_path = None
+            for preferred in ("nixos.qcow2", "disk.qcow2", "image.qcow2"):
+                candidate = result_dir / preferred
+                if candidate.exists():
+                    image_path = candidate
+                    break
+            if image_path is None:
+                image_path = candidates[0]
+
+            response = {"success": True, "image": image_path}
+            if warning:
+                response["warning"] = warning
+            return response
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -88,6 +233,61 @@ class VMManager:
         return subprocess.run([
             "nix", "build", "--show-trace"
         ], cwd="/home/nathan/Projects/rave", capture_output=True, text=True)
+
+    def _create_blank_disk(self, target: Path, size_gb: int = 20) -> Dict[str, any]:
+        """Create a fresh QCOW2 disk image using qemu-img and mkfs."""
+
+        qemu_img = shutil.which("qemu-img")
+        mkfs_ext4 = shutil.which("mkfs.ext4")
+
+        if not qemu_img or not mkfs_ext4:
+            missing = []
+            if not qemu_img:
+                missing.append("qemu-img")
+            if not mkfs_ext4:
+                missing.append("mkfs.ext4")
+            return {
+                "success": False,
+                "error": f"Required tooling missing: {', '.join(missing)}",
+            }
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        raw_temp = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="rave-disk-", suffix=".raw", delete=False) as tmp:
+                raw_temp = Path(tmp.name)
+
+            subprocess.run(
+                [qemu_img, "create", "-f", "raw", str(raw_temp), f"{size_gb}G"],
+                check=True,
+            )
+
+            subprocess.run(
+                [mkfs_ext4, "-F", "-L", "nixos", str(raw_temp)],
+                check=True,
+            )
+
+            subprocess.run(
+                [qemu_img, "convert", "-f", "raw", "-O", "qcow2", str(raw_temp), str(target)],
+                check=True,
+            )
+
+            target.chmod(0o644)
+            return {"success": True}
+        except subprocess.CalledProcessError as exc:
+            return {
+                "success": False,
+                "error": exc.stderr.strip() if exc.stderr else str(exc),
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        finally:
+            if raw_temp and raw_temp.exists():
+                try:
+                    raw_temp.unlink()
+                except OSError:
+                    pass
     
     def _inject_ssh_key(self, image_path: str, ssh_public_key: str) -> Dict[str, any]:
         """Inject SSH public key into VM image using guestfish."""
@@ -281,7 +481,13 @@ exit
         if not build_result["success"]:
             print(f"⚠️  Build failed: {build_result['error']}")
             print("🔄 Will attempt to use existing working image...")
-            # Continue anyway - we'll try to use existing image
+            image_source: Optional[Path] = None
+        else:
+            built_image = build_result.get("image")
+            image_source = Path(built_image) if built_image else None
+            if image_source and not image_source.exists():
+                print("⚠️  Built image path not found; falling back to cached image")
+                image_source = None
         
         # Get port assignments
         http_port, https_port, ssh_port, test_port = self._get_next_port_range()
@@ -304,21 +510,16 @@ exit
         
         # Copy VM image (use existing working image if build failed)
         try:
-            if Path("/home/nathan/Projects/rave/result/nixos.qcow2").exists():
-                subprocess.run([
-                    "cp", "result/nixos.qcow2", config["image_path"]
-                ], cwd="/home/nathan/Projects/rave", check=True)
-            elif Path("/home/nathan/Projects/rave/rave-complete-localhost.qcow2").exists():
+            repo_root = Path.cwd()
+            if image_source and image_source.exists():
+                shutil.copy2(image_source, config["image_path"])
+            elif (repo_root / "rave-complete-localhost.qcow2").exists():
                 print(f"Using existing working image for {company_name}")
-                subprocess.run([
-                    "cp", "rave-complete-localhost.qcow2", config["image_path"]
-                ], cwd="/home/nathan/Projects/rave", check=True)
+                shutil.copy2(repo_root / "rave-complete-localhost.qcow2", config["image_path"])
             else:
                 return {"success": False, "error": "No VM image available"}
             
-            subprocess.run([
-                "chmod", "644", config["image_path"]
-            ], check=True)
+            Path(config["image_path"]).chmod(0o644)
             
             # Inject SSH key into the VM image
             injection_result = self._inject_ssh_key(config["image_path"], ssh_public_key)
@@ -478,15 +679,25 @@ exit
         build_result = self._build_vm_image()
         if not build_result["success"]:
             return build_result
-        
-        try:
-            subprocess.run([
-                "cp", "result/nixos.qcow2", config["image_path"]
-            ], cwd="/home/nathan/Projects/rave", check=True)
-            
-            return {"success": True}
-        except subprocess.CalledProcessError as e:
-            return {"success": False, "error": f"Failed to reset VM: {e}"}
+
+        create_result = self._create_blank_disk(Path(config["image_path"]))
+        if not create_result.get("success"):
+            return create_result
+
+        ssh_public_key = config.get("ssh_public_key")
+        if ssh_public_key:
+            injection_result = self._inject_ssh_key(
+                config["image_path"], ssh_public_key
+            )
+            if not injection_result.get("success"):
+                return {
+                    "success": True,
+                    "warning": injection_result.get(
+                        "error", "Unable to reinject SSH key"
+                    ),
+                }
+
+        return {"success": True}
     
     def ssh_vm(self, company_name: str) -> Dict[str, any]:
         """SSH into company VM."""
@@ -607,3 +818,253 @@ exit
             os.execvp(program, full_cmd)
         except Exception as e:
             return {"success": False, "error": f"Failed to get logs: {e}"}
+
+    def install_age_key(self, company_name: str, key_file: Path,
+                         remote_path: str = "/var/lib/sops-nix/key.txt") -> Dict[str, any]:
+        """Install an Age key into a running VM for sops-nix."""
+        config = self._load_vm_config(company_name)
+        if not config:
+            return {"success": False, "error": f"VM '{company_name}' not found"}
+
+        if not self._is_vm_running(company_name):
+            return {"success": False, "error": f"VM '{company_name}' is not running"}
+
+        key_path = Path(key_file).expanduser()
+        if not key_path.exists():
+            return {"success": False, "error": f"Age key file not found: {key_path}"}
+
+        key_text = key_path.read_text().strip()
+        if not key_text:
+            return {"success": False, "error": "Age key file is empty"}
+
+        # Prepare remote script to install the key with correct permissions
+        remote_file = Path(remote_path)
+        remote_dir = remote_file.parent
+
+        dir_q = shlex.quote(str(remote_dir))
+        file_q = shlex.quote(str(remote_file))
+
+        remote_script = (
+            "set -euo pipefail\n"
+            f"install -d -m 700 -o root -g root {dir_q}\n"
+            f"cat <<'EOF' > {file_q}\n"
+            f"{key_text}\n"
+            "EOF\n"
+            f"chmod 600 {file_q}\n"
+            f"chown root:root {file_q}\n"
+            "if command -v systemctl >/dev/null 2>&1; then\n"
+            "  systemctl restart sops-nix.service 2>/dev/null || true\n"
+            "  systemctl restart mattermost.service 2>/dev/null || true\n"
+            "  systemctl restart nginx.service 2>/dev/null || true\n"
+            "fi\n"
+        )
+
+        run_result = self._run_remote_script(
+            config,
+            remote_script,
+            timeout=45,
+            description="installing Age key",
+            max_attempts=8,
+            initial_delay=1.5,
+        )
+
+        if not run_result.get("success"):
+            return {
+                "success": False,
+                "error": run_result.get("error", "Failed to install Age key"),
+            }
+
+        return {"success": True, "path": remote_path}
+
+    def install_secret_files(
+        self,
+        company_name: str,
+        entries: List[Dict[str, str]],
+    ) -> Dict[str, any]:
+        """Install one or more secrets on the VM using a single SSH session."""
+        config = self._load_vm_config(company_name)
+        if not config:
+            return {"success": False, "error": f"VM '{company_name}' not found"}
+
+        if not self._is_vm_running(company_name):
+            return {"success": False, "error": f"VM '{company_name}' is not running"}
+
+        secrets = [entry for entry in entries if entry.get("content")]
+        if not secrets:
+            return {"success": True}
+
+        remote_lines = ["set -euo pipefail"]
+        restart_services: set[str] = set()
+
+        for secret in secrets:
+            remote_path = secret["remote_path"]
+            content = secret["content"]
+            owner = secret.get("owner", "root")
+            group = secret.get("group", owner)
+            mode = secret.get("mode", "0600")
+            dir_mode = secret.get("dir_mode", "0700")
+            restart_service = secret.get("restart_service")
+
+            remote_file = Path(remote_path)
+            remote_dir = remote_file.parent
+
+            dir_q = shlex.quote(str(remote_dir))
+            file_q = shlex.quote(str(remote_file))
+            encoded = base64.b64encode(content.encode()).decode()
+
+            remote_lines.extend(
+                [
+                    f"install -d -m {dir_mode} -o {owner} -g {group} {dir_q}",
+                    f"base64 -d <<'EOF' > {file_q}",
+                    encoded,
+                    "EOF",
+                    f"chmod {mode} {file_q}",
+                    f"chown {owner}:{group} {file_q}",
+                ]
+            )
+
+            if restart_service:
+                restart_services.add(restart_service)
+
+        if restart_services:
+            remote_lines.append("if command -v systemctl >/dev/null 2>&1; then")
+            for service in sorted(restart_services):
+                remote_lines.append(
+                    f"  systemctl restart {service} 2>/dev/null || true"
+                )
+            remote_lines.append("fi")
+
+        remote_script = "\n".join(remote_lines) + "\n"
+
+        run_result = self._run_remote_script(
+            config,
+            remote_script,
+            timeout=30,
+            description="installing secret files",
+        )
+
+        if not run_result.get("success"):
+            return {
+                "success": False,
+                "error": run_result.get("error", "unknown error installing secret"),
+            }
+
+        return {"success": True}
+
+    def install_secret_file(
+        self,
+        company_name: str,
+        remote_path: str,
+        content: str,
+        owner: str,
+        group: str,
+        mode: str,
+        restart_service: Optional[str] = None,
+        dir_mode: str = "0700",
+    ) -> Dict[str, any]:
+        entry = {
+            "remote_path": remote_path,
+            "content": content,
+            "owner": owner,
+            "group": group,
+            "mode": mode,
+            "dir_mode": dir_mode,
+            "restart_service": restart_service,
+        }
+        return self.install_secret_files(company_name, [entry])
+
+    def ensure_mattermost_database(self, company_name: str, password: str) -> Dict[str, any]:
+        """Ensure the Mattermost database role and password are configured."""
+
+        config = self._load_vm_config(company_name)
+        if not config:
+            return {"success": False, "error": f"VM '{company_name}' not found"}
+
+        if not self._is_vm_running(company_name):
+            return {"success": False, "error": f"VM '{company_name}' is not running"}
+
+        remote_script = "\n".join(
+            [
+                "set -euo pipefail",
+                "sudo -u postgres psql postgres -c \"DROP DATABASE IF EXISTS mattermost;\"",
+                "sudo -u postgres psql postgres -c \"DROP ROLE IF EXISTS mattermost;\"",
+            ]
+        ) + "\n"
+
+        run_result = self._run_remote_script(
+            config,
+            remote_script,
+            timeout=40,
+            description="resetting Mattermost database",
+        )
+
+        if not run_result.get("success"):
+            return {
+                "success": False,
+                "error": run_result.get("error", "database command failed"),
+            }
+
+        return {"success": True}
+
+    # TLS helpers ---------------------------------------------------------
+
+    def install_tls_certificate(
+        self,
+        company_name: str,
+        *,
+        cert_pem: str,
+        fullchain_pem: str,
+        key_pem: str,
+        ca_pem: str,
+    ) -> Dict[str, any]:
+        """Copy TLS materials into the VM and restart nginx."""
+
+        entries = [
+            {
+                "remote_path": "/var/lib/acme/localhost/cert.pem",
+                "content": fullchain_pem,
+                "owner": "root",
+                "group": "root",
+                "mode": "0644",
+                "dir_mode": "0755",
+                "restart_service": "nginx.service",
+            },
+            {
+                "remote_path": "/var/lib/acme/localhost/fullchain.pem",
+                "content": fullchain_pem,
+                "owner": "root",
+                "group": "root",
+                "mode": "0644",
+                "dir_mode": "0755",
+            },
+            {
+                "remote_path": "/var/lib/acme/localhost/chain.pem",
+                "content": ca_pem,
+                "owner": "root",
+                "group": "root",
+                "mode": "0644",
+                "dir_mode": "0755",
+            },
+            {
+                "remote_path": "/var/lib/acme/localhost/key.pem",
+                "content": key_pem,
+                "owner": "root",
+                "group": "nginx",
+                "mode": "0640",
+                "dir_mode": "0750",
+            },
+        ]
+
+        return self.install_secret_files(company_name, entries)
+
+    def record_tls_metadata(self, company_name: str, metadata: Dict[str, any]) -> bool:
+        config = self._load_vm_config(company_name)
+        if not config:
+            return False
+
+        tls_meta = config.get("tls", {})
+        tls_meta.update(metadata)
+        tls_meta["updated_at"] = time.time()
+        config["tls"] = tls_meta
+        self._save_vm_config(company_name, config)
+        return True

@@ -109,7 +109,7 @@ let
   # Generate systemd service configuration for an agent
   mkAgentService = name: config: {
     description = config.description;
-    wantedBy = []; # Don't auto-start, controlled by Matrix bridge
+    wantedBy = []; # Don't auto-start, controlled by chat bridge
     after = [ "network-online.target" "postgresql.service" ];
     wants = [ "network-online.target" ];
     
@@ -227,10 +227,9 @@ performance:
   task_timeout: 300  # 5 minutes
   memory_limit: "1GB"
 
-# Matrix integration
-matrix:
-  homeserver_url: "https://rave.local:3002/matrix"
-  bridge_url: "http://127.0.0.1:9000"
+# Chat control integration
+chat_control:
+  bridge_url: "http://127.0.0.1:9100"
   
 # Agent-specific configuration
 # (Add agent-specific settings here)
@@ -246,29 +245,26 @@ in
     (name: config: mkAgentService name config)
     agentServices // {
       
-      # Matrix Bridge service
-      rave-matrix-bridge = {
-        description = "RAVE Matrix Bridge Service";
+      # Mattermost chat-control bridge service
+      rave-chat-bridge = {
+        description = "RAVE Mattermost Chat Control Service";
         wantedBy = [ "multi-user.target" ];
-        after = [ "network-online.target" "postgresql.service" "matrix-synapse.service" ];
+        after = [ "network-online.target" "postgresql.service" "gitlab.service" "mattermost.service" ];
         wants = [ "network-online.target" ];
-        requires = [ "postgresql.service" ];
-        
+
         serviceConfig = {
           Type = "simple";
           User = "rave-bridge";
           Group = "rave-bridge";
-          
-          ExecStart = "${pkgs.python3}/bin/python3 -m src.main";
-          WorkingDirectory = "/opt/rave/matrix-bridge";
-          
+
+          ExecStart = "${pkgs.python3}/bin/python3 /opt/rave/mattermost-bridge/src/main.py";
+          WorkingDirectory = "/opt/rave/mattermost-bridge";
+
           Environment = [
-            "PYTHONPATH=/opt/rave/matrix-bridge"
-            "CONFIG_FILE=/etc/rave/matrix-bridge/config.yaml"
-            "REGISTRATION_FILE=/etc/rave/matrix-bridge/registration.yaml"
+            "PYTHONPATH=/opt/rave/chat-control/src:/opt/rave/mattermost-bridge/src"
+            "CHAT_BRIDGE_CONFIG=/etc/rave/mattermost-bridge/config.yaml"
           ];
-          
-          # Security hardening (same as agents)
+
           ProtectSystem = "strict";
           ProtectHome = true;
           NoNewPrivileges = true;
@@ -282,68 +278,97 @@ in
           RestrictNamespaces = true;
           LockPersonality = true;
           MemoryDenyWriteExecute = true;
-          
+
           CapabilityBoundingSet = "";
           AmbientCapabilities = "";
-          
+
           SystemCallFilter = [
             "@system-service"
             "~@debug"
             "~@mount"
-            "~@cpu-emulation" 
+            "~@cpu-emulation"
             "~@privileged"
             "~@resources"
             "~@reboot"
             "~@swap"
             "~@raw-io"
           ];
-          
+
           ReadWritePaths = [
             "/tmp"
-            "/var/lib/rave/matrix-bridge"
-            "/var/log/rave/matrix-bridge"
+            "/var/lib/rave/mattermost-bridge"
+            "/var/log/rave/mattermost-bridge"
           ];
-          
+
           ReadOnlyPaths = [
-            "/etc/rave/matrix-bridge"
-            "/opt/rave/matrix-bridge"
+            "/etc/rave/mattermost-bridge"
+            "/opt/rave/chat-control"
+            "/opt/rave/mattermost-bridge"
           ];
-          
-          # Resource limits
+
           MemoryMax = "1G";
           CPUQuota = "50%";
           TasksMax = 512;
           LimitNOFILE = 8192;
           LimitNPROC = 256;
-          
-          # Restart configuration
+
           Restart = "always";
           RestartSec = "10s";
           StartLimitInterval = "5m";
           StartLimitBurst = 5;
-          
-          # Logging
+
           StandardOutput = "journal";
           StandardError = "journal";
-          SyslogIdentifier = "rave-matrix-bridge";
+          SyslogIdentifier = "rave-chat-bridge";
         };
-        
+
         preStart = ''
-          # Create directories
-          mkdir -p /var/lib/rave/matrix-bridge
-          mkdir -p /var/log/rave/matrix-bridge
-          mkdir -p /etc/rave/matrix-bridge
+          mkdir -p /var/lib/rave/mattermost-bridge
+          mkdir -p /var/log/rave/mattermost-bridge
+          mkdir -p /etc/rave/mattermost-bridge
+
+          chown rave-bridge:rave-bridge /var/lib/rave/mattermost-bridge
+          chown rave-bridge:rave-bridge /var/log/rave/mattermost-bridge
+
+          rm -rf /opt/rave/mattermost-bridge
+          rm -rf /opt/rave/chat-control
+          mkdir -p /opt/rave
           
-          # Set permissions
-          chown rave-bridge:rave-bridge /var/lib/rave/matrix-bridge
-          chown rave-bridge:rave-bridge /var/log/rave/matrix-bridge
-          
-          # Copy configuration files (with secrets substitution)
-          envsubst < ${./services/matrix-bridge/bridge_config.yaml} > /etc/rave/matrix-bridge/config.yaml
-          envsubst < ${./services/matrix-bridge/registration.yaml} > /etc/rave/matrix-bridge/registration.yaml
-          
-          chown rave-bridge:rave-bridge /etc/rave/matrix-bridge/*
-          chmod 600 /etc/rave/matrix-bridge/*
+          cp -r /etc/rave/mattermost-bridge/src /opt/rave/mattermost-bridge
+          cp /etc/rave/mattermost-bridge/requirements.txt /opt/rave/mattermost-bridge/requirements.txt
+          cp ${./services/mattermost-bridge/setup_baseline.sh} /opt/rave/mattermost-bridge/setup_baseline.sh
+          cp -r /etc/rave/chat-control/src /opt/rave/chat-control
+
+          chown -R rave-bridge:rave-bridge /opt/rave/mattermost-bridge
+          chown -R rave-bridge:rave-bridge /opt/rave/chat-control
+
+          chmod +x /opt/rave/mattermost-bridge/setup_baseline.sh
+
+          export CHAT_BRIDGE_ADMIN_USERNAME="$(cat ${config.sops.secrets."mattermost/admin-username".path})"
+          export CHAT_BRIDGE_ADMIN_EMAIL="$(cat ${config.sops.secrets."mattermost/admin-email".path})"
+          export CHAT_BRIDGE_ADMIN_PASSWORD="$(cat ${config.sops.secrets."mattermost/admin-password".path})"
+          export CHAT_BRIDGE_TEAM="rave"
+          export CHAT_BRIDGE_TEAM_DISPLAY="RAVE Ops"
+          export CHAT_BRIDGE_CHANNEL="agent-control"
+          export CHAT_BRIDGE_CHANNEL_DISPLAY="Agent Control"
+          export CHAT_BRIDGE_TRIGGER="rave"
+          export CHAT_BRIDGE_COMMAND_DESCRIPTION="RAVE agent control commands"
+          export CHAT_BRIDGE_COMMAND_HINT="[command]"
+          export CHAT_BRIDGE_URL="http://127.0.0.1:9100/webhook"
+          export CHAT_BRIDGE_TOKEN_DESCRIPTION="${config.services.rave.chat.tokenDescription or "RAVE Chat Bridge"}"
+          export CHAT_BRIDGE_TOKEN_FILE="/etc/rave/mattermost-bridge/outgoing_token"
+          export CHAT_BRIDGE_BOT_TOKEN_FILE="/etc/rave/mattermost-bridge/bot_token"
+
+          /opt/rave/mattermost-bridge/setup_baseline.sh
+
+          export MATTERMOST_OUTGOING_TOKEN="$(cat /etc/rave/mattermost-bridge/outgoing_token)"
+          export MATTERMOST_BOT_TOKEN="$(cat /etc/rave/mattermost-bridge/bot_token)"
+          export OIDC_CLIENT_SECRET="$(cat ${config.sops.secrets."oidc/chat-control-client-secret".path})"
+          export GITLAB_API_TOKEN="$(cat ${config.sops.secrets."gitlab/api-token".path})"
+
+          envsubst < ${./services/mattermost-bridge/bridge_config.yaml} > /etc/rave/mattermost-bridge/config.yaml
+          chown rave-bridge:rave-bridge /etc/rave/mattermost-bridge/config.yaml
+          chmod 600 /etc/rave/mattermost-bridge/config.yaml
         '';
       };
     };
@@ -361,11 +386,11 @@ in
     gid = 980;
   };
 
-  # Create user and group for Matrix bridge
+  # Create user and group for chat bridge
   users.users.rave-bridge = {
     isSystemUser = true;
     group = "rave-bridge";
-    home = "/var/lib/rave/matrix-bridge";
+    home = "/var/lib/rave/mattermost-bridge";
     createHome = true;
     uid = 979;
   };
@@ -374,19 +399,7 @@ in
     gid = 979;
   };
 
-  # Environment setup for Matrix bridge
-  systemd.services.rave-matrix-bridge.environment = lib.mkIf (config.sops.secrets ? "matrix/as-token") {
-    MATRIX_AS_TOKEN = config.sops.secrets."matrix/as-token".path;
-    MATRIX_HS_TOKEN = config.sops.secrets."matrix/hs-token".path;
-    GITLAB_CLIENT_SECRET = config.sops.secrets."oidc/matrix-client-secret".path;
-  };
-
-  # Update Matrix Synapse configuration to include bridge
-  services.matrix-synapse.settings = lib.mkMerge [
-    {
-      app_service_config_files = [ "/etc/rave/matrix-bridge/registration.yaml" ];
-    }
-  ];
+  # Environment variables for chat bridge are injected during preStart via envsubst
 
   # Log rotation configuration
   services.logrotate.extraConfig = lib.mkAfter ''
@@ -401,7 +414,7 @@ in
       su rave-agent rave-agent
     }
     
-    /var/log/rave/matrix-bridge/*.log {
+    /var/log/rave/mattermost-bridge/*.log {
       daily
       missingok
       rotate 30
@@ -413,15 +426,15 @@ in
     }
   '';
 
-  # Firewall configuration for Matrix bridge
-  networking.firewall.allowedTCPPorts = [ 9001 ];  # Metrics port
+  # Firewall configuration for chat bridge metrics/health endpoint
+  networking.firewall.allowedTCPPorts = lib.mkAfter [ 9100 ];
 
   # Monitoring configuration
   services.prometheus.scrapeConfigs = lib.mkAfter [
     {
-      job_name = "rave-matrix-bridge";
+      job_name = "rave-chat-bridge";
       static_configs = [{
-        targets = [ "127.0.0.1:9001" ];
+        targets = [ "127.0.0.1:9100" ];
       }];
       scrape_interval = "30s";
     }
@@ -441,34 +454,34 @@ in
     text = builtins.toJSON {
       dashboard = {
         title = "RAVE Agents Dashboard";
-        tags = [ "rave" "agents" "matrix" ];
+        tags = [ "rave" "agents" "chat" ];
         panels = [
           {
             title = "Agent Status";
             type = "stat";
             targets = [{
-              expr = "up{job='rave-matrix-bridge'}";
+              expr = "up{job='rave-chat-bridge'}";
             }];
           }
           {
-            title = "Matrix Bridge Commands";
+            title = "Chat Bridge Commands";
             type = "graph";
             targets = [{
-              expr = "rate(matrix_bridge_commands_total[5m])";
+              expr = "rate(chat_control_commands_total[5m])";
             }];
           }
           {
             title = "Authentication Failures";
             type = "graph";
             targets = [{
-              expr = "rate(matrix_bridge_auth_failures_total[5m])";
+              expr = "rate(chat_control_auth_failures_total[5m])";
             }];
           }
           {
             title = "Systemd Operations";
             type = "graph";
             targets = [{
-              expr = "rate(matrix_bridge_systemd_operations_total[5m])";
+              expr = "rate(chat_control_systemd_operations_total[5m])";
             }];
           }
         ];
@@ -476,16 +489,24 @@ in
     };
   };
 
-  # Install Matrix bridge code
-  environment.etc."rave/matrix-bridge/src" = {
-    source = ./services/matrix-bridge/src;
+  # Install chat-control shared code and Mattermost bridge assets
+  environment.etc."rave/chat-control/src" = {
+    source = ./services/chat-control/src;
   };
 
-  # Install Python dependencies for Matrix bridge
-  systemd.services.rave-matrix-bridge-deps = {
-    description = "Install RAVE Matrix Bridge Dependencies";
-    wantedBy = [ "rave-matrix-bridge.service" ];
-    before = [ "rave-matrix-bridge.service" ];
+  environment.etc."rave/mattermost-bridge/src" = {
+    source = ./services/mattermost-bridge/src;
+  };
+
+  environment.etc."rave/mattermost-bridge/requirements.txt" = {
+    source = ./services/mattermost-bridge/requirements.txt;
+  };
+
+  # Install Python dependencies for the Mattermost bridge
+  systemd.services.rave-chat-bridge-deps = {
+    description = "Install RAVE Chat Bridge Dependencies";
+    wantedBy = [ "rave-chat-bridge.service" ];
+    before = [ "rave-chat-bridge.service" ];
     
     serviceConfig = {
       Type = "oneshot";
@@ -495,12 +516,12 @@ in
         #!${pkgs.bash}/bin/bash
         set -e
         
-        cd /opt/rave/matrix-bridge
-        
+        cd /opt/rave/mattermost-bridge
+
         # Install Python dependencies
         ${pkgs.python3}/bin/pip3 install -r requirements.txt --user --no-deps
-        
-        echo "Matrix bridge dependencies installed"
+
+        echo "Chat bridge dependencies installed"
       '';
     };
   };
@@ -509,7 +530,7 @@ in
   systemd.services.rave-security-monitor = {
     description = "RAVE Security Monitoring Service";
     wantedBy = [ "multi-user.target" ];
-    after = [ "rave-matrix-bridge.service" ];
+    after = [ "rave-chat-bridge.service" ];
     
     serviceConfig = {
       Type = "simple";
@@ -527,7 +548,7 @@ in
                 # Check for security events in audit logs
                 result = subprocess.run([
                     "${pkgs.journalctl}/bin/journalctl", 
-                    "-u", "rave-matrix-bridge.service",
+                    "-u", "rave-chat-bridge.service",
                     "--since", "1 minute ago",
                     "-o", "json"
                 ], capture_output=True, text=True)
@@ -582,8 +603,8 @@ in
         # Backup agent data
         tar czf "$BACKUP_DIR/agent_data_$TIMESTAMP.tar.gz" -C /var/lib/rave agents/
         
-        # Backup Matrix bridge configuration
-        tar czf "$BACKUP_DIR/matrix_bridge_$TIMESTAMP.tar.gz" -C /etc/rave matrix-bridge/
+        # Backup chat bridge configuration
+        tar czf "$BACKUP_DIR/chat_bridge_$TIMESTAMP.tar.gz" -C /etc/rave mattermost-bridge/
         
         # Clean old backups (keep 7 days)
         find "$BACKUP_DIR" -name "*.tar.gz" -mtime +7 -delete
@@ -618,19 +639,19 @@ in
         
         echo "Checking RAVE system health..."
         
-        # Check Matrix bridge health
-        if curl -f http://127.0.0.1:9000/health > /dev/null 2>&1; then
-          echo "✅ Matrix bridge: healthy"
+        # Check chat bridge health
+        if curl -f http://127.0.0.1:9100/health > /dev/null 2>&1; then
+          echo "✅ Chat bridge: healthy"
         else
-          echo "❌ Matrix bridge: unhealthy"
+          echo "❌ Chat bridge: unhealthy"
           exit 1
         fi
-        
-        # Check Matrix Synapse
-        if systemctl is-active --quiet matrix-synapse; then
-          echo "✅ Matrix Synapse: active"
+
+        # Check Mattermost
+        if systemctl is-active --quiet mattermost; then
+          echo "✅ Mattermost: active"
         else
-          echo "❌ Matrix Synapse: inactive"
+          echo "❌ Mattermost: inactive"
           exit 1
         fi
         

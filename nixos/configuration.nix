@@ -8,11 +8,11 @@
     # Use P4 configuration which inherits from P3, P2, and P1
     ../p4-production-config.nix
     
-    # Phase P5: Matrix Bridge and Agent services
+    # Phase P5: Chat bridge and agent services
     ./agents.nix
     
     # Modular service configurations:
-    # ./matrix.nix is imported by P4
+    # Mattermost chat control is configured via agents.nix and complete-production
     # ./gitlab.nix is inherited from P3
     # ./prometheus.nix and ./grafana.nix are inherited from P2
   ];

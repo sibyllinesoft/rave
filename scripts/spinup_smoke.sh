@@ -3,7 +3,7 @@
 # Comprehensive validation of the complete RAVE Autonomous Dev Agency infrastructure
 # 
 # This script performs hermetic boot validation from clean checkout to full functional agency,
-# tests all P6 components, validates OIDC flows, tests agent control via Matrix, and generates
+# tests all P6 components, validates OIDC flows, tests agent control via Mattermost, and generates
 # a signed boot transcript proving full functionality.
 
 set -euo pipefail
@@ -373,12 +373,12 @@ phase4_service_health_validation() {
         test_result "GitLab health check" "WARN" "GitLab health check simulated (requires VM)"
     fi
     
-    # Test 4.3: Matrix health check
-    log_info "Testing Matrix health..."
-    if "$PROJECT_DIR/scripts/health_checks/check_matrix.sh" >/dev/null 2>&1; then
-        test_result "Matrix Synapse health check" "PASS" "Matrix homeserver responsive"
+    # Test 4.3: Mattermost health check
+    log_info "Testing Mattermost health..."
+    if "$PROJECT_DIR/scripts/health_checks/check_mattermost.sh" >/dev/null 2>&1; then
+        test_result "Mattermost health check" "PASS" "Mattermost service responsive"
     else
-        test_result "Matrix Synapse health check" "WARN" "Matrix health check simulated (requires VM)"
+        test_result "Mattermost health check" "WARN" "Mattermost health check simulated (requires VM)"
     fi
     
     # Test 4.4: Grafana health check
@@ -416,12 +416,12 @@ phase5_oidc_authentication_validation() {
         test_result "GitLab OIDC provider config" "WARN" "OIDC configuration not explicitly found"
     fi
     
-    # Test 5.2: Matrix OIDC client configuration  
-    log_info "Validating Matrix OIDC client configuration..."
+    # Test 5.2: Chat bridge OIDC client configuration  
+    log_info "Validating chat bridge OIDC client configuration..."
     if grep -r "oauth" "$PROJECT_DIR/services/matrix-bridge" --include="*.py" --include="*.yaml" >/dev/null 2>&1; then
-        test_result "Matrix OIDC client config" "PASS" "OAuth/OIDC configuration found in Matrix bridge"
+        test_result "Chat bridge OIDC client config" "PASS" "OAuth/OIDC configuration found in chat bridge"
     else
-        test_result "Matrix OIDC client config" "WARN" "OAuth configuration verification requires running services"
+        test_result "Chat bridge OIDC client config" "WARN" "OAuth configuration verification requires running services"
     fi
     
     # Test 5.3: Grafana OIDC integration
@@ -445,7 +445,7 @@ phase5_oidc_authentication_validation() {
     BOOT_TRANSCRIPT[authentication_tests]="{\"gitlab_oidc\":\"configured\",\"matrix_oauth\":\"configured\",\"grafana_oauth\":\"configured\",\"end_to_end_flow\":\"simulated\"}"
 }
 
-# Phase 6: Agent control via Matrix validation
+# Phase 6: Agent control via Mattermost validation
 phase6_agent_control_validation() {
     log_info ""
     log_info "🤖 Phase 6: Agent Control Validation"
@@ -456,17 +456,17 @@ phase6_agent_control_validation() {
     # Create agent control test scenarios
     create_agent_control_tests
     
-    # Test 6.1: Matrix bridge functionality
-    log_info "Testing Matrix bridge functionality..."
+    # Test 6.1: Mattermost bridge functionality
+    log_info "Testing Mattermost bridge functionality..."
     if [[ -f "$PROJECT_DIR/services/matrix-bridge/src/main.py" ]]; then
         # Basic syntax and import validation
         if python3 -m py_compile "$PROJECT_DIR/services/matrix-bridge/src/main.py" 2>/dev/null; then
-            test_result "Matrix bridge code validation" "PASS" "Bridge code compiles successfully"
+            test_result "Chat bridge code validation" "PASS" "Bridge code compiles successfully"
         else
-            test_result "Matrix bridge code validation" "FAIL" "Matrix bridge code has syntax errors"
+            test_result "Chat bridge code validation" "FAIL" "Bridge code has syntax errors"
         fi
     else
-        test_result "Matrix bridge code validation" "FAIL" "Matrix bridge main.py not found"
+        test_result "Chat bridge code validation" "FAIL" "Bridge main.py not found"
     fi
     
     # Test 6.2: Agent command processing
@@ -474,13 +474,13 @@ phase6_agent_control_validation() {
     if "$PROJECT_DIR/scripts/test_scenarios/agent_control_test.sh" test-mode >/dev/null 2>&1; then
         test_result "Agent command processing" "PASS" "Command processing logic validated"
     else
-        test_result "Agent command processing" "WARN" "Agent control testing requires running Matrix bridge"
+        test_result "Agent command processing" "WARN" "Agent control testing requires running chat bridge"
     fi
     
     # Test 6.3: PM agent functionality
     log_info "Testing PM agent functionality..."
-    # This would test the project management agent's Matrix integration
-    test_result "PM agent Matrix integration" "WARN" "PM agent testing requires full Matrix setup"
+    # This would test the project management agent's Mattermost integration
+    test_result "PM agent chat integration" "WARN" "PM agent testing requires full chat bridge setup"
     
     local phase_end=$(date +%s%3N)
     local phase_duration=$((phase_end - phase_start))
@@ -784,30 +784,60 @@ fi
 EOF
     chmod +x "$PROJECT_DIR/scripts/health_checks/check_gitlab.sh"
     
-    # Matrix health check
-    cat > "$PROJECT_DIR/scripts/health_checks/check_matrix.sh" << 'EOF'
-#!/bin/bash
-# Matrix Synapse health check script
+    # Mattermost health check
+    cat > "$PROJECT_DIR/scripts/health_checks/check_mattermost.sh" << 'EOF'
+#!/usr/bin/env bash
 set -euo pipefail
 
-# Check if Matrix Synapse service is running
-if systemctl is-active matrix-synapse >/dev/null 2>&1; then
-    echo "Matrix Synapse service is active"
-    
-    # Test Matrix API endpoint
-    if curl -f -s -k "https://localhost:3002/matrix/_matrix/client/versions" >/dev/null 2>&1; then
-        echo "Matrix API health check passed"
-        exit 0
+BASE_URL="https://localhost:8443/mattermost"
+BRIDGE_HEALTH="http://127.0.0.1:9100/health"
+
+function check_bridge() {
+    echo "Checking chat bridge health..."
+    if curl -sf "$BRIDGE_HEALTH" >/dev/null; then
+        echo "✅ Chat bridge health endpoint reachable"
     else
-        echo "Matrix API health check failed"
-        exit 1
+        echo "❌ Chat bridge health endpoint unreachable"
+        return 1
     fi
-else
-    echo "Matrix Synapse service is not active"
-    exit 1
-fi
+}
+
+function check_mattermost_http() {
+    echo "Checking Mattermost HTTP endpoint..."
+    if curl -sk "$BASE_URL" >/dev/null; then
+        echo "✅ Mattermost HTTP reachable"
+    else
+        echo "❌ Mattermost HTTP not reachable"
+        return 1
+    fi
+}
+
+function check_mattermost_service() {
+    echo "Checking Mattermost service status..."
+    if systemctl is-active --quiet mattermost; then
+        echo "✅ Mattermost service is active"
+    else
+        echo "❌ Mattermost service is inactive"
+        return 1
+    fi
+}
+
+function check_chat_bridge_service() {
+    echo "Checking chat bridge service status..."
+    if systemctl is-active --quiet rave-chat-bridge; then
+        echo "✅ Chat bridge service is active"
+    else
+        echo "❌ Chat bridge service is inactive"
+        return 1
+    fi
+}
+
+check_bridge
+check_mattermost_http
+check_mattermost_service
+check_chat_bridge_service
 EOF
-    chmod +x "$PROJECT_DIR/scripts/health_checks/check_matrix.sh"
+    chmod +x "$PROJECT_DIR/scripts/health_checks/check_mattermost.sh"
     
     # Network health check
     cat > "$PROJECT_DIR/scripts/health_checks/check_networking.sh" << 'EOF'
@@ -858,7 +888,7 @@ set -euo pipefail
 if [[ "${1:-}" == "test-mode" ]]; then
     echo "Agent control test mode - validating command processing logic"
     
-    # Test Matrix bridge command parsing logic
+    # Test chat bridge command parsing logic
     test_commands=(
         "!rave help"
         "!rave create project hello-world"
@@ -869,13 +899,13 @@ if [[ "${1:-}" == "test-mode" ]]; then
     for cmd in "${test_commands[@]}"; do
         echo "Testing command: $cmd"
         # This would test command parsing logic
-        # In real implementation, would send to Matrix bridge
+        # In real implementation, would send to chat bridge
     done
     
     echo "Agent control tests completed successfully"
     exit 0
 else
-    echo "Agent control testing requires running Matrix bridge"
+    echo "Agent control testing requires running chat bridge"
     echo "Use 'test-mode' for command validation testing"
     exit 1
 fi
@@ -894,14 +924,14 @@ set -euo pipefail
 
 if [[ "${1:-}" == "simulate" ]]; then
     echo "Simulating Hello World workflow..."
-    
+
     # Simulate workflow steps:
-    echo "1. Matrix command: '!rave create project hello-world'"
+    echo "1. Mattermost command: '!rave create project hello-world'"
     echo "2. Agent creates GitLab project"
     echo "3. Agent generates initial code structure"
     echo "4. Agent creates merge request"
     echo "5. GitLab CI triggers sandbox VM"
-    echo "6. Agent posts sandbox access info to Matrix"
+    echo "6. Agent posts sandbox access info to Mattermost"
     echo "7. User tests in sandbox environment"
     echo "8. Agent merges successful changes"
     

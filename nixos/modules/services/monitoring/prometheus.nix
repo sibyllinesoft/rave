@@ -71,15 +71,6 @@ with lib;
           metrics_path = "/gitlab/-/metrics";
           scrape_interval = "30s";
         }
-      ] ++ optionals (hasAttr "matrix" config.services.rave && config.services.rave.matrix.enable or false) [
-        # Matrix Synapse metrics (if Matrix enabled)
-        {
-          job_name = "matrix-synapse";
-          static_configs = [{
-            targets = [ "localhost:9000" ];
-          }];
-          scrape_interval = "30s";
-        }
       ];
 
       # P2: Basic alerting rules for system health
@@ -166,17 +157,6 @@ with lib;
         "netdev"
         "cpu"
       ];
-    };
-
-    # Configure Matrix Synapse metrics (if Matrix enabled)
-    services.matrix-synapse.settings = mkIf (hasAttr "matrix" config.services.rave && config.services.rave.matrix.enable or false) {
-      enable_metrics = true;
-      metrics_port = 9000;
-      listeners = [{
-        port = 9000;
-        type = "metrics";
-        bind_addresses = [ "127.0.0.1" ];
-      }];
     };
 
     # Configure Nginx for Prometheus metrics

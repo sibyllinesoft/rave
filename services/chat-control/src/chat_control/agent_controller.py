@@ -1,5 +1,5 @@
 """
-Systemd Agent Controller for RAVE Matrix Bridge
+Systemd Agent Controller for RAVE Chat Control
 Implements secure systemd service control for autonomous agents.
 
 Security Features:

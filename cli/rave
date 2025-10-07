@@ -7,7 +7,10 @@ Comprehensive CLI for managing company development environments, users, and OAut
 import os
 import sys
 import json
+import shutil
 import subprocess
+import tempfile
+import textwrap
 import click
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -19,6 +22,62 @@ sys.path.insert(0, str(CLI_DIR))
 from vm_manager import VMManager
 from user_manager import UserManager
 from oauth_manager import OAuthManager
+from platform_utils import PlatformManager
+
+# Constants for secrets management
+DEFAULT_AGE_KEY_PATH = Path.home() / ".config" / "sops" / "age" / "keys.txt"
+DEFAULT_SECRETS_FILE = Path("config/secrets.yaml")
+PLACEHOLDER_KEY = "age1exampleexampleexampleexampleexampleexampleexampleexample"
+
+
+def _parse_metadata(pairs: List[str]) -> Dict[str, str]:
+    """Convert CLI --meta key=value entries into a dict."""
+
+    metadata: Dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise click.BadParameter(
+                f"Metadata entry '{pair}' must be in key=value format"
+            )
+        key, value = pair.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            raise click.BadParameter(
+                f"Metadata entry '{pair}' must include non-empty key and value"
+            )
+        metadata[key] = value
+    return metadata
+
+
+def _parse_metadata_option(value: Optional[str]) -> Dict[str, str]:
+    """Parse metadata supplied via CLI option.
+
+    Accepts either a JSON object string or comma-separated key=value pairs.
+    """
+
+    if not value:
+        return {}
+
+    text = value.strip()
+    if not text:
+        return {}
+
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise click.BadParameter(
+                f"Invalid metadata JSON: {exc.msg}"
+            )
+        if not isinstance(parsed, dict):
+            raise click.BadParameter("Metadata JSON must decode to an object")
+        return {str(k): str(v) for k, v in parsed.items() if str(v).strip()}
+
+    entries = [segment.strip() for segment in text.split(",") if segment.strip()]
+    if not entries:
+        return {}
+    return _parse_metadata(entries)
 
 # Global configuration
 CONFIG_DIR = Path.home() / ".config" / "rave"
@@ -58,6 +117,478 @@ def cli(ctx):
     ctx.obj['vm_manager'] = VMManager(VMS_DIR)
     ctx.obj['user_manager'] = UserManager()
     ctx.obj['oauth_manager'] = OAuthManager()
+    ctx.obj['platform'] = PlatformManager()
+
+# Secrets management commands
+@cli.group()
+@click.pass_context
+def secrets(ctx):
+    """Secrets management helpers."""
+    ctx.ensure_object(dict)
+
+
+@cli.group()
+@click.pass_context
+def tls(ctx):
+    """Trusted TLS helpers."""
+    ctx.ensure_object(dict)
+
+
+@tls.command()
+@click.pass_context
+def bootstrap(ctx):
+    """Install mkcert and trust the local development CA on the host."""
+    platform: PlatformManager = ctx.obj['platform']
+
+    click.echo("🔐 Preparing mkcert on the host…")
+    result = platform.ensure_mkcert_installed()
+    if not result.get("success"):
+        click.echo(f"❌ {result.get('error', 'Failed to install mkcert')}")
+        hint = result.get("hint")
+        if hint:
+            click.echo(f"   → {hint}")
+        sys.exit(1)
+
+    if result.get("installed"):
+        click.echo("✅ mkcert installed successfully")
+    else:
+        click.echo("ℹ️  mkcert already present")
+
+    try:
+        subprocess.run(["mkcert", "-install"], check=True)
+    except subprocess.CalledProcessError as exc:
+        click.echo("❌ mkcert failed to install the local CA")
+        if exc.stderr:
+            click.echo(f"   → {exc.stderr.strip()}")
+        sys.exit(1)
+
+    caroot = platform.mkcert_caroot()
+    if caroot:
+        click.echo(f"📁 mkcert CA root: {caroot}")
+    click.echo("✅ Host trust store updated (you may need to restart browsers).")
+
+
+@tls.command()
+@click.argument('company_name')
+@click.option(
+    '--domain', 'domains', multiple=True,
+    help='Hostname to include in the certificate (repeat for multiple).'
+)
+@click.pass_context
+def issue(ctx, company_name: str, domains: List[str]):
+    """Mint a trusted TLS certificate for a VM and install it."""
+
+    vm_manager: VMManager = ctx.obj['vm_manager']
+    platform: PlatformManager = ctx.obj['platform']
+
+    default_domains = ["localhost", "127.0.0.1", "::1", "chat.localtest.me"]
+    if not domains:
+        domains = default_domains
+    else:
+        domains = [d.strip() for d in domains if d.strip()]
+        if not domains:
+            click.echo("❌ No valid domain names provided")
+            sys.exit(1)
+
+    if shutil.which("mkcert") is None:
+        click.echo("❌ mkcert is not installed. Run 'rave tls bootstrap' first.")
+        sys.exit(1)
+
+    click.echo(f"🔏 Issuing certificate for: {', '.join(domains)}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        cert_path = tmp_path / "cert.pem"
+        key_path = tmp_path / "key.pem"
+        mkcert_cmd = [
+            "mkcert",
+            "-cert-file", str(cert_path),
+            "-key-file", str(key_path),
+            *domains,
+        ]
+
+        try:
+            subprocess.run(mkcert_cmd, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else exc.stderr
+            click.echo("❌ mkcert failed to issue the certificate")
+            if stderr:
+                click.echo(f"   → {stderr.strip()}")
+            sys.exit(1)
+
+        caroot = platform.mkcert_caroot()
+        if not caroot:
+            click.echo("❌ Unable to locate mkcert CA root. Run 'rave tls bootstrap' again.")
+            sys.exit(1)
+
+        ca_path = caroot / "rootCA.pem"
+        if not ca_path.exists():
+            click.echo(f"❌ mkcert CA file not found at {ca_path}")
+            sys.exit(1)
+
+        cert_pem = cert_path.read_text()
+        key_pem = key_path.read_text()
+        ca_pem = ca_path.read_text()
+        fullchain_pem = cert_pem + ca_pem
+
+    result = vm_manager.install_tls_certificate(
+        company_name,
+        cert_pem=cert_pem,
+        fullchain_pem=fullchain_pem,
+        key_pem=key_pem,
+        ca_pem=ca_pem,
+    )
+
+    if not result.get("success"):
+        click.echo(f"❌ Failed to install certificate: {result.get('error')}")
+        sys.exit(1)
+
+    vm_manager.record_tls_metadata(company_name, {
+        "domains": domains,
+    })
+
+    click.echo("✅ Installed certificate under /var/lib/acme/localhost on the VM")
+    click.echo("🔁 nginx restarted to pick up the new TLS material")
+    root_info = platform.mkcert_caroot()
+    if root_info:
+        click.echo(f"ℹ️  If other devices need trust, share {root_info / 'rootCA.pem'}")
+
+
+def _ensure_binary(name: str, install_hint: str) -> bool:
+    """Check if a binary is available; emit guidance if missing."""
+    if shutil.which(name):
+        return True
+    click.echo(f"❌ Missing dependency: {name}")
+    click.echo(f"   → {install_hint}")
+    return False
+
+
+def _extract_public_key(key_path: Path) -> Optional[str]:
+    """Return the Age public key for a private key file."""
+    try:
+        output = subprocess.check_output(
+            ["age-keygen", "-y", str(key_path)],
+            text=True
+        ).strip()
+    except subprocess.CalledProcessError as exc:
+        click.echo("❌ Failed to derive Age public key")
+        click.echo(f"   {exc}")
+        return None
+
+    if "Public key:" in output:
+        return output.split(":", 1)[1].strip()
+    return output
+
+
+def _update_sops_yaml(public_key: str, sops_path: Path) -> bool:
+    """Ensure the Age key is referenced inside .sops.yaml."""
+    if not sops_path.exists():
+        click.echo(f"❌ {sops_path} not found; please create it before proceeding.")
+        return False
+
+    content = sops_path.read_text()
+    if public_key in content:
+        return True
+
+    lines = content.splitlines()
+    updated = False
+
+    for idx, line in enumerate(lines):
+        if PLACEHOLDER_KEY in line:
+            cleaned = line.lstrip("#").strip()
+            prefix = line[: len(line) - len(line.lstrip())]
+            replacement = cleaned.replace(PLACEHOLDER_KEY, public_key, 1)
+            lines[idx] = prefix + replacement
+            updated = True
+            break
+
+    if not updated:
+        # Try to insert after the keys: stanza
+        for idx, line in enumerate(lines):
+            if line.strip().startswith("keys:"):
+                insertion = f"  - &team_key_cli {public_key}  # Added by 'rave secrets init'"
+                lines.insert(idx + 1, insertion)
+                updated = True
+                break
+
+    if not updated:
+        click.echo("⚠️ Unable to automatically modify .sops.yaml. Please add the key manually:")
+        click.echo(f"   Age public key: {public_key}")
+        return False
+
+    sops_path.write_text("\n".join(lines) + "\n")
+    click.echo(f"✅ Added Age public key to {sops_path}")
+    return True
+
+
+@secrets.command()
+@click.option(
+    "--key-file",
+    default=str(DEFAULT_AGE_KEY_PATH),
+    show_default=True,
+    help="Location for the Age private key"
+)
+@click.option(
+    "--secrets-file",
+    default=str(DEFAULT_SECRETS_FILE),
+    show_default=True,
+    help="Path to the encrypted secrets file"
+)
+def init(key_file: str, secrets_file: str):
+    """Guide through SOPS + Age bootstrap."""
+
+    click.echo("🔐 RAVE secrets bootstrap")
+
+    sops_ok = _ensure_binary(
+        "sops",
+        "Install from https://github.com/getsops/sops/releases"
+    )
+    age_ok = _ensure_binary(
+        "age-keygen",
+        "Install age (https://github.com/FiloSottile/age/releases) so age-keygen is available"
+    )
+
+    if not (sops_ok and age_ok):
+        sys.exit(1)
+
+    key_path = Path(key_file).expanduser()
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not key_path.exists():
+        click.echo(f"🗝️  Generating Age key at {key_path}")
+        try:
+            subprocess.run([
+                "age-keygen",
+                "-o",
+                str(key_path)
+            ], check=True)
+        except subprocess.CalledProcessError as exc:
+            click.echo("❌ Failed to generate Age key")
+            click.echo(f"   {exc}")
+            sys.exit(1)
+        key_path.chmod(0o600)
+    else:
+        click.echo(f"ℹ️  Reusing existing Age key at {key_path}")
+
+    public_key = _extract_public_key(key_path)
+    if not public_key:
+        sys.exit(1)
+
+    sops_path = Path(".sops.yaml")
+    _update_sops_yaml(public_key, sops_path)
+
+    click.echo("📌 Export this before running Nix builds:")
+    click.echo(f"   export SOPS_AGE_KEY_FILE={key_path}")
+
+    secrets_path = Path(secrets_file)
+    if not secrets_path.exists():
+        click.echo(f"❌ {secrets_path} does not exist yet. Create it before editing with sops.")
+    else:
+        if click.confirm("Open secrets file with sops now?", default=True):
+            env = os.environ.copy()
+            env["SOPS_AGE_KEY_FILE"] = str(key_path)
+            try:
+                subprocess.run([
+                    "sops",
+                    str(secrets_path)
+                ], check=True, env=env)
+            except subprocess.CalledProcessError as exc:
+                click.echo("❌ sops exited with an error")
+                click.echo(f"   {exc}")
+
+    guidance = textwrap.dedent(
+        f"""
+        Next steps:
+          • After a VM boots, run 'rave secrets install <company>' (or otherwise place {key_path} at /var/lib/sops-nix/key.txt) so sops-nix can decrypt secrets.
+          • Keep the Age private key backed up securely; losing it means secrets cannot be decrypted.
+          • Re-run this command if you rotate keys or onboard new operators.
+        """
+    ).strip()
+    click.echo(guidance)
+
+
+def _load_decrypted_secrets(secrets_path: Path, age_key_path: Path) -> Optional[Dict]:
+    env = os.environ.copy()
+    env.setdefault("SOPS_AGE_KEY_FILE", str(age_key_path))
+
+    try:
+        output = subprocess.check_output(
+            [
+                "sops",
+                "-d",
+                "--output-type",
+                "json",
+                str(secrets_path),
+            ],
+            text=True,
+            env=env,
+        )
+        return json.loads(output)
+    except subprocess.CalledProcessError as exc:
+        click.echo("⚠️ Unable to decrypt secrets file")
+        click.echo(f"   {exc}")
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        click.echo("⚠️ Failed to load secrets metadata")
+        click.echo(f"   {exc}")
+    return None
+
+
+def _sync_vm_secrets(
+    vm_manager: VMManager,
+    company_name: str,
+    key_file: Path,
+    secrets_file: Path,
+    *,
+    restart_db: bool,
+) -> Dict[str, any]:
+    """Install the Age key and push decrypted secrets into the VM."""
+
+    key_path = Path(key_file).expanduser()
+    secrets_path = Path(secrets_file)
+
+    if not key_path.exists():
+        return {
+            "success": False,
+            "error": f"Age key not found at {key_path}"
+        }
+
+    age_result = vm_manager.install_age_key(company_name, key_path)
+    if not age_result.get("success"):
+        return {
+            "success": False,
+            "error": age_result.get("error", "Failed to install Age key")
+        }
+
+    age_remote_path = age_result.get("path", "/var/lib/sops-nix/key.txt")
+    messages: List[str] = []
+    warnings: List[str] = []
+    installed_secrets: List[str] = []
+
+    secrets_data: Optional[Dict] = None
+    if secrets_path.exists():
+        secrets_data = _load_decrypted_secrets(secrets_path, key_path)
+        if secrets_data is None:
+            warnings.append(
+                f"Unable to decrypt {secrets_path}; skipped secret sync"
+            )
+    else:
+        warnings.append(
+            f"Secrets file not found at {secrets_path}; skipped secret sync"
+        )
+
+    if secrets_data:
+        mattermost = secrets_data.get("mattermost", {})
+        gitlab = secrets_data.get("gitlab", {})
+        oidc = secrets_data.get("oidc", {})
+
+        secret_items = [
+            ("mattermost/admin-username", mattermost.get("admin-username"), "root", "root", "0400", None),
+            ("mattermost/admin-email", mattermost.get("admin-email"), "root", "root", "0400", None),
+            ("mattermost/admin-password", mattermost.get("admin-password"), "root", "root", "0400", None),
+            ("mattermost/env", mattermost.get("env"), "mattermost", "mattermost", "0600", "mattermost.service"),
+            ("oidc/chat-control-client-secret", oidc.get("chat-control-client-secret"), "root", "root", "0400", None),
+            ("gitlab/api-token", gitlab.get("api-token"), "root", "root", "0400", None),
+        ]
+
+        entries = []
+        for name, content, owner, group, mode, restart in secret_items:
+            if not content:
+                continue
+            entries.append(
+                {
+                    "name": name,
+                    "remote_path": f"/run/secrets/{name}",
+                    "content": content,
+                    "owner": owner,
+                    "group": group,
+                    "mode": mode,
+                    "restart_service": restart,
+                }
+            )
+
+        if entries:
+            secret_result = vm_manager.install_secret_files(company_name, entries)
+            if not secret_result.get("success"):
+                return {
+                    "success": False,
+                    "error": secret_result.get("error", "Failed to install secrets"),
+                    "age_remote_path": age_remote_path,
+                }
+
+            installed_secrets = [entry["name"] for entry in entries]
+
+        if restart_db:
+            admin_password = mattermost.get("admin-password")
+            if admin_password:
+                db_result = vm_manager.ensure_mattermost_database(
+                    company_name, admin_password
+                )
+                if db_result.get("success"):
+                    messages.append("Mattermost database credentials refreshed")
+                else:
+                    warnings.append(
+                        f"Mattermost database reset failed: {db_result.get('error')}"
+                    )
+
+    return {
+        "success": True,
+        "age_remote_path": age_remote_path,
+        "messages": messages,
+        "warnings": warnings,
+        "installed_secrets": installed_secrets,
+    }
+
+@secrets.command(name="install")
+@click.argument("company_name")
+@click.option(
+    "--key-file",
+    default=str(DEFAULT_AGE_KEY_PATH),
+    show_default=True,
+    help="Age private key to copy into the VM"
+)
+@click.option(
+    "--remote-path",
+    default="/var/lib/sops-nix/key.txt",
+    show_default=True,
+    help="Destination path inside the VM"
+)
+@click.pass_context
+@click.option(
+    "--secrets-file",
+    default=str(DEFAULT_SECRETS_FILE),
+    show_default=True,
+    help="Path to the encrypted secrets file"
+)
+def install_key(ctx, company_name: str, key_file: str, remote_path: str, secrets_file: str):
+    """Copy the Age key into a running VM for sops-nix."""
+
+    vm_manager = ctx.obj['vm_manager']
+    sync_result = _sync_vm_secrets(
+        vm_manager,
+        company_name,
+        Path(key_file),
+        Path(secrets_file),
+        restart_db=True,
+    )
+
+    if not sync_result.get("success"):
+        click.echo(f"❌ {sync_result.get('error', 'Failed to install Age key')}" )
+        sys.exit(1)
+
+    age_remote_path = sync_result.get("age_remote_path", remote_path)
+    click.echo(
+        f"✅ Age key installed for '{company_name}' at {age_remote_path}"
+    )
+
+    installed = sync_result.get("installed_secrets", [])
+    if installed:
+        click.echo(f"   • Installed secrets: {', '.join(installed)}")
+
+    for message in sync_result.get("messages", []):
+        click.echo(f"   • {message}")
+
+    for warning in sync_result.get("warnings", []):
+        click.echo(f"⚠️ {warning}")
 
 # System Commands
 @cli.command()
@@ -128,6 +659,39 @@ def start(ctx, company_name: str):
         result = vm_manager.start_vm(company_name)
         if result['success']:
             click.echo(f"✅ VM '{company_name}' started successfully!")
+
+            sync_result = _sync_vm_secrets(
+                vm_manager,
+                company_name,
+                DEFAULT_AGE_KEY_PATH,
+                DEFAULT_SECRETS_FILE,
+                restart_db=False,
+            )
+
+            if sync_result.get("success"):
+                age_remote_path = sync_result.get(
+                    "age_remote_path", "/var/lib/sops-nix/key.txt"
+                )
+                click.echo(f"   • SOPS Age key synced to {age_remote_path}")
+
+                installed = sync_result.get("installed_secrets", [])
+                if installed:
+                    click.echo(
+                        f"   • Deployed secrets: {', '.join(installed)}"
+                    )
+
+                for message in sync_result.get("messages", []):
+                    click.echo(f"   • {message}")
+
+                for warning in sync_result.get("warnings", []):
+                    click.echo(f"   ⚠️  {warning}")
+            else:
+                click.echo(
+                    f"⚠️  Secrets not synced automatically: {sync_result.get('error')}"
+                )
+                click.echo(
+                    f"   Run 'rave secrets install {company_name}' after the key is available."
+                )
         else:
             click.echo(f"❌ Failed to start VM: {result['error']}")
             sys.exit(1)
@@ -204,6 +768,9 @@ def reset(ctx, company_name: str):
         result = vm_manager.reset_vm(company_name)
         if result['success']:
             click.echo(f"✅ VM '{company_name}' reset successfully!")
+            warning = result.get('warning')
+            if warning:
+                click.echo(f"⚠️  {warning}")
         else:
             click.echo(f"❌ Failed to reset VM: {result['error']}")
             sys.exit(1)
@@ -266,14 +833,35 @@ def user():
 @click.option('--oauth-id', required=True, help='GitLab OAuth ID')
 @click.option('--access', default='developer', help='Access level (admin/developer/guest)')
 @click.option('--company', help='Company name')
+@click.option('--name', help='Display name')
+@click.option(
+    '--metadata',
+    help='User metadata (JSON object or comma-separated key=value pairs)',
+)
 @click.pass_context
-def add(ctx, email: str, oauth_id: str, access: str, company: Optional[str]):
+def add(
+    ctx,
+    email: str,
+    oauth_id: str,
+    access: str,
+    company: Optional[str],
+    name: Optional[str],
+    metadata: Optional[str],
+):
     """Add a new user via GitLab OAuth."""
     user_manager = ctx.obj['user_manager']
-    
+    metadata_dict = _parse_metadata_option(metadata)
+
     click.echo(f"👤 Adding user {email} (OAuth ID: {oauth_id})...")
     try:
-        result = user_manager.add_user(email, oauth_id, access, company)
+        result = user_manager.add_user(
+            email,
+            oauth_id,
+            access,
+            company,
+            name=name,
+            metadata=metadata_dict,
+        )
         if result['success']:
             click.echo(f"✅ User {email} added successfully!")
         else:
@@ -324,7 +912,10 @@ def list(ctx, company: Optional[str]):
             click.echo("👥 Users:")
             for user in users:
                 company_info = f" ({user['company']})" if user.get('company') else ""
-                click.echo(f"   • {user['email']}{company_info} - {user['access']}")
+                display_name = f"{user.get('name')} " if user.get('name') else ""
+                click.echo(
+                    f"   • {display_name}{user['email']}{company_info} - {user['access']}"
+                )
         else:
             click.echo(f"❌ Failed to list users: {result['error']}")
             sys.exit(1)
@@ -368,11 +959,18 @@ def show(ctx, email: str):
         if result['success']:
             user = result['user']
             click.echo(f"👤 User Details:")
+            if user.get('name'):
+                click.echo(f"   Name: {user['name']}")
             click.echo(f"   Email: {user['email']}")
             click.echo(f"   OAuth ID: {user['oauth_id']}")
             click.echo(f"   Access: {user['access']}")
             if user.get('company'):
                 click.echo(f"   Company: {user['company']}")
+            metadata = user.get('metadata')
+            if metadata:
+                click.echo("   Metadata:")
+                for key, value in metadata.items():
+                    click.echo(f"      - {key}: {value}")
         else:
             click.echo(f"❌ User {email} not found")
             sys.exit(1)
@@ -383,20 +981,71 @@ def show(ctx, email: str):
 @user.command(name='bulk-add')
 @click.argument('file', type=click.Path(exists=True))
 @click.option('--company', help='Company name for all users')
+@click.option(
+    '--metadata',
+    help='Default metadata applied to each user (JSON or comma-separated key=value pairs)',
+)
+@click.option(
+    '--verbose',
+    is_flag=True,
+    help='Show per-user results during import',
+)
 @click.pass_context
-def bulk_add(ctx, file: str, company: Optional[str]):
+def bulk_add(
+    ctx,
+    file: str,
+    company: Optional[str],
+    metadata: Optional[str],
+    verbose: bool,
+):
     """Add multiple users from CSV/JSON file."""
     user_manager = ctx.obj['user_manager']
     
     click.echo(f"📁 Adding users from {file}...")
     try:
-        result = user_manager.bulk_add_users(file, company)
+        default_metadata = None
+        if metadata is not None:
+            parsed = _parse_metadata_option(metadata)
+            default_metadata = parsed or None
+
+        result = user_manager.bulk_add_users(
+            file,
+            company,
+            default_metadata=default_metadata,
+        )
         if result['success']:
-            added = result['added']
-            failed = result['failed']
-            click.echo(f"✅ Added {added} users successfully!")
-            if failed > 0:
-                click.echo(f"⚠️  {failed} users failed to add (see logs)")
+            added_count = result.get('added', 0)
+            updated_count = result.get('updated', 0)
+
+            click.echo(f"✅ Added {added_count} users successfully!")
+            if updated_count:
+                click.echo(f"🔁 Updated {updated_count} existing users.")
+
+            if verbose:
+                details = result.get('details', {})
+                for user in details.get('added', []):
+                    email = user.get('email', 'unknown')
+                    click.echo(f"   • Added {email}")
+                for user in details.get('updated', []):
+                    email = user.get('email', 'unknown')
+                    click.echo(f"   • Updated {email}")
+                for skipped in details.get('skipped', []):
+                    email = skipped.get('email', 'unknown')
+                    reason = skipped.get('reason', 'Skipped')
+                    click.echo(f"   • Skipped {email}: {reason}")
+                for failure in details.get('failed', []):
+                    email = failure.get('email') or failure.get('data', {}).get('email', 'unknown')
+                    error_msg = failure.get('error', 'Unknown error')
+                    click.echo(f"   • Failed {email}: {error_msg}")
+
+            if result['skipped']:
+                click.echo(
+                    f"ℹ️  Skipped {result['skipped']} users."
+                )
+            if result['failed']:
+                click.echo(
+                    f"⚠️  {result['failed']} users failed to add (see logs)"
+                )
         else:
             click.echo(f"❌ Failed to bulk add users: {result['error']}")
             sys.exit(1)

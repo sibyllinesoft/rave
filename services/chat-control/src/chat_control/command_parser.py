@@ -1,5 +1,5 @@
 """
-Secure Command Parser for Matrix Bridge
+Secure Command Parser for Chat Control
 Implements strict command validation with allowlisting and input sanitization.
 
 Security Features:

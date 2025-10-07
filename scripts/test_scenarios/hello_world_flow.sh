@@ -1,13 +1,13 @@
 #!/bin/bash
 # Hello World End-to-End Workflow Test
-# Tests the complete autonomous development workflow from Matrix command to deployed sandbox
+# Tests the complete autonomous development workflow from Mattermost command to deployed sandbox
 
 set -euo pipefail
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
-MATRIX_BASE_URL="https://localhost:3002/matrix"
+MATTERMOST_BASE_URL="https://localhost:8443/mattermost"
 GITLAB_BASE_URL="https://localhost:3002/gitlab"
 TIMEOUT_SECONDS=30
 
@@ -52,19 +52,19 @@ workflow_result() {
     [[ -n "$details" ]] && echo "   └─ $details"
 }
 
-# Simulate Matrix command processing
-simulate_matrix_command() {
-    log_step "Simulating Matrix command: '!rave create project hello-world'"
+# Simulate Mattermost command processing
+simulate_mattermost_command() {
+    log_step "Simulating Mattermost command: '!rave create project hello-world'"
     
-    # This would normally send a command to Matrix and wait for agent response
+    # This would normally send a command to Mattermost and wait for agent response
     local command="!rave create project hello-world"
     local expected_response="Creating project 'hello-world' with basic structure..."
     
     # Simulate command validation
     if [[ "$command" =~ ^!rave\ create\ project\ [a-zA-Z0-9-]+$ ]]; then
-        workflow_result "Matrix command validation" "SIMULATE" "Command format valid: $command"
+        workflow_result "Mattermost command validation" "SIMULATE" "Command format valid: $command"
     else
-        workflow_result "Matrix command validation" "FAIL" "Invalid command format: $command"
+        workflow_result "Mattermost command validation" "FAIL" "Invalid command format: $command"
         return 1
     fi
     
@@ -343,9 +343,9 @@ EOF
     return 0
 }
 
-# Simulate Matrix notification
-simulate_matrix_notification() {
-    log_step "Simulating Matrix room notification..."
+# Simulate Mattermost notification
+simulate_mattermost_notification() {
+    log_step "Simulating Mattermost room notification..."
     
     local notification_message=$(cat << 'EOF'
 🎉 **Hello World Project - Sandbox Ready!**
@@ -375,8 +375,8 @@ Your merge request has been automatically deployed to a sandbox environment.
 EOF
 )
     
-    # Simulate posting to Matrix room
-    workflow_result "Matrix room notification" "SIMULATE" "Notification posted with sandbox access info"
+    # Simulate posting to Mattermost room
+    workflow_result "Mattermost room notification" "SIMULATE" "Notification posted with sandbox access info"
     
     # Simulate user acknowledgment
     sleep 1
@@ -439,9 +439,9 @@ simulate_merge_and_cleanup() {
     # Simulate sandbox cleanup
     workflow_result "Sandbox VM cleanup" "SIMULATE" "Sandbox VM sandbox-mr-1 cleaned up"
     
-    # Simulate final Matrix notification
+    # Simulate final Mattermost notification
     local completion_message="🎯 Hello World project successfully merged! The autonomous development workflow is complete."
-    workflow_result "Completion notification" "SIMULATE" "Final status posted to Matrix"
+    workflow_result "Completion notification" "SIMULATE" "Final status posted to Mattermost"
     
     return 0
 }
@@ -467,9 +467,9 @@ main() {
     log_info "Starting Hello World autonomous development workflow..."
     echo ""
     
-    # Step 1: Matrix Command Processing
-    if ! simulate_matrix_command; then
-        log_error "Workflow failed at Matrix command processing"
+    # Step 1: Mattermost Command Processing
+    if ! simulate_mattermost_command; then
+        log_error "Workflow failed at Mattermost command processing"
         exit 1
     fi
     echo ""
@@ -516,9 +516,9 @@ main() {
     fi
     echo ""
     
-    # Step 8: Matrix Notification
-    if ! simulate_matrix_notification; then
-        log_error "Workflow failed at Matrix notification"
+    # Step 8: Mattermost Notification
+    if ! simulate_mattermost_notification; then
+        log_error "Workflow failed at Mattermost notification"
         exit 1
     fi
     echo ""
@@ -571,19 +571,19 @@ MODES:
     help        Show this help message
 
 DESCRIPTION:
-    Tests the complete autonomous development workflow from Matrix command
+    Tests the complete autonomous development workflow from Mattermost command
     to deployed sandbox environment. Validates all steps of the RAVE
     Autonomous Development Agency workflow.
 
 WORKFLOW STEPS:
-    1. Matrix command processing
+    1. Mattermost command processing
     2. GitLab project creation  
     3. Code structure generation
     4. Git repository operations
     5. Merge request creation
     6. CI/CD pipeline trigger
     7. Sandbox VM provisioning
-    8. Matrix room notification
+    8. Mattermost room notification
     9. User sandbox testing
     10. Merge approval and cleanup
 
