@@ -34,6 +34,8 @@ rave vm logs acme-corp nginx --follow
 - Keep the Age private key (`~/.config/sops/age/keys.txt`) backed up securely—without it the encrypted secrets cannot be recovered.
 - After the VM boots, run `rave secrets install <company>` to push the Age key into `/var/lib/sops-nix/key.txt` automatically (or copy it manually if you prefer).
 - Before invoking `nix build` (or any command that reads the encrypted secrets), export `SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt` in your shell.
+- When enabling external OAuth for GitLab, add `gitlab/oauth-provider-client-secret` (and its client ID) to `config/secrets.yaml` so the CLI can sync them into the VM.
+- End-to-end OIDC setup (Google/GitHub) is documented in `docs/oidc-setup.md`; the CLI now prints required redirect URIs and can apply provider credentials live.
 
 ### Add Users via GitLab OAuth
 ```bash
@@ -42,14 +44,19 @@ rave user add john@acme-corp.com \
   --oauth-id 12345 \
   --name "John Smith" \
   --metadata '{"role":"engineer","team":"app"}' \
-  --access developer --company acme-corp
+  --access developer --company acme-corp --provider google
 
 # List company users
 rave user list --company acme-corp
 
 # Bulk import or update from CSV (email,oauth_id,name,access,role columns)
 rave user bulk-add ./users.csv --company acme-corp --metadata 'project=beta'
+
+# Persist the default provider (avoids repeating --provider on every command)
+rave set-oauth-provider github
 ```
+
+The GitLab VM enables OAuth via `services.rave.gitlab.oauth` (see `nixos/configs/complete-production.nix`). Set the client ID in Nix and keep the client secret in `config/secrets.yaml`; the CLI pushes the secret into `/run/secrets/gitlab/oauth-provider-client-secret` when you start the VM.
 
 ## 🏗️ Repository Structure
 
@@ -126,6 +133,9 @@ rave user show <email>                                   # Show details
 ### OAuth Status
 ```bash
 rave oauth status [service]                  # Show OAuth integration status
+rave oauth redirects [company]               # Print redirect URIs for Google/GitHub
+rave oauth bootstrap google --company <name> # Generate gcloud command for OAuth client
+rave oauth apply --company <name> --provider google --client-id ...
 ```
 
 ### Secrets

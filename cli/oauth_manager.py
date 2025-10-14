@@ -51,7 +51,10 @@ class OAuthManager:
                 if service == "penpot":
                     configured = "gitlab" in result.stdout.lower()
                 elif service == "element":
-                    configured = "oauth2_generic" in result.stdout
+                    configured = any(
+                        marker in result.stdout
+                        for marker in ("google_oauth2", "github", "oauth2_generic")
+                    )
                 else:
                     configured = False
                 

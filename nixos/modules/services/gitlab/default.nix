@@ -4,6 +4,36 @@
 
 with lib;
 
+let
+  cfg = config.services.rave.gitlab;
+  oauthCfg = cfg.oauth;
+
+  providerMeta = {
+    google = {
+      providerName = "google_oauth2";
+      providerLabel = "Google";
+      args = clientId: secretFile: {
+        access_type = "offline";
+        prompt = "select_account consent";
+        client_id = clientId;
+        scope = "email,profile";
+      } // optionalAttrs (secretFile != null) {
+        client_secret = { _secret = secretFile; };
+      };
+    };
+    github = {
+      providerName = "github";
+      providerLabel = "GitHub";
+      args = clientId: secretFile: {
+        client_id = clientId;
+        scope = "user:email";
+      } // optionalAttrs (secretFile != null) {
+        client_secret = { _secret = secretFile; };
+      };
+    };
+  };
+
+in
 {
   imports = [
     ./nginx.nix
@@ -38,10 +68,65 @@ with lib;
           description = "GitLab Runner registration token";
         };
       };
+
+      oauth = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Enable external OAuth/OIDC provider for GitLab sign-in";
+        };
+
+        provider = mkOption {
+          type = types.enum [ "google" "github" ];
+          default = "google";
+          description = ''OAuth/OIDC provider to delegate GitLab sign-in to. Supported values: "google" or "github".'';
+        };
+
+        clientId = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "OAuth client ID registered with the external provider (non-secret).";
+        };
+
+        clientSecretFile = mkOption {
+          type = types.nullOr types.path;
+          default = null;
+          description = "Path to a file containing the OAuth client secret (managed outside the Nix store, e.g. via sops).";
+        };
+
+        autoSignIn = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Automatically redirect users to the configured OAuth provider on the GitLab sign-in page.";
+        };
+
+        autoLinkUsers = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Automatically link OAuth identities to existing GitLab users created by the CLI.";
+        };
+
+        allowLocalSignin = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''Allow the traditional GitLab username/password form. When disabled, users are forced through OAuth (root admins can still reach the form via `?auto_sign_in=false`).'';
+        };
+      };
     };
   };
   
   config = mkIf config.services.rave.gitlab.enable {
+    assertions = lib.optionals (cfg.oauth.enable) [
+      {
+        assertion = cfg.oauth.clientId != null;
+        message = "services.rave.gitlab.oauth.clientId must be set when OAuth is enabled.";
+      }
+      {
+        assertion = cfg.oauth.clientSecretFile != null;
+        message = "services.rave.gitlab.oauth.clientSecretFile must be set when OAuth is enabled.";
+      }
+    ];
+
     # P3: GitLab Service Integration
     services.gitlab = {
       enable = true;
@@ -60,7 +145,7 @@ with lib;
         
       databasePasswordFile = if config.services.rave.gitlab.useSecrets
         then config.sops.secrets."gitlab/db-password".path or "/run/secrets/gitlab-db-password"
-        else pkgs.writeText "gitlab-db-password" "development-db-password-dummy";
+        else pkgs.writeText "gitlab-db-password" "gitlab-production-password";
         
       # All required secrets for GitLab
       secrets = {
@@ -85,11 +170,36 @@ with lib;
         # Using database secret file instead for minimal configuration
       };
       
-      # Prevent nginx conflicts - we handle nginx separately
-      extraConfig.nginx.enable = false;
-      
       # GitLab configuration from P3
-      extraConfig = {
+      extraConfig =
+        let
+          oauthSettings =
+            if cfg.oauth.enable then
+              let
+                meta = providerMeta.${cfg.oauth.provider};
+                providerArgs = meta.args cfg.oauth.clientId cfg.oauth.clientSecretFile;
+                providerEntry = {
+                  name = meta.providerName;
+                  label = meta.providerLabel;
+                  args = providerArgs;
+                };
+              in {
+                omniauth = {
+                  enabled = true;
+                  allow_single_sign_on = [ meta.providerName ];
+                  block_auto_created_users = true;
+                  auto_link_user = if cfg.oauth.autoLinkUsers then [ meta.providerName ] else [];
+                  providers = [ providerEntry ];
+                } // optionalAttrs cfg.oauth.autoSignIn {
+                  auto_sign_in_with_provider = meta.providerName;
+                };
+                gitlab_signin_enabled = cfg.oauth.allowLocalSignin;
+                password_authentication_enabled_for_web = cfg.oauth.allowLocalSignin;
+                gitlab_signup_enabled = false;
+              }
+            else
+              {};
+        in {
         gitlab = {
           host = config.services.rave.gitlab.host;
           port = 443;
@@ -120,14 +230,22 @@ with lib;
           enabled = true;
           path = "/var/lib/gitlab/artifacts";
           max_size = "10G";
-        };
-        
-        # LFS configuration
-        lfs = {
-          enabled = true;
-          storage_path = "/var/lib/gitlab/lfs";
-        };
-      };
+          };
+          
+          # LFS configuration
+          lfs = {
+            enabled = true;
+            storage_path = "/var/lib/gitlab/lfs";
+          };
+
+          redis = {
+            host = "127.0.0.1";
+            port = 6380;
+          };
+          
+          # Prevent nginx conflicts - we handle nginx separately
+          nginx.enable = false;
+      } // oauthSettings;
     };
 
     # P3: GitLab Runner configuration with Docker + KVM support
@@ -178,30 +296,30 @@ with lib;
 
     # Required dependencies for GitLab
     services.postgresql = {
-      enable = true;
-      ensureDatabases = [ "gitlab" ];
-      ensureUsers = [{
+      enable = mkDefault true;
+      ensureDatabases = mkDefault [ "gitlab" ];
+      ensureUsers = mkDefault [{
         name = "gitlab";
         ensureDBOwnership = true;
       }];
       
       # Connection pooling from P3
       settings = {
-        max_connections = 100;
-        shared_buffers = "256MB";
-        effective_cache_size = "1GB";
-        maintenance_work_mem = "64MB";
-        checkpoint_completion_target = 0.9;
-        wal_buffers = "16MB";
-        default_statistics_target = 100;
-        random_page_cost = 1.1;
-        effective_io_concurrency = 200;
+        max_connections = mkDefault 100;
+        shared_buffers = mkDefault "256MB";
+        effective_cache_size = mkDefault "1GB";
+        maintenance_work_mem = mkDefault "64MB";
+        checkpoint_completion_target = mkDefault 0.9;
+        wal_buffers = mkDefault "16MB";
+        default_statistics_target = mkDefault 100;
+        random_page_cost = mkDefault 1.1;
+        effective_io_concurrency = mkDefault 200;
       };
     };
 
     services.redis.servers.gitlab = {
       enable = true;
-      port = 6379;
+      port = 6380;
       
       # Memory configuration
       settings = {

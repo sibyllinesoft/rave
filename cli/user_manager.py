@@ -19,6 +19,12 @@ class UserManager:
         self.config_dir = Path.home() / ".config" / "rave"
         self.users_file = self.config_dir / "users.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.supported_providers = {"google_oauth2", "github"}
+        self.default_provider = "google_oauth2"
+
+    def set_default_provider(self, provider: str):
+        """Set the default OAuth provider used when none is provided."""
+        self.default_provider = self._normalize_provider(provider)
     
     def _load_users(self) -> Dict:
         """Load users configuration."""
@@ -39,7 +45,32 @@ class UserManager:
             if user["email"] == email:
                 return user
         return None
-    
+
+    def _normalize_provider(self, provider: Optional[str]) -> str:
+        if not provider:
+            return self.default_provider
+
+        value = provider.strip()
+        if not value:
+            return self.default_provider
+
+        key = value.lower()
+        if key in {"google", "google_oauth2"}:
+            return "google_oauth2"
+        if key == "github":
+            return "github"
+        if key in self.supported_providers:
+            return key
+        raise ValueError(f"Unsupported OAuth provider: {provider}")
+
+    def _provider_label(self, provider: Optional[str]) -> str:
+        normalized = self._normalize_provider(provider)
+        if normalized == "google_oauth2":
+            return "Google"
+        if normalized == "github":
+            return "GitHub"
+        return normalized
+
     def _execute_gitlab_command(self, company_vm: str, command: List[str]) -> Dict[str, any]:
         """Execute GitLab management command in VM."""
         # This would SSH into the VM and execute gitlab-rails commands
@@ -84,6 +115,7 @@ class UserManager:
         name: Optional[str] = None,
         metadata: Optional[Dict[str, str]] = None,
         update_existing: bool = False,
+        provider: Optional[str] = None,
     ) -> Dict[str, any]:
         """Add or update a GitLab OAuth user."""
 
@@ -122,10 +154,20 @@ class UserManager:
                 "created_at": now,
             }
 
-        user_record["oauth_id"] = existing_user.get("oauth_id") if is_update and existing_user.get("oauth_id") else incoming_oauth
+        user_record["oauth_id"] = (
+            existing_user.get("oauth_id") if is_update and existing_user.get("oauth_id") else incoming_oauth
+        )
         user_record["access"] = access_level
         user_record.setdefault("created_at", now)
         user_record["updated_at"] = now
+
+        try:
+            provider_value = self._normalize_provider(
+                provider or user_record.get("provider") or (existing_user or {}).get("provider")
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        user_record["provider"] = provider_value
 
         if company is not None:
             user_record["company"] = company
@@ -166,6 +208,7 @@ class UserManager:
                 "",
                 f"email = {json.dumps(email)}",
                 f"oauth_id = {json.dumps(user_record['oauth_id'])}",
+                f"provider = {json.dumps(provider_value)}",
                 f"username_base = {json.dumps(username_base)}",
                 "username = username_base",
                 "suffix = 0",
@@ -202,7 +245,7 @@ class UserManager:
                 "  user.save!",
                 "end",
                 "",
-                "identity = user.identities.find_or_initialize_by(provider: 'oauth2_generic')",
+                "identity = user.identities.find_or_initialize_by(provider: provider)",
                 "identity.extern_uid = oauth_id",
                 "identity.save!",
                 "",
@@ -257,6 +300,10 @@ class UserManager:
         users_data = self._load_users()
         users = users_data["users"]
         
+        for user in users:
+            if not user.get("provider"):
+                user["provider"] = self.default_provider
+
         if company:
             users = [u for u in users if u.get("company") == company]
         
@@ -270,6 +317,9 @@ class UserManager:
         if not user:
             return {"success": False, "error": f"User {email} not found"}
         
+        if not user.get("provider"):
+            user["provider"] = self.default_provider
+
         return {"success": True, "user": user}
     
     def config_user(self, email: str, access: Optional[str] = None) -> Dict[str, any]:
@@ -316,6 +366,7 @@ class UserManager:
         users_file: str,
         company: Optional[str] = None,
         default_metadata: Optional[Dict[str, str]] = None,
+        provider: Optional[str] = None,
     ) -> Dict[str, any]:
         """Add multiple users from CSV/JSON file."""
         file_path = Path(users_file).expanduser()
@@ -338,6 +389,11 @@ class UserManager:
             return cleaned or None
 
         default_meta_clean = _clean_metadata(default_metadata)
+
+        try:
+            normalized_default_provider = self._normalize_provider(provider)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
 
         try:
             if file_path.suffix.lower() == '.json':
@@ -412,6 +468,15 @@ class UserManager:
 
                 target_company = company or row_company
 
+                row_provider = user_data.get("provider")
+                try:
+                    normalized_provider = self._normalize_provider(
+                        row_provider or normalized_default_provider
+                    )
+                except ValueError as exc:
+                    failed_users.append({"email": email, "error": str(exc)})
+                    continue
+
                 add_result = self.add_user(
                     email=email,
                     oauth_id=oauth_value,
@@ -420,6 +485,7 @@ class UserManager:
                     name=name_value,
                     metadata=combined_metadata,
                     update_existing=True,
+                    provider=normalized_provider,
                 )
                 
                 if add_result["success"]:
@@ -598,10 +664,14 @@ class UserManager:
     
     def sync_users_with_gitlab(self, company: str) -> Dict[str, any]:
         """Synchronize local user database with GitLab users."""
+        provider_list = sorted(self.supported_providers)
+        provider_array = ", ".join(f"'{p}'" for p in provider_list)
+
         gitlab_cmd = [
-            """
+            f"""
+            providers = [{provider_array}]
             users = User.all.map do |user|
-              identity = user.identities.find_by(provider: 'oauth2_generic')
+              identity = user.identities.where(provider: providers).first
               {
                 id: user.id,
                 email: user.email,
@@ -641,6 +711,8 @@ class UserManager:
                     local_user["last_sync"] = time.time()
                     local_user["gitlab_id"] = gitlab_user["id"]
                     local_user["last_sign_in"] = gitlab_user.get("last_sign_in_at")
+                    if not local_user.get("provider"):
+                        local_user["provider"] = gitlab_user.get("provider") or self.default_provider
                     sync_results["updated"] += 1
                 else:
                     # Add new user found in GitLab
@@ -652,7 +724,8 @@ class UserManager:
                         "created_at": time.time(),
                         "gitlab_id": gitlab_user["id"],
                         "last_sync": time.time(),
-                        "synced_from_gitlab": True
+                        "synced_from_gitlab": True,
+                        "provider": gitlab_user.get("provider") or self.default_provider
                     }
                     users_data["users"].append(new_user)
                     sync_results["added"] += 1

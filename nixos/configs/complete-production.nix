@@ -9,6 +9,9 @@
     ../modules/foundation/networking.nix
     ../modules/foundation/nix-config.nix
 
+    # Service modules
+    ../modules/services/gitlab/default.nix
+
     # Security modules
     # ../modules/security/certificates.nix  # DISABLED: Using inline certificate generation instead
     ../modules/security/hardening.nix
@@ -41,7 +44,7 @@
 
   # User configuration
   users.users.root = {
-    hashedPassword = "$6$rounds=1000000$NhXVkh6kn4DMVG.U$zKJT5GkhLdU6.7yPb2H2VfSVvK9DjjBYsJWQ8jc6MaTGHr/e.3PjNSghhNE3YqjfLp0KOkVXqy/vbhKn.e7aS0";  # "debug123"
+    hashedPassword = "$6$QswyhoJG6qLe.KXH$gc29VHyMSsYAWzs8EcahO2mqYCFJBuu4JQmgGFfrEK6T0tw.hJ95WUEQ4vWGrltRSVCq7FRFBEO42sN8FTCrj/";  # "rave-root"
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKAmBj5iZFV2inopUhgTX++Wue6g5ePry+DiE3/XLxe2 rave-vm-access"
     ];
@@ -70,6 +73,7 @@
       { name = "gitlab"; ensureDBOwnership = true; }
       { name = "grafana"; ensureDBOwnership = true; }
       { name = "penpot"; ensureDBOwnership = true; }
+      { name = "prometheus"; ensureDBOwnership = false; }
     ];
     
     # Optimized settings for VM environment
@@ -92,6 +96,7 @@
     initialScript = pkgs.writeText "postgres-init.sql" ''
       -- GitLab database setup
       ALTER USER gitlab CREATEDB;
+      ALTER USER gitlab WITH PASSWORD 'gitlab-production-password';
       GRANT ALL PRIVILEGES ON DATABASE gitlab TO gitlab;
       
       -- Grafana permissions
@@ -102,9 +107,23 @@
       GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO grafana;
       GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO grafana;
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO grafana;
+      ALTER USER grafana WITH PASSWORD 'grafana-production-password';
 
       -- Penpot database setup  
       GRANT ALL PRIVILEGES ON DATABASE penpot TO penpot;
+      ALTER USER penpot WITH PASSWORD 'penpot-production-password';
+
+      -- Prometheus exporter
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'prometheus') THEN
+          CREATE ROLE prometheus WITH LOGIN PASSWORD 'prometheus_pass';
+        ELSE
+          ALTER ROLE prometheus WITH PASSWORD 'prometheus_pass';
+        END IF;
+      END
+      $$;
+      GRANT pg_monitor TO prometheus;
     '';
   };
 
@@ -209,65 +228,6 @@
 
   # ===== GITLAB SERVICE =====
 
-  services.gitlab = {
-    enable = true;
-    host = "localhost";  # Changed from rave.local to localhost
-    port = 8080;
-    https = true;
-    
-    # Database configuration
-    databaseHost = "127.0.0.1";
-    databaseName = "gitlab";
-    databaseUsername = "gitlab";
-    databasePasswordFile = pkgs.writeText "gitlab-db-password" "gitlab-production-password";
-    
-    # Initial root password
-    initialRootPasswordFile = pkgs.writeText "gitlab-root-password" "admin123456";
-    
-    # All required secrets
-    secrets = {
-      secretFile = pkgs.writeText "gitlab-secret-key-base" "development-secret-key-base-complete-production";
-      otpFile = pkgs.writeText "gitlab-otp-key-base" "development-otp-key-base-complete-production";
-      dbFile = pkgs.writeText "gitlab-db-key-base" "development-db-key-base-complete-production";
-      jwsFile = pkgs.writeText "gitlab-jws-key-base" "development-jwt-signing-key-complete-production";
-    };
-    
-    # GitLab configuration
-    extraConfig = {
-      gitlab = {
-        host = "localhost";
-        port = 443;
-        https = true;
-        relative_url_root = "/gitlab";
-        max_request_size = "10G";
-      };
-      
-      # Enable container registry
-      registry = {
-        enable = true;
-        host = "localhost";
-        port = 5000;
-      };
-      
-      # Artifacts configuration
-      artifacts = {
-        enabled = true;
-        path = "/var/lib/gitlab/artifacts";
-        max_size = "5G";
-      };
-      
-      # LFS configuration
-      lfs = {
-        enabled = true;
-        storage_path = "/var/lib/gitlab/lfs";
-      };
-    };
-  };
-
-  systemd.services.gitlab.environment = {
-    RAILS_RELATIVE_URL_ROOT = "/gitlab";
-    GITLAB_RELATIVE_URL_ROOT = "/gitlab";
-  };
 
   # ===== GRAFANA SERVICE =====
 
@@ -331,12 +291,38 @@
 
   services.mattermost = {
     enable = true;
-    siteUrl = "https://chat.localtest.me:8221";
+    siteUrl = "https://localhost:8231/mattermost";
     siteName = "RAVE Mattermost";
     # Use Mattermost defaults for data and log directories
 
-    environmentFile = config.sops.secrets."mattermost/env".path;
+    environmentFile = if config.services.rave.gitlab.useSecrets
+      then config.sops.secrets."mattermost/env".path
+      else pkgs.writeText "mattermost-env" ''
+        MM_SERVICESETTINGS_SITEURL=https://localhost:8231/mattermost
+        MM_SERVICESETTINGS_ENABLELOCALMODE=true
+        MM_SQLSETTINGS_DRIVERNAME=postgres
+        MM_SQLSETTINGS_DATASOURCE=postgres://mattermost:mmpgsecret@localhost:5432/mattermost?sslmode=disable&connect_timeout=10
+        MM_BLEVESETTINGS_INDEXDIR=/var/lib/mattermost/bleve-indexes
+      '';
 
+  };
+
+  services.rave.gitlab = {
+    enable = true;
+    host = "localhost";
+    useSecrets = false;
+    runner.enable = false;
+    oauth = {
+      enable = true;
+      provider = "google";
+      clientId = "729118765955-o2kri2vjcjms4s59tjaeidrf2fvskcfn.apps.googleusercontent.com";
+      clientSecretFile = if config.services.rave.gitlab.useSecrets
+        then config.sops.secrets."gitlab/oauth-provider-client-secret".path
+        else pkgs.writeText "gitlab-oauth-client-secret" "development-client-secret";
+      autoSignIn = true;
+      autoLinkUsers = true;
+      allowLocalSignin = false;
+    };
   };
 
   sops.secrets."mattermost/env" = {
@@ -375,10 +361,22 @@
     mode = "0400";
   };
 
+  sops.secrets."gitlab/oauth-provider-client-secret" = {
+    owner = "gitlab";
+    group = "gitlab";
+    mode = "0400";
+  };
+
   # ===== NGINX CONFIGURATION =====
 
   services.nginx = {
     enable = true;
+    commonHttpConfig = ''
+      map $http_host $rave_forwarded_port {
+        default 443;
+        ~:(?<port>\d+)$ $port;
+      }
+    '';
     
     # Global configuration
     clientMaxBodySize = "10G";
@@ -394,7 +392,29 @@
     virtualHosts."localhost" = {
       forceSSL = true;
       enableACME = false;
-      
+      listen = [
+        {
+          addr = "0.0.0.0";
+          port = 8221;
+          ssl = true;
+        }
+        {
+          addr = "0.0.0.0";
+          port = 8220;
+          ssl = false;
+        }
+        {
+          addr = "0.0.0.0";
+          port = 8231;
+          ssl = true;
+        }
+        {
+          addr = "0.0.0.0";
+          port = 8230;
+          ssl = false;
+        }
+      ];
+
       # Use manual certificate configuration
       sslCertificate = "/var/lib/acme/localhost/cert.pem";
       sslCertificateKey = "/var/lib/acme/localhost/key.pem";
@@ -474,83 +494,24 @@
           </html>
         '';
       };
-      
-      # GitLab reverse proxy
-      locations."/gitlab/" = {
-        proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+
+      # Mattermost reverse proxy
+      locations."/mattermost/" = {
+        proxyPass = "http://127.0.0.1:8065/mattermost/";
         proxyWebsockets = true;
         extraConfig = ''
-          proxy_set_header Host $host;
-          proxy_set_header X-Forwarded-Host $host;
+          proxy_set_header Host $http_host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+          proxy_set_header X-Forwarded-Host $http_host;
           proxy_set_header X-Forwarded-Ssl on;
-
-          # GitLab specific headers
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection $connection_upgrade;
-          proxy_cache_bypass $http_upgrade;
-
-          # Preserve sub-path context for relative_url_root
-          proxy_set_header X-Script-Name /gitlab;
-          proxy_set_header X-Forwarded-Script-Name /gitlab;
-          proxy_set_header X-Forwarded-Prefix /gitlab;
-          proxy_set_header X-Forwarded-Port 443;
-
-          # File upload support
-          client_max_body_size 10G;
-          proxy_connect_timeout 300s;
-          proxy_send_timeout 300s;
-          proxy_read_timeout 300s;
+          proxy_redirect off;
+          proxy_read_timeout 3600s;
         '';
       };
 
-      # GitLab static assets (CSS, JS, images)
-      locations."~ ^/gitlab/assets/(.*)$" = {
-        alias = "${config.services.gitlab.packages.gitlab}/share/gitlab/public/assets/$1";
-        extraConfig = ''
-          expires 1y;
-        '';
-      };
-
-      # GitLab uploads and user content
-      locations."~ ^/gitlab/(uploads|files)/" = {
-        proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
-        extraConfig = ''
-          proxy_set_header Host $host;
-          proxy_set_header X-Forwarded-Host $host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_set_header X-Script-Name /gitlab;
-          proxy_set_header X-Forwarded-Script-Name /gitlab;
-          proxy_set_header X-Forwarded-Prefix /gitlab;
-          proxy_set_header X-Forwarded-Port 443;
-        '';
-      };
-
-      # GitLab CI/CD artifacts and LFS - from P3 config
-      locations."~ ^/gitlab/.*/-/(artifacts|archive|raw)/" = {
-        proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
-        extraConfig = ''
-          proxy_set_header Host $host;
-          proxy_set_header X-Forwarded-Host $host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_set_header X-Script-Name /gitlab;
-          proxy_set_header X-Forwarded-Script-Name /gitlab;
-          proxy_set_header X-Forwarded-Prefix /gitlab;
-          proxy_set_header X-Forwarded-Port 443;
-
-          client_max_body_size 10G;
-          proxy_request_buffering off;
-        '';
-      };
-      
       # Grafana reverse proxy
       locations."/grafana/" = {
         proxyPass = "http://127.0.0.1:3000/";
@@ -817,11 +778,16 @@ EOF
       80    # HTTP
       443   # HTTPS
       8443  # HTTPS (alternate)
+      8220  # HTTP (VM forwarded)
+      8221  # HTTPS (VM forwarded)
+      8230  # Mattermost HTTP
+      8231  # Mattermost HTTPS
       8080  # GitLab internal
       3000  # Grafana internal
       8065  # Mattermost internal
       9090  # Prometheus internal
       8222  # NATS monitoring
+      5000  # GitLab registry
       4222  # NATS
     ];
   };
@@ -861,6 +827,23 @@ EOF
       "nats.service"
     ];
     nginx.requires = [ "generate-localhost-certs.service" ];
+  };
+
+  system.activationScripts.installRootWelcome = {
+    text = ''
+      cat <<'WELCOME' > /root/welcome.sh
+#!/bin/sh
+echo "Welcome to the RAVE complete VM"
+echo "Forwarded ports:"
+echo "  SSH          : localhost:12222 (user root, password rave-root)"
+echo "  GitLab HTTPS : https://localhost:18221/gitlab/"
+echo "  Mattermost   : https://localhost:18231/mattermost/"
+echo "  Grafana      : https://localhost:18221/grafana/"
+echo "  Prometheus   : http://localhost:19090/"
+echo ""
+WELCOME
+      chmod 0755 /root/welcome.sh
+    '';
   };
 
   # Create welcome script

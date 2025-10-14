@@ -38,7 +38,8 @@
       vmModules = [
         ./nixos/configs/complete-production.nix
         sops-nix.nixosModules.sops
-        {
+        "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
+        ({ lib, ... }: {
           nixpkgs.overlays = [
             (final: prev:
               let
@@ -55,30 +56,32 @@
               }
             )
           ];
-          virtualisation.diskSize = 20 * 1024; # 20GB
+
+          virtualisation.diskSize = 32 * 1024; # 32GB to accommodate GitLab closure
           virtualisation.memorySize = 8192;
-        }
+          virtualisation.useNixStoreImage = false;
+          virtualisation.sharedDirectories = lib.mkForce {};
+          virtualisation.mountHostNixStore = lib.mkForce false;
+          virtualisation.writableStore = lib.mkForce false;
+        })
       ];
     in {
     # P2.2: NixOS VM test infrastructure
     tests.x86_64-linux = {
-      rave-vm = import ./tests/rave-vm.nix { pkgs = nixpkgs.legacyPackages.x86_64-linux; };
+        rave-vm = import ./tests/rave-vm.nix { pkgs = nixpkgs.legacyPackages.x86_64-linux; };
     };
 
     # VM image packages - Production only
-    packages.${system} = {
+    packages.${system} = rec {
       # Complete production image - ALL services pre-configured and ready
-      default = nixos-generators.nixosGenerate {
+      rave-qcow2 = nixos-generators.nixosGenerate {
         inherit system;
-        format = "vm";
+        format = "qcow";
+        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
         modules = vmModules;
       };
 
-      rave-qcow2 = nixos-generators.nixosGenerate {
-        inherit system;
-        format = "qcow2";
-        modules = vmModules;
-      };
+      default = rave-qcow2;
 
       # RAVE CLI - Main management interface
       rave-cli = nixpkgs.legacyPackages.${system}.writeShellScriptBin "rave" ''

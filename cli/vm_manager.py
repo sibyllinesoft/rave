@@ -63,8 +63,6 @@ class VMManager:
             "StrictHostKeyChecking=no",
             "-o",
             "UserKnownHostsFile=/dev/null",
-            "-o",
-            f"ConnectTimeout={connect_timeout}",
             "-p",
             str(ports["ssh"]),
             "root@localhost",
@@ -939,7 +937,7 @@ exit
         run_result = self._run_remote_script(
             config,
             remote_script,
-            timeout=30,
+            timeout=180,
             description="installing secret files",
         )
 
