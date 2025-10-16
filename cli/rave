@@ -1748,9 +1748,9 @@ def oauth_apply(ctx, company: str, provider: str, client_id: Optional[str], clie
     ports = config.get("ports") or {}
     https_port = ports.get("https")
     if https_port:
-        site_url = f"https://localhost:{https_port}/mattermost"
+        site_url = f"https://localhost:{https_port}"
     else:
-        site_url = "https://localhost/mattermost"
+        site_url = "https://localhost"
 
     mattermost_payload: Dict[str, Any] = {
         "provider": provider,

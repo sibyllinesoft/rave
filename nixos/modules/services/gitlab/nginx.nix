@@ -18,8 +18,8 @@ with lib;
             proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
             proxyWebsockets = true;
             extraConfig = ''
-              proxy_set_header Host $http_host;
-              proxy_set_header X-Forwarded-Host $http_host;
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
@@ -62,8 +62,8 @@ with lib;
           "~ ^/gitlab/(uploads|files)/" = {
             proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
             extraConfig = ''
-              proxy_set_header Host $http_host;
-              proxy_set_header X-Forwarded-Host $http_host;
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
@@ -79,8 +79,8 @@ with lib;
           "~ ^/gitlab/.*/-/(artifacts|archive|raw)/" = {
             proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
             extraConfig = ''
-              proxy_set_header Host $http_host;
-              proxy_set_header X-Forwarded-Host $http_host;
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
@@ -99,7 +99,7 @@ with lib;
           "/registry/" = {
             proxyPass = "http://127.0.0.1:5000/";
             extraConfig = ''
-              proxy_set_header Host $http_host;
+              proxy_set_header Host "$host:$rave_forwarded_port";
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
@@ -118,7 +118,7 @@ with lib;
             proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:/-/health";
             extraConfig = ''
               access_log off;
-              proxy_set_header Host $http_host;
+              proxy_set_header Host "$host:$rave_forwarded_port";
               proxy_set_header X-Forwarded-Port $rave_forwarded_port;
 
               # Return simplified health status - intercept only error responses

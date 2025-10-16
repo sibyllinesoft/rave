@@ -2,6 +2,26 @@
 # Complete, consolidated NixOS VM configuration with ALL services pre-configured
 { config, pkgs, lib, ... }:
 
+let
+  googleOauthClientId = "729118765955-7l2hgo3nrjaiol363cp8avf3m97shjo8.apps.googleusercontent.com";
+  gitlabExternalUrl = "https://localhost:18221/gitlab";
+  gitlabRailsRunner = lib.getExe' pkgs.gitlab "gitlab-rails";
+  mattermostPublicUrl = "https://localhost:18221/mattermost";
+  mattermostPath =
+    let
+      matchResult = builtins.match "https://[^/]+(.*)" mattermostPublicUrl;
+    in
+    if matchResult == null || matchResult == [] then "" else builtins.head matchResult;
+  mattermostLoginPath =
+    if mattermostPath == "" then "/oauth/gitlab/login" else "${mattermostPath}/oauth/gitlab/login";
+  mattermostLoginUrl = "${mattermostPublicUrl}/oauth/gitlab/login";
+  mattermostBrandHtml = ''
+    <div style='margin: 1.5rem 0; text-align: center;'><a style='display: inline-block; padding: 12px 24px; font-size: 16px; font-weight: 600; color: #fff; background: #5C2D91; border-radius: 6px; text-decoration: none;' href='${mattermostLoginUrl}'>Sign in with GitLab</a><p style='margin-top: 1rem; color: var(--center-channel-color);'>If the button above does not work, open <code>${mattermostLoginPath}</code> in your browser.</p></div>
+  '';
+  mattermostGitlabClientId = "rave-mattermost";
+  mattermostGitlabClientSecret = "rave-mattermost-secret";
+  mattermostGitlabRedirectUri = "${mattermostPublicUrl}/signup/gitlab/complete";
+in
 {
   imports = [
     # Foundation modules
@@ -21,6 +41,67 @@
     defaultSopsFile = ../../config/secrets.yaml;
     age.keyFile = "/var/lib/sops-nix/key.txt";
   };
+
+  systemd.services.mattermost.preStart = lib.mkAfter ''
+    SITE_URL=${lib.escapeShellArg mattermostPublicUrl} \
+    GITLAB_BASE=${lib.escapeShellArg gitlabExternalUrl} \
+    GITLAB_CLIENT_ID=${lib.escapeShellArg mattermostGitlabClientId} \
+    GITLAB_SECRET=${lib.escapeShellArg mattermostGitlabClientSecret} \
+    GITLAB_REDIRECT=${lib.escapeShellArg mattermostGitlabRedirectUri} \
+    ${pkgs.python3}/bin/python3 <<'PY'
+import json
+import os
+from pathlib import Path
+from urllib.parse import urlparse
+
+config_path = Path('/var/lib/mattermost/config/config.json')
+if not config_path.exists():
+    raise SystemExit(0)
+
+site_url = os.environ.get('SITE_URL', 'https://localhost:18221/mattermost').rstrip('/')
+login_url = f"{site_url}/oauth/gitlab/login"
+login_path = urlparse(login_url).path or "/oauth/gitlab/login"
+gitlab_base = os.environ.get('GITLAB_BASE', 'https://localhost:18221/gitlab').rstrip('/')
+gitlab_client_id = os.environ.get("GITLAB_CLIENT_ID", "")
+gitlab_secret = os.environ.get("GITLAB_SECRET", "")
+gitlab_redirect = os.environ.get("GITLAB_REDIRECT", "")
+brand_html = (
+    "<div style='margin: 1.5rem 0; text-align: center;'>"
+    "<a style='display: inline-block; padding: 12px 24px; font-size: 16px; font-weight: 600; "
+    "color: #fff; background: #5C2D91; border-radius: 6px; text-decoration: none;' "
+    f"href='{site_url}/oauth/gitlab/login'>Sign in with GitLab</a>"
+    "<p style='margin-top: 1rem; color: var(--center-channel-color);'>"
+    f"If the button above does not work, open <code>{login_path}</code> in your browser."
+    "</p></div>"
+)
+
+config = json.loads(config_path.read_text())
+
+service = config.setdefault('ServiceSettings', {})
+service['SiteURL'] = site_url
+
+team = config.setdefault('TeamSettings', {})
+team['EnableCustomBrand'] = True
+team['CustomDescriptionText'] = ""
+team['CustomBrandText'] = brand_html
+
+gitlab = config.setdefault('GitLabSettings', {})
+gitlab['Enable'] = True
+gitlab['Id'] = gitlab_client_id
+gitlab['Secret'] = gitlab_secret
+gitlab['Scope'] = 'read_user'
+gitlab['AuthEndpoint'] = f"{gitlab_base}/oauth/authorize"
+gitlab['TokenEndpoint'] = f"{gitlab_base}/oauth/token"
+gitlab['UserAPIEndpoint'] = f"{gitlab_base}/api/v4/user"
+gitlab['DiscoveryEndpoint'] = ""
+gitlab['EnableAuth'] = True
+gitlab['EnableSync'] = True
+gitlab['AutoLogin'] = False
+gitlab['RedirectUri'] = gitlab_redirect
+
+config_path.write_text(json.dumps(config, indent=2) + '\n')
+PY
+  '';
 
   # ===== SYSTEM FOUNDATION =====
   
@@ -291,15 +372,41 @@
 
   services.mattermost = {
     enable = true;
-    siteUrl = "https://localhost:8231/mattermost";
+    siteUrl = mattermostPublicUrl;
     siteName = "RAVE Mattermost";
+    mutableConfig = true;
+    extraConfig = {
+      ServiceSettings = {
+        EnableLocalMode = false;
+      };
+      EmailSettings = {
+        EnableSignUpWithEmail = false;
+        EnableSignInWithEmail = false;
+        EnableSignInWithUsername = false;
+      };
+      TeamSettings = {
+        EnableCustomBrand = true;
+        CustomDescriptionText = "";
+        CustomBrandText = mattermostBrandHtml;
+      };
+      GitLabSettings = {
+        Enable = true;
+        EnableSync = true;
+        AuthEndpoint = "${gitlabExternalUrl}/oauth/authorize";
+        TokenEndpoint = "${gitlabExternalUrl}/oauth/token";
+        UserAPIEndpoint = "${gitlabExternalUrl}/api/v4/user";
+        Id = mattermostGitlabClientId;
+        Secret = mattermostGitlabClientSecret;
+        Scope = "read_user";
+      };
+    };
     # Use Mattermost defaults for data and log directories
 
     environmentFile = if config.services.rave.gitlab.useSecrets
       then config.sops.secrets."mattermost/env".path
       else pkgs.writeText "mattermost-env" ''
-        MM_SERVICESETTINGS_SITEURL=https://localhost:8231/mattermost
-        MM_SERVICESETTINGS_ENABLELOCALMODE=true
+        MM_SERVICESETTINGS_SITEURL=${mattermostPublicUrl}
+        MM_SERVICESETTINGS_ENABLELOCALMODE=false
         MM_SQLSETTINGS_DRIVERNAME=postgres
         MM_SQLSETTINGS_DATASOURCE=postgres://mattermost:mmpgsecret@localhost:5432/mattermost?sslmode=disable&connect_timeout=10
         MM_BLEVESETTINGS_INDEXDIR=/var/lib/mattermost/bleve-indexes
@@ -310,12 +417,12 @@
   services.rave.gitlab = {
     enable = true;
     host = "localhost";
-    useSecrets = false;
+    useSecrets = true;
     runner.enable = false;
     oauth = {
       enable = true;
       provider = "google";
-      clientId = "729118765955-o2kri2vjcjms4s59tjaeidrf2fvskcfn.apps.googleusercontent.com";
+      clientId = googleOauthClientId;
       clientSecretFile = if config.services.rave.gitlab.useSecrets
         then config.sops.secrets."gitlab/oauth-provider-client-secret".path
         else pkgs.writeText "gitlab-oauth-client-secret" "development-client-secret";
@@ -324,6 +431,46 @@
       allowLocalSignin = false;
     };
   };
+
+  systemd.services.gitlab-mattermost-oauth = {
+    description = "Ensure GitLab OAuth client for Mattermost exists";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "gitlab-autostart.service" "gitlab.service" ];
+    wants = [ "gitlab.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      User = "gitlab";
+      Group = "gitlab";
+    };
+    environment = {
+      HOME = "/var/lib/gitlab";
+      RAILS_ENV = "production";
+    };
+    script = ''
+      set -euo pipefail
+      cd /var/lib/gitlab
+      ${gitlabRailsRunner} runner <<'RUBY'
+require "doorkeeper/application"
+
+redirect_uri = '${mattermostGitlabRedirectUri}'
+uid = '${mattermostGitlabClientId}'
+secret = '${mattermostGitlabClientSecret}'
+name = 'RAVE Mattermost'
+scopes = 'read_user'
+
+app = Doorkeeper::Application.find_or_initialize_by(uid: uid)
+app.name = name
+app.redirect_uri = redirect_uri
+app.secret = secret
+app.scopes = scopes
+app.confidential = true
+app.trusted = true if app.respond_to?(:trusted=)
+app.save!
+RUBY
+    '';
+  };
+
+  systemd.services.mattermost.after = lib.mkAfter [ "gitlab-mattermost-oauth.service" ];
 
   sops.secrets."mattermost/env" = {
     owner = "mattermost";
@@ -403,16 +550,6 @@
           port = 8220;
           ssl = false;
         }
-        {
-          addr = "0.0.0.0";
-          port = 8231;
-          ssl = true;
-        }
-        {
-          addr = "0.0.0.0";
-          port = 8230;
-          ssl = false;
-        }
       ];
 
       # Use manual certificate configuration
@@ -470,10 +607,10 @@
                           <div class="service-url">https://localhost:8221/grafana/</div>
                           <span class="status active">Active</span>
                       </a>
-                      <a href="/mattermost/" class="service-card">
+                      <a href="${mattermostPublicUrl}/" class="service-card">
                           <div class="service-title">💬 Mattermost</div>
                           <div class="service-desc">Secure team chat and agent control</div>
-                          <div class="service-url">https://chat.localtest.me:8221/</div>
+                          <div class="service-url">${mattermostPublicUrl}/</div>
                           <span class="status active">Active</span>
                       </a>
                       <a href="/prometheus/" class="service-card">
@@ -495,29 +632,12 @@
         '';
       };
 
-      # Mattermost reverse proxy
-      locations."/mattermost/" = {
-        proxyPass = "http://127.0.0.1:8065/mattermost/";
-        proxyWebsockets = true;
-        extraConfig = ''
-          proxy_set_header Host $http_host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-          proxy_set_header X-Forwarded-Host $http_host;
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_redirect off;
-          proxy_read_timeout 3600s;
-        '';
-      };
-
       # Grafana reverse proxy
       locations."/grafana/" = {
         proxyPass = "http://127.0.0.1:3000/";
         proxyWebsockets = true;
         extraConfig = ''
-          proxy_set_header Host $host;
+          proxy_set_header Host "$host:$rave_forwarded_port";
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
@@ -528,7 +648,7 @@
       locations."/prometheus/" = {
         proxyPass = "http://127.0.0.1:9090/";
         extraConfig = ''
-          proxy_set_header Host $host;
+          proxy_set_header Host "$host:$rave_forwarded_port";
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
@@ -539,10 +659,45 @@
       locations."/nats/" = {
         proxyPass = "http://127.0.0.1:8222/";
         extraConfig = ''
-          proxy_set_header Host $host;
+          proxy_set_header Host "$host:$rave_forwarded_port";
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
+        '';
+      };
+      
+      locations."/mattermost/" = {
+        proxyPass = "http://127.0.0.1:8065/";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_set_header Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Forwarded-Ssl on;
+          proxy_redirect off;
+          proxy_read_timeout 3600s;
+        '';
+      };
+
+      locations."~ ^/mattermost/api/v4/config/client" = {
+        proxyPass = "http://127.0.0.1:8065";
+        extraConfig = ''
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          proxy_set_header Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Forwarded-Ssl on;
+          proxy_set_header Accept-Encoding "";
+          proxy_redirect off;
+          proxy_buffering off;
         '';
       };
       
@@ -553,6 +708,7 @@
         add_header X-Frame-Options "DENY" always;  
         add_header X-XSS-Protection "1; mode=block" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        port_in_redirect off;
         absolute_redirect off;
       '';
     };
@@ -580,11 +736,11 @@
         proxyPass = "http://127.0.0.1:8065";
         proxyWebsockets = true;
         extraConfig = ''
-          proxy_set_header Host $host;
+          proxy_set_header Host "$host:$rave_forwarded_port";
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Host $http_host;
+          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
           proxy_set_header X-Forwarded-Ssl on;
           proxy_set_header Upgrade $http_upgrade;
           proxy_set_header Connection "upgrade";
@@ -592,6 +748,67 @@
           proxy_redirect off;
         '';
       };
+    };
+
+    virtualHosts."localhost-mattermost" = {
+      forceSSL = true;
+      enableACME = false;
+      serverName = "localhost";
+      listen = [
+        {
+          addr = "0.0.0.0";
+          port = 8231;
+          ssl = true;
+        }
+        {
+          addr = "0.0.0.0";
+          port = 8230;
+          ssl = false;
+        }
+      ];
+
+      sslCertificate = "/var/lib/acme/localhost/cert.pem";
+      sslCertificateKey = "/var/lib/acme/localhost/key.pem";
+
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:8065/";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_set_header Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Forwarded-Ssl on;
+          proxy_redirect off;
+          proxy_read_timeout 3600s;
+        '';
+      };
+
+      locations."~ ^/api/v4/config/client" = {
+        proxyPass = "http://127.0.0.1:8065";
+        extraConfig = ''
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          proxy_set_header Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Forwarded-Ssl on;
+          proxy_set_header Accept-Encoding "";
+          proxy_redirect off;
+          proxy_buffering off;
+        '';
+      };
+
+      extraConfig = ''
+        port_in_redirect off;
+        absolute_redirect off;
+      '';
     };
 
     virtualHosts."chat.localtest.me-http" = {
@@ -837,7 +1054,7 @@ echo "Welcome to the RAVE complete VM"
 echo "Forwarded ports:"
 echo "  SSH          : localhost:12222 (user root, password rave-root)"
 echo "  GitLab HTTPS : https://localhost:18221/gitlab/"
-echo "  Mattermost   : https://localhost:18231/mattermost/"
+echo "  Mattermost   : ${mattermostPublicUrl}/"
 echo "  Grafana      : https://localhost:18221/grafana/"
 echo "  Prometheus   : http://localhost:19090/"
 echo ""
@@ -866,7 +1083,7 @@ echo ""
 echo "✅ All Services Ready:"
 echo "   🦊 GitLab:      https://localhost:8221/gitlab/"
 echo "   📊 Grafana:     https://localhost:8221/grafana/"  
-echo "   💬 Mattermost:  https://chat.localtest.me:8221/"
+echo "   💬 Mattermost:  https://localhost:8221/mattermost/"
 echo "   🔍 Prometheus:  https://localhost:8221/prometheus/"
 echo "   ⚡ NATS:        https://localhost:8221/nats/"
 echo ""
