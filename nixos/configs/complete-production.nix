@@ -6,6 +6,7 @@ let
   googleOauthClientId = "729118765955-7l2hgo3nrjaiol363cp8avf3m97shjo8.apps.googleusercontent.com";
   gitlabExternalUrl = "https://localhost:18221/gitlab";
   gitlabRailsRunner = lib.getExe' pkgs.gitlab "gitlab-rails";
+  mattermostPkg = config.services.mattermost.package or pkgs.mattermost;
   mattermostPublicUrl = "https://localhost:18221/mattermost";
   mattermostPath =
     let
@@ -15,12 +16,59 @@ let
   mattermostLoginPath =
     if mattermostPath == "" then "/oauth/gitlab/login" else "${mattermostPath}/oauth/gitlab/login";
   mattermostLoginUrl = "${mattermostPublicUrl}/oauth/gitlab/login";
-  mattermostBrandHtml = ''
-    <div style='margin: 1.5rem 0; text-align: center;'><a style='display: inline-block; padding: 12px 24px; font-size: 16px; font-weight: 600; color: #fff; background: #5C2D91; border-radius: 6px; text-decoration: none;' href='${mattermostLoginUrl}'>Sign in with GitLab</a><p style='margin-top: 1rem; color: var(--center-channel-color);'>If the button above does not work, open <code>${mattermostLoginPath}</code> in your browser.</p></div>
-  '';
+  mattermostBrandHtml = "Use the GitLab button below to sign in. If it does not appear, open ${mattermostLoginPath} manually.";
   mattermostGitlabClientId = "rave-mattermost";
   mattermostGitlabClientSecret = "rave-mattermost-secret";
   mattermostGitlabRedirectUri = "${mattermostPublicUrl}/signup/gitlab/complete";
+  gitlabSettingsJSON = builtins.toJSON {
+    Enable = true;
+    EnableSync = true;
+    Id = mattermostGitlabClientId;
+    Secret = mattermostGitlabClientSecret;
+    Scope = "read_user";
+    AuthEndpoint = "${gitlabExternalUrl}/oauth/authorize";
+    TokenEndpoint = "${gitlabExternalUrl}/oauth/token";
+    UserAPIEndpoint = "${gitlabExternalUrl}/api/v4/user";
+  };
+  updateMattermostScript = pkgs.writeText "update-mattermost-config.py" ''
+#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+CONFIG_PATH = Path("/var/lib/mattermost/config/config.json")
+LOG_PATH = Path("/var/lib/rave/update-mattermost-config.log")
+SITE_URL = ${builtins.toJSON mattermostPublicUrl}
+BRAND_TEXT = ${builtins.toJSON mattermostBrandHtml}
+GITLAB_SETTINGS = json.loads(${builtins.toJSON gitlabSettingsJSON})
+
+
+def main() -> None:
+    if not CONFIG_PATH.exists():
+        LOG_PATH.write_text("config.json missing\n")
+        return
+
+    config = json.loads(CONFIG_PATH.read_text())
+
+    service = config.setdefault("ServiceSettings", {})
+    service["SiteURL"] = SITE_URL
+
+    team = config.setdefault("TeamSettings", {})
+    team["EnableCustomBrand"] = True
+    team["CustomDescriptionText"] = ""
+    team["CustomBrandText"] = BRAND_TEXT
+
+    gitlab = config.setdefault("GitLabSettings", {})
+    gitlab.update(GITLAB_SETTINGS)
+
+    config.pop("GoogleSettings", None)
+
+    CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n")
+    LOG_PATH.write_text("updated:gitlab\n")
+
+
+if __name__ == "__main__":
+    main()
+  '';
 in
 {
   imports = [
@@ -42,7 +90,13 @@ in
     age.keyFile = "/var/lib/sops-nix/key.txt";
   };
 
-  systemd.services.mattermost.preStart = lib.mkAfter ''
+  systemd.services.mattermost.preStart = lib.mkMerge [
+    (lib.mkBefore ''
+      if [ -d /var/lib/mattermost/client ] && [ ! -L /var/lib/mattermost/client ]; then
+        ${pkgs.coreutils}/bin/rm -rf /var/lib/mattermost/client
+      fi
+    '')
+    (lib.mkAfter ''
     SITE_URL=${lib.escapeShellArg mattermostPublicUrl} \
     GITLAB_BASE=${lib.escapeShellArg gitlabExternalUrl} \
     GITLAB_CLIENT_ID=${lib.escapeShellArg mattermostGitlabClientId} \
@@ -65,14 +119,8 @@ gitlab_base = os.environ.get('GITLAB_BASE', 'https://localhost:18221/gitlab').rs
 gitlab_client_id = os.environ.get("GITLAB_CLIENT_ID", "")
 gitlab_secret = os.environ.get("GITLAB_SECRET", "")
 gitlab_redirect = os.environ.get("GITLAB_REDIRECT", "")
-brand_html = (
-    "<div style='margin: 1.5rem 0; text-align: center;'>"
-    "<a style='display: inline-block; padding: 12px 24px; font-size: 16px; font-weight: 600; "
-    "color: #fff; background: #5C2D91; border-radius: 6px; text-decoration: none;' "
-    f"href='{site_url}/oauth/gitlab/login'>Sign in with GitLab</a>"
-    "<p style='margin-top: 1rem; color: var(--center-channel-color);'>"
-    f"If the button above does not work, open <code>{login_path}</code> in your browser."
-    "</p></div>"
+brand_html = "Use the GitLab button below to sign in. If it does not appear, open {path} manually.".format(
+    path=login_path
 )
 
 config = json.loads(config_path.read_text())
@@ -98,10 +146,20 @@ gitlab['EnableAuth'] = True
 gitlab['EnableSync'] = True
 gitlab['AutoLogin'] = False
 gitlab['RedirectUri'] = gitlab_redirect
+config.pop('GoogleSettings', None)
 
 config_path.write_text(json.dumps(config, indent=2) + '\n')
 PY
-  '';
+    ${pkgs.coreutils}/bin/mkdir -p /var/lib/mattermost
+    ${pkgs.coreutils}/bin/rm -rf /var/lib/mattermost/.client-tmp
+    ${pkgs.coreutils}/bin/cp -R ${mattermostPkg}/client /var/lib/mattermost/.client-tmp
+    ${pkgs.coreutils}/bin/rm -rf /var/lib/mattermost/client
+    ${pkgs.coreutils}/bin/mv /var/lib/mattermost/.client-tmp /var/lib/mattermost/client
+    ${pkgs.coreutils}/bin/chown -R mattermost:mattermost /var/lib/mattermost/client
+    ${pkgs.coreutils}/bin/chmod -R u+rwX,go+rX /var/lib/mattermost/client
+    ${pkgs.coreutils}/bin/install -Dm755 ${updateMattermostScript} /var/lib/rave/update-mattermost-config.py
+  '')
+  ];
 
   # ===== SYSTEM FOUNDATION =====
   
@@ -632,6 +690,14 @@ RUBY
         '';
       };
 
+      locations."/login" = {
+        return = "302 ${mattermostPublicUrl}/";
+      };
+
+      locations."= /" = {
+        return = "302 ${mattermostPublicUrl}/";
+      };
+
       # Grafana reverse proxy
       locations."/grafana/" = {
         proxyPass = "http://127.0.0.1:3000/";
@@ -666,26 +732,35 @@ RUBY
         '';
       };
       
+      locations."= /mattermost" = {
+        return = "302 /mattermost/";
+      };
+
       locations."/mattermost/" = {
-        proxyPass = "http://127.0.0.1:8065/";
-        proxyWebsockets = true;
         extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_redirect off;
-          proxy_read_timeout 3600s;
+          alias /var/lib/mattermost/client/;
+          index root.html;
+          try_files $uri $uri/ root.html;
         '';
       };
 
-      locations."~ ^/mattermost/api/v4/config/client" = {
-        proxyPass = "http://127.0.0.1:8065";
+      locations."/static/" = {
         extraConfig = ''
-          proxy_http_version 1.1;
+          alias /var/lib/mattermost/client/;
+          expires 1y;
+        '';
+      };
+
+      locations."/mattermost/static/" = {
+        extraConfig = ''
+          alias /var/lib/mattermost/client/;
+          expires 1y;
+        '';
+      };
+
+      locations."/mattermost/api/" = {
+        extraConfig = ''
+          proxy_pass http://127.0.0.1:8065;
           proxy_set_header Upgrade $http_upgrade;
           proxy_set_header Connection $connection_upgrade;
           proxy_set_header Host "$host:$rave_forwarded_port";
@@ -700,6 +775,7 @@ RUBY
           proxy_buffering off;
         '';
       };
+
       
       # Global security headers
       extraConfig = ''
@@ -770,26 +846,39 @@ RUBY
       sslCertificate = "/var/lib/acme/localhost/cert.pem";
       sslCertificateKey = "/var/lib/acme/localhost/key.pem";
 
-      locations."/" = {
-        proxyPass = "http://127.0.0.1:8065/";
-        proxyWebsockets = true;
+      locations."= /" = {
+        return = "302 /mattermost/";
+      };
+
+      locations."= /mattermost" = {
+        return = "302 /mattermost/";
+      };
+
+      locations."/mattermost/" = {
         extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_redirect off;
-          proxy_read_timeout 3600s;
+          alias /var/lib/mattermost/client/;
+          index root.html;
+          try_files $uri $uri/ root.html;
         '';
       };
 
-      locations."~ ^/api/v4/config/client" = {
-        proxyPass = "http://127.0.0.1:8065";
+      locations."/static/" = {
         extraConfig = ''
-          proxy_http_version 1.1;
+          alias /var/lib/mattermost/client/;
+          expires 1y;
+        '';
+      };
+
+      locations."/mattermost/static/" = {
+        extraConfig = ''
+          alias /var/lib/mattermost/client/;
+          expires 1y;
+        '';
+      };
+
+      locations."/mattermost/api/" = {
+        extraConfig = ''
+          proxy_pass http://127.0.0.1:8065;
           proxy_set_header Upgrade $http_upgrade;
           proxy_set_header Connection $connection_upgrade;
           proxy_set_header Host "$host:$rave_forwarded_port";
@@ -804,6 +893,7 @@ RUBY
           proxy_buffering off;
         '';
       };
+
 
       extraConfig = ''
         port_in_redirect off;
