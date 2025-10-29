@@ -5,6 +5,7 @@ VM Manager - Handles RAVE virtual machine lifecycle operations
 import base64
 import json
 import shlex
+import socket
 import shutil
 import subprocess
 import tempfile
@@ -156,6 +157,16 @@ class VMManager:
             base_port + 2,  # SSH
             base_port + 3   # Test page
         )
+
+    def _host_port_available(self, port: int) -> bool:
+        """Check if a host TCP port is available for forwarding."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+        return True
     
     def _build_vm_image(self, company_name: str = None, ssh_public_key: str = None) -> Dict[str, any]:
         """Build VM image using Nix."""
@@ -325,7 +336,79 @@ exit
         except Exception as e:
             print(f"Guestfish exception: {e}")
             return self._inject_ssh_key_cloud_init(image_path, ssh_public_key)
-    
+
+    def _install_age_key_into_image(self, image_path: str, age_key_path: Path) -> Dict[str, any]:
+        """Install the Age key into the VM image so secrets decrypt on first boot."""
+        if not age_key_path.exists():
+            return {"success": False, "error": f"Age key not found at {age_key_path}"}
+
+        if shutil.which("guestfish") is None:
+            return {
+                "success": False,
+                "error": (
+                    "guestfish is not installed; install libguestfs-tools to embed the Age key during image build"
+                ),
+            }
+
+        temp_key_path: Optional[Path] = None
+        try:
+            key_bytes = age_key_path.read_bytes()
+        except OSError as exc:
+            return {
+                "success": False,
+                "error": f"Failed to read Age key: {exc}",
+            }
+
+        try:
+            with tempfile.NamedTemporaryFile(prefix="rave-age-key-", delete=False) as tmp:
+                temp_key_path = Path(tmp.name)
+                tmp.write(key_bytes)
+                tmp.flush()
+
+            remote_path = "/var/lib/sops-nix/key.txt"
+            guestfish_script = f'''launch
+list-filesystems
+mount /dev/disk/by-label/nixos /
+mkdir-p /var/lib/sops-nix
+upload {temp_key_path} {remote_path}
+chmod 0700 /var/lib/sops-nix
+chmod 0400 {remote_path}
+chown 0 0 /var/lib/sops-nix
+chown 0 0 {remote_path}
+sync
+umount /
+exit
+'''
+
+            result = subprocess.run(
+                ["guestfish", "--add", image_path, "--rw"],
+                input=guestfish_script,
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.strip() if result.stderr else ""
+                return {
+                    "success": False,
+                    "error": (
+                        f"guestfish failed to install Age key"
+                        + (f": {stderr}" if stderr else "")
+                    ),
+                }
+
+            return {"success": True}
+        except subprocess.CalledProcessError as exc:
+            return {
+                "success": False,
+                "error": exc.stderr.strip() if exc.stderr else str(exc),
+            }
+        finally:
+            if temp_key_path and temp_key_path.exists():
+                try:
+                    temp_key_path.unlink()
+                except OSError:
+                    pass
+
     def _inject_ssh_key_simple(self, image_path: str, ssh_public_key: str) -> Dict[str, any]:
         """SSH key injection using loop mount approach."""
         try:
@@ -453,28 +536,34 @@ exit
         print("⚠️  Unable to inject SSH key automatically; password login may be required")
         return False
 
-    def create_vm(self, company_name: str, keypair_path: str) -> Dict[str, any]:
+    def create_vm(
+        self,
+        company_name: str,
+        keypair_path: str,
+        age_key_path: Optional[Path] = None,
+    ) -> Dict[str, any]:
         """Create a new company VM."""
-        # Check if VM already exists
         if self._load_vm_config(company_name):
             return {"success": False, "error": f"VM '{company_name}' already exists"}
-        
-        # Validate and read keypair
+
+        if age_key_path is not None:
+            age_key_path = Path(age_key_path).expanduser()
+
+        warnings: List[str] = []
+
         keypair_path = Path(keypair_path).expanduser()
-        public_key_path = keypair_path.with_suffix('.pub')
-        
+        public_key_path = keypair_path.with_suffix(".pub")
+
         if not keypair_path.exists():
             return {"success": False, "error": f"Private key not found: {keypair_path}"}
         if not public_key_path.exists():
             return {"success": False, "error": f"Public key not found: {public_key_path}"}
-        
-        # Read the public key content
+
         try:
             ssh_public_key = public_key_path.read_text().strip()
-        except Exception as e:
-            return {"success": False, "error": f"Failed to read public key: {e}"}
-        
-        # Build VM image (or use existing if build fails)
+        except Exception as exc:
+            return {"success": False, "error": f"Failed to read public key: {exc}"}
+
         build_result = self._build_vm_image(company_name, ssh_public_key)
         if not build_result["success"]:
             print(f"⚠️  Build failed: {build_result['error']}")
@@ -486,12 +575,10 @@ exit
             if image_source and not image_source.exists():
                 print("⚠️  Built image path not found; falling back to cached image")
                 image_source = None
-        
-        # Get port assignments
+
         http_port, https_port, ssh_port, test_port = self._get_next_port_range()
-        
-        # Create VM configuration
-        config = {
+
+        config: Dict[str, any] = {
             "name": company_name,
             "keypair": str(keypair_path),
             "ssh_public_key": ssh_public_key,
@@ -499,40 +586,62 @@ exit
                 "http": http_port,
                 "https": https_port,
                 "ssh": ssh_port,
-                "test": test_port
+                "test": test_port,
             },
             "status": "stopped",
             "created_at": time.time(),
-            "image_path": f"/home/nathan/Projects/rave/{company_name}-dev.qcow2"
+            "image_path": f"/home/nathan/Projects/rave/{company_name}-dev.qcow2",
         }
-        
-        # Copy VM image (use existing working image if build failed)
+
         try:
             repo_root = Path.cwd()
             if image_source and image_source.exists():
                 shutil.copy2(image_source, config["image_path"])
             elif (repo_root / "rave-complete-localhost.qcow2").exists():
                 print(f"Using existing working image for {company_name}")
-                shutil.copy2(repo_root / "rave-complete-localhost.qcow2", config["image_path"])
+                shutil.copy2(
+                    repo_root / "rave-complete-localhost.qcow2", config["image_path"]
+                )
             else:
                 return {"success": False, "error": "No VM image available"}
-            
+
             Path(config["image_path"]).chmod(0o644)
-            
-            # Inject SSH key into the VM image
-            injection_result = self._inject_ssh_key(config["image_path"], ssh_public_key)
+
+            injection_result = self._inject_ssh_key(
+                config["image_path"], ssh_public_key
+            )
             if not injection_result["success"]:
-                print(f"⚠️  SSH key injection failed: {injection_result.get('error', 'Unknown error')}")
+                print(
+                    f"⚠️  SSH key injection failed: {injection_result.get('error', 'Unknown error')}"
+                )
                 print("🔄 VM will be created but may require password authentication")
-                # Continue with VM creation - SSH will fall back to password auth
-                
-        except subprocess.CalledProcessError as e:
-            return {"success": False, "error": f"Failed to copy VM image: {e}"}
-        
-        # Save configuration
+
+            if age_key_path:
+                age_result = self._install_age_key_into_image(
+                    config["image_path"],
+                    age_key_path,
+                )
+                if not age_result.get("success"):
+                    error_msg = age_result.get(
+                        "error",
+                        "Failed to embed Age key into VM image",
+                    )
+                    return {"success": False, "error": error_msg}
+
+                config["secrets"] = {
+                    "age_key_path": str(age_key_path),
+                    "age_key_installed": True,
+                }
+
+        except subprocess.CalledProcessError as exc:
+            return {"success": False, "error": f"Failed to copy VM image: {exc}"}
+
         self._save_vm_config(company_name, config)
-        
-        return {"success": True, "config": config}
+
+        response: Dict[str, any] = {"success": True, "config": config}
+        if warnings:
+            response["warnings"] = warnings
+        return response
     
     def start_vm(self, company_name: str) -> Dict[str, any]:
         """Start a company VM."""
@@ -551,6 +660,43 @@ exit
             (ports['ssh'], 22),
             (ports['test'], 8080)
         ]
+
+        # Ensure legacy external ports remain available for tooling that expects them.
+        required_legacy_ports = {
+            18221: 443,
+        }
+        optional_legacy_ports = {
+            18220: 80,
+            18231: 443,
+            18230: 80,
+        }
+        existing_host_ports = {host for host, _ in port_forwards}
+
+        for host_port, guest_port in required_legacy_ports.items():
+            if host_port in existing_host_ports:
+                continue
+
+            if not self._host_port_available(host_port):
+                return {
+                    "success": False,
+                    "error": (
+                        f"Host port {host_port} is already in use; "
+                        "stop the conflicting process to expose GitLab/Mattermost on the documented port."
+                    ),
+                }
+
+            port_forwards.append((host_port, guest_port))
+            existing_host_ports.add(host_port)
+
+        for host_port, guest_port in optional_legacy_ports.items():
+            if host_port in existing_host_ports:
+                continue
+
+            if not self._host_port_available(host_port):
+                continue
+
+            port_forwards.append((host_port, guest_port))
+            existing_host_ports.add(host_port)
         memory_gb = 4
         cmd, env = self.platform.get_vm_start_command(
             config['image_path'], 
@@ -618,18 +764,16 @@ exit
         return {"success": True}
     
     def _is_vm_running(self, company_name: str) -> bool:
-        """Check if VM is running."""
-        pidfile = f"/tmp/rave-{company_name}.pid"
-        if not Path(pidfile).exists():
+        """Check if VM is running (based on pidfile)."""
+        pidfile = Path(f"/tmp/rave-{company_name}.pid")
+        if not pidfile.exists():
             return False
-        
+
         try:
-            with open(pidfile, 'r') as f:
-                pid = f.read().strip()
-            # Check if process exists
+            pid = pidfile.read_text().strip()
             subprocess.run(["kill", "-0", pid], check=True, capture_output=True)
             return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
             return False
     
     def status_vm(self, company_name: str) -> Dict[str, any]:
@@ -850,17 +994,12 @@ exit
             "EOF\n"
             f"chmod 600 {file_q}\n"
             f"chown root:root {file_q}\n"
-            "if command -v systemctl >/dev/null 2>&1; then\n"
-            "  systemctl restart sops-nix.service 2>/dev/null || true\n"
-            "  systemctl restart mattermost.service 2>/dev/null || true\n"
-            "  systemctl restart nginx.service 2>/dev/null || true\n"
-            "fi\n"
         )
 
         run_result = self._run_remote_script(
             config,
             remote_script,
-            timeout=45,
+            timeout=240,
             description="installing Age key",
             max_attempts=8,
             initial_delay=1.5,
@@ -892,7 +1031,6 @@ exit
             return {"success": True}
 
         remote_lines = ["set -euo pipefail"]
-        restart_services: set[str] = set()
 
         for secret in secrets:
             remote_path = secret["remote_path"]
@@ -901,7 +1039,6 @@ exit
             group = secret.get("group", owner)
             mode = secret.get("mode", "0600")
             dir_mode = secret.get("dir_mode", "0700")
-            restart_service = secret.get("restart_service")
 
             remote_file = Path(remote_path)
             remote_dir = remote_file.parent
@@ -921,23 +1058,12 @@ exit
                 ]
             )
 
-            if restart_service:
-                restart_services.add(restart_service)
-
-        if restart_services:
-            remote_lines.append("if command -v systemctl >/dev/null 2>&1; then")
-            for service in sorted(restart_services):
-                remote_lines.append(
-                    f"  systemctl restart {service} 2>/dev/null || true"
-                )
-            remote_lines.append("fi")
-
         remote_script = "\n".join(remote_lines) + "\n"
 
         run_result = self._run_remote_script(
             config,
             remote_script,
-            timeout=180,
+            timeout=600,
             description="installing secret files",
         )
 
@@ -957,7 +1083,6 @@ exit
         owner: str,
         group: str,
         mode: str,
-        restart_service: Optional[str] = None,
         dir_mode: str = "0700",
     ) -> Dict[str, any]:
         entry = {
@@ -967,7 +1092,6 @@ exit
             "group": group,
             "mode": mode,
             "dir_mode": dir_mode,
-            "restart_service": restart_service,
         }
         return self.install_secret_files(company_name, [entry])
 
@@ -981,19 +1105,66 @@ exit
         if not self._is_vm_running(company_name):
             return {"success": False, "error": f"VM '{company_name}' is not running"}
 
+        password_sql = password.replace("'", "''")
         remote_script = "\n".join(
             [
                 "set -euo pipefail",
-                "sudo -u postgres psql postgres -c \"DROP DATABASE IF EXISTS mattermost;\"",
-                "sudo -u postgres psql postgres -c \"DROP ROLE IF EXISTS mattermost;\"",
+                "sudo -u postgres psql postgres <<'SQL'",
+                "DO $$",
+                "BEGIN",
+                "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mattermost') THEN",
+                f"    CREATE ROLE mattermost WITH LOGIN PASSWORD '{password_sql}';",
+                "  ELSE",
+                f"    ALTER ROLE mattermost WITH LOGIN PASSWORD '{password_sql}';",
+                "  END IF;",
+                "END",
+                "$$;",
+                "SQL",
+                "sudo -u postgres psql postgres -tc \"SELECT 1 FROM pg_database WHERE datname = 'mattermost';\" | grep -q 1 || sudo -u postgres createdb -O mattermost mattermost",
+                "sudo -u postgres psql mattermost -c \"GRANT ALL PRIVILEGES ON SCHEMA public TO mattermost;\"",
             ]
         ) + "\n"
 
         run_result = self._run_remote_script(
             config,
             remote_script,
-            timeout=40,
+            timeout=180,
             description="resetting Mattermost database",
+        )
+
+        if not run_result.get("success"):
+            return {
+                "success": False,
+                "error": run_result.get("error", "database command failed"),
+            }
+
+        return {"success": True}
+
+    def ensure_gitlab_database_password(self, company_name: str, password: str) -> Dict[str, any]:
+        """Ensure the GitLab database user password matches the injected secret."""
+
+        config = self._load_vm_config(company_name)
+        if not config:
+            return {"success": False, "error": f"VM '{company_name}' not found"}
+
+        if not self._is_vm_running(company_name):
+            return {"success": False, "error": f"VM '{company_name}' is not running"}
+
+        password_sql = password.replace("'", "''")
+        remote_script = "\n".join(
+            [
+                "set -euo pipefail",
+                "sudo -u postgres psql postgres <<'SQL'",
+                f"ALTER ROLE gitlab WITH LOGIN PASSWORD '{password_sql}';",
+                "SQL",
+            ]
+        ) + "\n"
+
+        run_result = self._run_remote_script(
+            config,
+            remote_script,
+            timeout=60,
+            description="refreshing GitLab database password",
         )
 
         if not run_result.get("success"):
@@ -1025,7 +1196,6 @@ exit
                 "group": "root",
                 "mode": "0644",
                 "dir_mode": "0755",
-                "restart_service": "nginx.service",
             },
             {
                 "remote_path": "/var/lib/acme/localhost/fullchain.pem",

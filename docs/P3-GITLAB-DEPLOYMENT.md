@@ -88,18 +88,16 @@ nix-instantiate --parse nixos/gitlab.nix
 # Build P3 configuration
 nix-build -A config.system.build.vm p3-production-config.nix
 
-# Or build using existing build system
-./build-vm.sh
+# Or build using the RAVE CLI
+rave vm build-image
 ```
 
 ### 3. Deploy to VM
 
 ```bash
 # Start VM with P3 configuration
-./run-vm.sh p3-production-config.nix
+rave vm launch-local --image rave-complete-localhost.qcow2
 
-# Or use headless mode for production
-./run-vm-headless.sh p3-production-config.nix
 ```
 
 ### 4. Initial GitLab Setup

@@ -103,7 +103,6 @@ http/                            # Packer HTTP server directory (if exists)
 flake.nix, flake.lock            # Nix flake definition and lock file
 *.nix                            # All NixOS configuration files
 *.qcow2                          # Built VM images
-build-vm.sh, run-vm.sh          # Nix-compatible build scripts
 ```
 
 ### Future Optimizations

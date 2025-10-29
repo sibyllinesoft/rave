@@ -32,7 +32,8 @@ rave vm logs acme-corp nginx --follow
 ### Prepare Secrets (**required before building new VMs**)
 - Run `rave secrets init` to generate an Age key if needed, inject the public key into `.sops.yaml`, and open `config/secrets.yaml` in `sops` for editing.
 - Keep the Age private key (`~/.config/sops/age/keys.txt`) backed up securely—without it the encrypted secrets cannot be recovered.
-- After the VM boots, run `rave secrets install <company>` to push the Age key into `/var/lib/sops-nix/key.txt` automatically (or copy it manually if you prefer).
+- `rave vm create` offers to bootstrap secrets when they are missing and embeds the Age key into the VM automatically when available.
+- Use `rave secrets install <company>` if you rotate credentials or need to refresh the Age key/secrets on an existing VM.
 - Before invoking `nix build` (or any command that reads the encrypted secrets), export `SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt` in your shell.
 - When enabling external OAuth for GitLab, add `gitlab/oauth-provider-client-secret` (and its client ID) to `config/secrets.yaml` so the CLI can sync them into the VM.
 - End-to-end OIDC setup (Google/GitHub) is documented in `docs/oidc-setup.md`; the CLI now prints required redirect URIs and can apply provider credentials live.
@@ -102,7 +103,7 @@ Each company VM includes:
 - **Data separation**: Isolated file systems and databases
 
 ### Chat Control Bridge
-- **Mattermost** provides the default operator chat surface (`https://chat.localtest.me:8221/`).
+- **Mattermost** provides the default operator chat surface (`https://chat.localtest.me:18221/`).
 - A hardened chat bridge (`rave-chat-bridge`) consumes Mattermost slash commands and maps them to agent actions.
 - GitLab OIDC is pre-wired for Mattermost and the bridge; update the encrypted secrets (`mattermost/admin-username`, `mattermost/admin-email`, `mattermost/admin-password`, `oidc/chat-control-client-secret`, `gitlab/api-token`) before production use.
 - Shared chat-control components live in `services/chat-control/` so alternate adapters (Slack, etc.) can be swapped in with minimal effort.
@@ -141,18 +142,19 @@ rave oauth apply --company <name> --provider google --client-id ...
 ### Secrets
 ```bash
 rave secrets init                            # Bootstrap SOPS + Age locally
-rave secrets install acme-corp               # Copy Age key into running VM
+rave secrets install acme-corp               # Refresh Age key/secrets for a running VM
 ```
-`rave vm start` now attempts to sync the Age key and required secrets automatically; rerun
-`rave secrets install` if you need to refresh credentials manually.
+`rave vm create` embeds the Age key when it is available, and `rave vm start`
+syncs secrets automatically on boot. Use `rave secrets install` to push new
+credentials into a running VM after rotation.
 
 ### Trusted TLS for Local Browsers
 ```bash
 rave tls bootstrap                           # Install mkcert & trust the local CA (run once per host)
-rave tls issue acme-corp                     # Mint & install a cert for https://chat.localtest.me:8221
+rave tls issue acme-corp                     # Mint & install a cert for https://chat.localtest.me:18221
 ```
-After issuing the certificate, hit the dashboard at `https://localhost:8221/` and Mattermost at
-`https://chat.localtest.me:8221/` for green locks. Add `--domain` flags if you expose the VM on
+After issuing the certificate, hit the dashboard at `https://localhost:18221/` and Mattermost at
+`https://chat.localtest.me:18221/` for green locks. Add `--domain` flags if you expose the VM on
 additional hostnames (e.g. `--domain app.dev.vm`).
 
 ## 🔧 Development

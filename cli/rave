@@ -9,13 +9,17 @@ import sys
 import json
 import shlex
 import shutil
+import socket
 import subprocess
 import tempfile
 import textwrap
 import builtins
+import hashlib
+import datetime
 import click
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 # Add the cli directory to Python path for imports
 CLI_DIR = Path(__file__).parent
@@ -749,40 +753,90 @@ def _sync_vm_secrets(
         )
 
     if secrets_data:
-        mattermost = secrets_data.get("mattermost", {})
+        mattermost_raw = secrets_data.get("mattermost", {})
         gitlab = secrets_data.get("gitlab", {})
         oidc = secrets_data.get("oidc", {})
+        database_creds = secrets_data.get("database", {})
+
+        mm_env_content = mattermost_raw.get("env") or ""
+        env_lines = mm_env_content.splitlines()
+        datasource_value = ""
+        datasource_password = ""
+        for line in env_lines:
+            if line.startswith("MM_SQLSETTINGS_DATASOURCE="):
+                datasource_value = line.split("=", 1)[1].strip()
+                parsed = urlparse(datasource_value)
+                datasource_password = parsed.password or ""
+                break
+
+        if not datasource_value:
+            fallback_password = (
+                database_creds.get("mattermost-password")
+                or "mmpgsecret"
+            )
+            datasource_password = fallback_password
+            datasource_value = (
+                "postgres://mattermost:" + fallback_password +
+                "@localhost:5432/mattermost?sslmode=disable&connect_timeout=10"
+            )
+            env_lines.append("MM_SERVICESETTINGS_ENABLELOCALMODE=false")
+            env_lines.append("MM_SQLSETTINGS_DRIVERNAME=postgres")
+            env_lines.append(f"MM_SQLSETTINGS_DATASOURCE={datasource_value}")
+            env_lines.append("MM_BLEVESETTINGS_INDEXDIR=/var/lib/mattermost/bleve-indexes")
+            mm_env_content = "\n".join(env_lines)
+
+        mattermost = dict(mattermost_raw)
+        if mm_env_content:
+            mattermost["env"] = mm_env_content
+
+        def _derive_hex(base_value: Optional[str], label: str) -> str:
+            seed = (base_value or label).encode("utf-8")
+            return hashlib.sha256(seed).hexdigest()
+
+        gitlab_secret_key_base = gitlab.get("secret-key-base")
+        gitlab_db_key_base = gitlab.get("db-key-base") or _derive_hex(
+            gitlab_secret_key_base or gitlab.get("db-password"),
+            "gitlab-db",
+        )
+        gitlab_otp_key_base = gitlab.get("otp-key-base") or _derive_hex(
+            gitlab.get("root-password") or gitlab_secret_key_base,
+            "gitlab-otp",
+        )
+        gitlab_jws_key_base = (
+            gitlab.get("jws-key-base")
+            or gitlab.get("jwt-signing-key")
+            or _derive_hex(gitlab_secret_key_base, "gitlab-jws")
+        )
 
         secret_items = [
             ("mattermost/admin-username", mattermost.get("admin-username"), "root", "root", "0400", None),
             ("mattermost/admin-email", mattermost.get("admin-email"), "root", "root", "0400", None),
             ("mattermost/admin-password", mattermost.get("admin-password"), "root", "root", "0400", None),
-            ("mattermost/env", mattermost.get("env"), "mattermost", "mattermost", "0600", "mattermost.service"),
+            ("mattermost/env", mattermost.get("env"), "mattermost", "mattermost", "0600", None),
             ("oidc/chat-control-client-secret", oidc.get("chat-control-client-secret"), "root", "root", "0400", None),
-            ("gitlab/api-token", gitlab.get("api-token"), "root", "root", "0400", None),
-            (
-                "gitlab/oauth-provider-client-secret",
-                gitlab.get("oauth-provider-client-secret"),
-                "root",
-                "root",
-                "0400",
-                None,
-            ),
+            ("gitlab/api-token", gitlab.get("api-token"), "gitlab", "gitlab", "0400", None),
+            ("gitlab/oauth-provider-client-secret", gitlab.get("oauth-provider-client-secret"), "gitlab", "gitlab", "0400", None),
+            ("gitlab/root-password", gitlab.get("root-password"), "gitlab", "gitlab", "0400", None),
+            ("gitlab/db-password", gitlab.get("db-password"), "postgres", "gitlab", "0440", None),
+            ("gitlab/secret-key-base", gitlab_secret_key_base, "gitlab", "gitlab", "0400", None),
+            ("gitlab/db-key-base", gitlab_db_key_base, "gitlab", "gitlab", "0400", None),
+            ("gitlab/otp-key-base", gitlab_otp_key_base, "gitlab", "gitlab", "0400", None),
+            ("gitlab/jws-key-base", gitlab_jws_key_base, "gitlab", "gitlab", "0400", None),
         ]
 
         entries = []
-        for name, content, owner, group, mode, restart in secret_items:
+        for name, content, owner, group, mode, remote_path in secret_items:
             if not content:
                 continue
+            target_path = remote_path or f"/run/secrets/{name}"
             entries.append(
                 {
                     "name": name,
-                    "remote_path": f"/run/secrets/{name}",
+                    "remote_path": target_path,
                     "content": content,
                     "owner": owner,
                     "group": group,
                     "mode": mode,
-                    "restart_service": restart,
                 }
             )
 
@@ -798,16 +852,27 @@ def _sync_vm_secrets(
             installed_secrets = [entry["name"] for entry in entries]
 
         if restart_db:
-            admin_password = mattermost.get("admin-password")
-            if admin_password:
+            db_password = database_creds.get("mattermost-password") or datasource_password
+            if db_password:
                 db_result = vm_manager.ensure_mattermost_database(
-                    company_name, admin_password
+                    company_name, db_password
                 )
                 if db_result.get("success"):
                     messages.append("Mattermost database credentials refreshed")
                 else:
                     warnings.append(
                         f"Mattermost database reset failed: {db_result.get('error')}"
+                    )
+            gitlab_db_password = gitlab.get("db-password")
+            if gitlab_db_password:
+                gitlab_db_result = vm_manager.ensure_gitlab_database_password(
+                    company_name, gitlab_db_password
+                )
+                if gitlab_db_result.get("success"):
+                    messages.append("GitLab database password refreshed")
+                else:
+                    warnings.append(
+                        f"GitLab database password refresh failed: {gitlab_db_result.get('error')}"
                     )
 
     return {
@@ -903,6 +968,292 @@ def vm():
     """Virtual Machine management commands."""
     pass
 
+def _check_port_available(port: int) -> bool:
+    """Return True if the port is free on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+@vm.command(name="build-image")
+@click.option(
+    "--attr",
+    default="rave-qcow2",
+    show_default=True,
+    help="Nix flake attribute to build",
+)
+@click.option(
+    "--output",
+    default="rave-complete-localhost.qcow2",
+    show_default=True,
+    help="Symlink path that points at the latest image",
+)
+@click.option(
+    "--skip-symlink",
+    is_flag=True,
+    default=False,
+    help="Do not update the symlink after copying the image",
+)
+@click.option(
+    "--key-file",
+    default=str(DEFAULT_AGE_KEY_PATH),
+    show_default=True,
+    help="Age private key to embed into the qcow image for sops-nix",
+)
+@click.option(
+    "--embed-age-key/--no-embed-age-key",
+    default=True,
+    show_default=True,
+    help="Embed the Age key into the generated image so secrets decrypt on first boot",
+)
+@click.pass_context
+def build_image(
+    ctx,
+    attr: str,
+    output: str,
+    skip_symlink: bool,
+    key_file: str,
+    embed_age_key: bool,
+):
+    """Build the local development qcow2 image."""
+    platform: PlatformManager = ctx.obj["platform"]
+    vm_manager: VMManager = ctx.obj["vm_manager"]
+    repo_root = Path.cwd()
+
+    if shutil.which("nix") is None:
+        click.echo("❌ Nix is not installed or not on PATH. See README for setup steps.")
+        sys.exit(1)
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d")
+    output_path = repo_root / output
+    stamp_name = f"rave-complete-{timestamp}.qcow2"
+    stamped_path = repo_root / stamp_name
+
+    click.echo("🛠️  Building qcow2 image via Nix...")
+    build_cmd = platform.get_nix_build_command()
+    build_cmd.extend(["--show-trace", f".#{attr}"])
+    result = subprocess.run(build_cmd, cwd=repo_root)
+    if result.returncode != 0:
+        click.echo("❌ nix build failed. Scroll up for details.")
+        sys.exit(result.returncode)
+
+    image_src = repo_root / "result" / "nixos.qcow2"
+    if not image_src.exists():
+        click.echo("❌ Build succeeded but result/nixos.qcow2 is missing.")
+        sys.exit(1)
+
+    if stamped_path.exists() or stamped_path.is_symlink():
+        stamped_path.unlink()
+
+    click.echo(f"💾 Copying image to {stamped_path.name}...")
+    temp_path = stamped_path.with_suffix(stamped_path.suffix + ".tmp")
+    if temp_path.exists() or temp_path.is_symlink():
+        temp_path.unlink()
+    shutil.copy2(image_src, temp_path)
+    temp_path.replace(stamped_path)
+    stamped_path.chmod(0o644)
+    if stamped_path.is_symlink():
+        click.echo(f"⚠️  Warning: stamped image {stamped_path.name} is a symlink after copy")
+
+    age_key_path = Path(key_file).expanduser()
+    if embed_age_key:
+        if not age_key_path.exists():
+            click.echo(f"⚠️  Age key not found at {age_key_path}; skipping embed step.")
+        else:
+            embed_result = vm_manager._install_age_key_into_image(
+                str(stamped_path),
+                age_key_path,
+            )
+            if embed_result.get("success"):
+                click.echo("🔐 Embedded Age key for sops-nix into the qcow image.")
+            else:
+                click.echo(
+                    f"⚠️  Failed to embed Age key ({embed_result.get('error', 'unknown error')}). "
+                    "Secrets will need to be installed manually after boot."
+                )
+
+    if not skip_symlink:
+        click.echo(f"🔗 Updating {output} -> {stamped_path.name}")
+        if output_path.exists() or output_path.is_symlink():
+            output_path.unlink()
+        # Use a relative symlink when the paths share a directory
+        try:
+            relative_target = stamped_path.relative_to(output_path.parent.resolve())
+        except ValueError:
+            relative_target = stamped_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.symlink_to(relative_target)
+
+    click.echo("✅ Image build complete.")
+
+@vm.command(name="launch-local")
+@click.option(
+    "--image",
+    default="rave-complete-localhost.qcow2",
+    show_default=True,
+    help="qcow2 image to boot",
+)
+@click.option("--memory", default="8G", show_default=True, help="Guest memory allocation")
+@click.option("--cpus", default=4, show_default=True, help="Guest vCPU count")
+@click.option("--name", default="local-dev", show_default=True, help="VM name")
+@click.option(
+    "--http-port",
+    default=18220,
+    show_default=True,
+    help="Primary host port forwarded to guest :8220",
+)
+@click.option(
+    "--https-port",
+    default=18221,
+    show_default=True,
+    help="Primary host port forwarded to guest :8221",
+)
+@click.option("--ssh-port", default=2224, show_default=True, help="Forward host port to guest :22")
+@click.option("--status-port", default=8889, show_default=True, help="Forward host port to guest :8080")
+@click.option("--no-backup", is_flag=True, default=False, help="Skip creating the initial image backup")
+@click.pass_context
+def launch_local(
+    ctx,
+    image: str,
+    memory: str,
+    cpus: int,
+    name: str,
+    http_port: int,
+    https_port: int,
+    ssh_port: int,
+    status_port: int,
+    no_backup: bool,
+):
+    """Boot the development VM image locally with QEMU."""
+    platform: PlatformManager = ctx.obj["platform"]
+    repo_root = Path.cwd()
+
+    image_path = Path(image)
+    if not image_path.is_absolute():
+        image_path = repo_root / image_path
+    if not image_path.exists():
+        click.echo(f"❌ VM image not found: {image_path}")
+        sys.exit(1)
+
+    port_forwards = [
+        (http_port, 8220),
+        (https_port, 8221),
+        (ssh_port, 22),
+        (status_port, 8080),
+    ]
+
+    required_legacy_ports = {
+        18221: 8221,
+    }
+    optional_legacy_ports = {
+        18220: 8220,
+        18231: 8231,
+        18230: 8230,
+    }
+
+    click.echo("🔍 Checking port availability...")
+    unavailable = [
+        host_port for host_port, _ in port_forwards if not _check_port_available(host_port)
+    ]
+    if unavailable:
+        for port in sorted(set(unavailable)):
+            click.echo(f"❌ Host port {port} is already in use.")
+        sys.exit(1)
+
+    forwarded_hosts = {host_port for host_port, _ in port_forwards}
+
+    for host_port, guest_port in required_legacy_ports.items():
+        if host_port in forwarded_hosts:
+            continue
+        if not _check_port_available(host_port):
+            click.echo(
+                f"❌ Host port {host_port} is already in use; required for documented HTTPS access."
+            )
+            sys.exit(1)
+        port_forwards.append((host_port, guest_port))
+        forwarded_hosts.add(host_port)
+
+    for host_port, guest_port in optional_legacy_ports.items():
+        if host_port in forwarded_hosts:
+            continue
+        if not _check_port_available(host_port):
+            continue
+        port_forwards.append((host_port, guest_port))
+        forwarded_hosts.add(host_port)
+
+    qemu_binary = platform.get_qemu_binary()
+    if not qemu_binary:
+        click.echo("❌ Unable to locate qemu-system-x86_64. Install QEMU first.")
+        sys.exit(1)
+
+    pidfile = Path(f"/tmp/rave-{name}.pid")
+    try:
+        if pidfile.exists() or pidfile.is_symlink():
+            pidfile.unlink()
+        pidfile.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    backup_path = image_path.with_suffix(image_path.suffix + ".backup")
+    if not no_backup and not backup_path.exists():
+        click.echo(f"💾 Creating backup at {backup_path}")
+        shutil.copy2(image_path, backup_path)
+
+    click.echo("🖥️  Launching RAVE VM...")
+    click.echo(f"   Image : {image_path}")
+    click.echo(f"   Memory: {memory}")
+    click.echo(f"   CPUs  : {cpus}")
+    click.echo("")
+    primary_https_port = 18221 if 18221 in forwarded_hosts else https_port
+    click.echo("📊 Service URLs (available after boot):")
+    click.echo(f"   🌐 Dashboard:  https://localhost:{primary_https_port}/")
+    click.echo(f"   🦊 GitLab:     https://localhost:{primary_https_port}/gitlab/")
+    click.echo(f"   💬 Mattermost: https://localhost:{primary_https_port}/mattermost/")
+    click.echo("")
+    click.echo(f"🔑 SSH Access: ssh -p {ssh_port} root@localhost (password: debug123)")
+    click.echo("🔴 To stop: press Ctrl+C in this terminal or kill the QEMU process.")
+    click.echo("")
+
+    hostfwd_rules = [
+        f"hostfwd=tcp::{host_port}-:{guest_port}"
+        for host_port, guest_port in port_forwards
+    ]
+    netdev = f"user,id=net0,{','.join(hostfwd_rules)}"
+
+    cmd = [
+        qemu_binary,
+        "-drive",
+        f"file={image_path},format=qcow2",
+        "-m",
+        memory,
+        "-smp",
+        str(cpus),
+        "-netdev",
+        netdev,
+        "-device",
+        "virtio-net-pci,netdev=net0",
+        "-pidfile",
+        str(pidfile),
+        "-display",
+        "none",
+        "-serial",
+        "stdio",
+        "-name",
+        name,
+    ]
+
+    try:
+        os.execvp(qemu_binary, cmd)
+    except FileNotFoundError:
+        click.echo(f"❌ Failed to execute QEMU binary: {qemu_binary}")
+        sys.exit(1)
+    except OSError as exc:
+        click.echo(f"❌ Unable to launch VM: {exc}")
+        sys.exit(1)
+
 @vm.command()
 @click.argument('company_name')
 @click.option('--keypair', required=True, help='Path to SSH keypair for VM access')
@@ -910,14 +1261,65 @@ def vm():
 def create(ctx, company_name: str, keypair: str):
     """Create a new company development environment VM."""
     vm_manager = ctx.obj['vm_manager']
-    
+
     click.echo(f"🚀 Creating development environment for {company_name}...")
     click.echo(f"🔑 Using SSH keypair: {keypair}")
-    
+
+    age_key_path = DEFAULT_AGE_KEY_PATH
+    secrets_path = DEFAULT_SECRETS_FILE
+    age_key_ready = age_key_path.exists()
+    secrets_file_ready = secrets_path.exists()
+    bootstrap_skipped = False
+
+    if not age_key_ready or not secrets_file_ready:
+        click.echo("⚠️  Secrets prerequisites missing:")
+        if not age_key_ready:
+            click.echo(f"   • Age key ({age_key_path})")
+        if not secrets_file_ready:
+            click.echo(f"   • Secrets file ({secrets_path})")
+
+        if click.confirm("Run 'rave secrets init' now?", default=True):
+            ctx.invoke(init, key_file=str(age_key_path), secrets_file=str(secrets_path))
+            age_key_ready = age_key_path.exists()
+            secrets_file_ready = secrets_path.exists()
+        else:
+            click.echo("ℹ️  Skipping secrets bootstrap for now.")
+            if not click.confirm(
+                "Continue without installing secrets? (You can sync later with 'rave secrets install')",
+                default=False,
+            ):
+                click.echo("❌ VM creation cancelled.")
+                return
+            bootstrap_skipped = True
+
+    if not age_key_ready:
+        click.echo(
+            f"⚠️  Age key not available at {age_key_path}. "
+            "Secrets will need to be installed after creation."
+        )
+    elif not secrets_file_ready:
+        click.echo(
+            f"⚠️  Secrets file still missing at {secrets_path}. "
+            "VM will be created with the current encrypted defaults."
+        )
+
     try:
-        result = vm_manager.create_vm(company_name, keypair)
+        age_key_for_install = age_key_path if age_key_ready else None
+        result = vm_manager.create_vm(company_name, keypair, age_key_for_install)
         if result['success']:
             click.echo(f"✅ VM '{company_name}' created successfully!")
+            warnings = result.get('warnings', [])
+            if warnings:
+                for warning in warnings:
+                    click.echo(f"⚠️  {warning}")
+            elif not age_key_ready:
+                click.echo(
+                    f"⚠️  Secrets were not embedded. Run 'rave secrets install {company_name}' before first boot."
+                )
+            elif bootstrap_skipped or not secrets_file_ready:
+                click.echo(
+                    f"ℹ️  Update secrets in {secrets_path} and run 'rave secrets install {company_name}' when ready."
+                )
             click.echo(f"   SSH access: rave vm ssh {company_name}")
             click.echo(f"   Status: rave vm status {company_name}")
         else:

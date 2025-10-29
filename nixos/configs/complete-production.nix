@@ -3,11 +3,16 @@
 { config, pkgs, lib, ... }:
 
 let
+  useSecrets = config.services.rave.gitlab.useSecrets;
+  gitlabDbPasswordFile = if useSecrets
+    then config.sops.secrets."gitlab/db-password".path
+    else pkgs.writeText "gitlab-db-password" "gitlab-production-password";
   googleOauthClientId = "729118765955-7l2hgo3nrjaiol363cp8avf3m97shjo8.apps.googleusercontent.com";
   gitlabExternalUrl = "https://localhost:18221/gitlab";
-  gitlabRailsRunner = lib.getExe' pkgs.gitlab "gitlab-rails";
+  gitlabRailsRunner = "${config.system.path}/bin/gitlab-rails";
+  gitlabPackage = config.services.gitlab.packages.gitlab;
   mattermostPkg = config.services.mattermost.package or pkgs.mattermost;
-  mattermostPublicUrl = "https://localhost:18221/mattermost";
+  mattermostPublicUrl = "https://localhost:18231/mattermost";
   mattermostPath =
     let
       matchResult = builtins.match "https://[^/]+(.*)" mattermostPublicUrl;
@@ -85,10 +90,101 @@ in
     ../modules/security/hardening.nix
   ];
 
-  sops = {
-    defaultSopsFile = ../../config/secrets.yaml;
-    age.keyFile = "/var/lib/sops-nix/key.txt";
+sops = lib.mkIf config.services.rave.gitlab.useSecrets {
+  defaultSopsFile = ../../config/secrets.yaml;
+  age.keyFile = "/var/lib/sops-nix/key.txt";
+  secrets = {
+    "mattermost/env" = {
+      owner = "mattermost";
+      group = "mattermost";
+      mode = "0600";
+      path = "/run/secrets/mattermost/env";
+      restartUnits = [ "mattermost.service" ];
+    };
+    "mattermost/admin-username" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      path = "/run/secrets/mattermost/admin-username";
+      restartUnits = [ "mattermost.service" ];
+    };
+    "mattermost/admin-email" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      path = "/run/secrets/mattermost/admin-email";
+      restartUnits = [ "mattermost.service" ];
+    };
+    "mattermost/admin-password" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      path = "/run/secrets/mattermost/admin-password";
+      restartUnits = [ "mattermost.service" ];
+    };
+    "oidc/chat-control-client-secret" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      path = "/run/secrets/oidc/chat-control-client-secret";
+    };
+    "gitlab/api-token" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+      path = "/run/secrets/gitlab/api-token";
+    };
+    "gitlab/root-password" = {
+      owner = "gitlab";
+      group = "gitlab";
+      mode = "0400";
+      path = "/run/secrets/gitlab/root-password";
+      restartUnits = [ "gitlab.service" ];
+    };
+    "gitlab/db-password" = {
+      owner = "postgres";
+      group = "gitlab";
+      mode = "0440";
+      path = "/run/secrets/gitlab/db-password";
+      restartUnits = [ "gitlab-db-password.service" ];
+    };
+    "gitlab/secret-key-base" = {
+      owner = "gitlab";
+      group = "gitlab";
+      mode = "0400";
+      path = "/run/secrets/gitlab/secret-key-base";
+      restartUnits = [ "gitlab.service" ];
+    };
+    "gitlab/db-key-base" = {
+      owner = "gitlab";
+      group = "gitlab";
+      mode = "0400";
+      path = "/run/secrets/gitlab/db-key-base";
+      restartUnits = [ "gitlab.service" ];
+    };
+    "gitlab/otp-key-base" = {
+      owner = "gitlab";
+      group = "gitlab";
+      mode = "0400";
+      path = "/run/secrets/gitlab/otp-key-base";
+      restartUnits = [ "gitlab.service" ];
+    };
+    "gitlab/jws-key-base" = {
+      owner = "gitlab";
+      group = "gitlab";
+      mode = "0400";
+      path = "/run/secrets/gitlab/jws-key-base";
+      restartUnits = [ "gitlab.service" ];
+    };
+    "gitlab/oauth-provider-client-secret" = {
+      owner = "gitlab";
+      group = "gitlab";
+      mode = "0400";
+      path = "/run/secrets/gitlab/oauth-provider-client-secret";
+      restartUnits = [ "gitlab.service" ];
+    };
   };
+};
 
   systemd.services.mattermost.preStart = lib.mkMerge [
     (lib.mkBefore ''
@@ -112,7 +208,7 @@ config_path = Path('/var/lib/mattermost/config/config.json')
 if not config_path.exists():
     raise SystemExit(0)
 
-site_url = os.environ.get('SITE_URL', 'https://localhost:18221/mattermost').rstrip('/')
+site_url = os.environ.get('SITE_URL', 'https://localhost:18231/mattermost').rstrip('/')
 login_url = f"{site_url}/oauth/gitlab/login"
 login_path = urlparse(login_url).path or "/oauth/gitlab/login"
 gitlab_base = os.environ.get('GITLAB_BASE', 'https://localhost:18221/gitlab').rstrip('/')
@@ -183,7 +279,7 @@ PY
 
   # User configuration
   users.users.root = {
-    hashedPassword = "$6$QswyhoJG6qLe.KXH$gc29VHyMSsYAWzs8EcahO2mqYCFJBuu4JQmgGFfrEK6T0tw.hJ95WUEQ4vWGrltRSVCq7FRFBEO42sN8FTCrj/";  # "rave-root"
+    hashedPassword = "$6$F0X5acx/cry2HLWf$lewtPoE8PdND7qVCw6FjphVszsDGluaqQUsFhhB2sRVoydZ0rfsQ8GKB6vuEh/dCiXDdLHlaM8RGx9U/khYPD0";  # "debug123"
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKAmBj5iZFV2inopUhgTX++Wue6g5ePry+DiE3/XLxe2 rave-vm-access"
     ];
@@ -203,15 +299,16 @@ PY
 
   # PostgreSQL with ALL required databases pre-configured
   services.postgresql = {
-    enable = true;
+    enable = lib.mkForce true;
     package = pkgs.postgresql_15;
     
     # Pre-create ALL required databases and users
-    ensureDatabases = [ "gitlab" "grafana" "penpot" ];
+    ensureDatabases = [ "gitlab" "grafana" "penpot" "mattermost" ];
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
       { name = "grafana"; ensureDBOwnership = true; }
       { name = "penpot"; ensureDBOwnership = true; }
+      { name = "mattermost"; ensureDBOwnership = true; }
       { name = "prometheus"; ensureDBOwnership = false; }
     ];
     
@@ -233,9 +330,46 @@ PY
     
     # Initialize all databases with proper permissions
     initialScript = pkgs.writeText "postgres-init.sql" ''
+      -- Ensure required roles exist
+      SELECT format('CREATE ROLE %I LOGIN', 'gitlab')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gitlab')
+      \gexec
+
+      SELECT format('CREATE ROLE %I LOGIN', 'grafana')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'grafana')
+      \gexec
+
+      SELECT format('CREATE ROLE %I LOGIN', 'penpot')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'penpot')
+      \gexec
+
+      SELECT format('CREATE ROLE %I LOGIN', 'mattermost')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mattermost')
+      \gexec
+
+      SELECT format('CREATE ROLE %I LOGIN', 'prometheus')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'prometheus')
+      \gexec
+
+      -- Ensure required databases exist
+      SELECT format('CREATE DATABASE %I OWNER %I', 'gitlab', 'gitlab')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'gitlab')
+      \gexec
+
+      SELECT format('CREATE DATABASE %I OWNER %I', 'grafana', 'grafana')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'grafana')
+      \gexec
+
+      SELECT format('CREATE DATABASE %I OWNER %I', 'penpot', 'penpot')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'penpot')
+      \gexec
+
+      SELECT format('CREATE DATABASE %I OWNER %I', 'mattermost', 'mattermost')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'mattermost')
+      \\gexec
+
       -- GitLab database setup
-      ALTER USER gitlab CREATEDB;
-      ALTER USER gitlab WITH PASSWORD 'gitlab-production-password';
+      ALTER ROLE gitlab CREATEDB;
       GRANT ALL PRIVILEGES ON DATABASE gitlab TO gitlab;
       
       -- Grafana permissions
@@ -251,6 +385,23 @@ PY
       -- Penpot database setup  
       GRANT ALL PRIVILEGES ON DATABASE penpot TO penpot;
       ALTER USER penpot WITH PASSWORD 'penpot-production-password';
+
+      -- Mattermost database setup
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mattermost') THEN
+          CREATE ROLE mattermost WITH LOGIN PASSWORD 'mmpgsecret';
+        ELSE
+          ALTER ROLE mattermost WITH PASSWORD 'mmpgsecret';
+        END IF;
+      END
+      $$;
+      GRANT ALL PRIVILEGES ON DATABASE mattermost TO mattermost;
+      ALTER DATABASE mattermost OWNER TO mattermost;
+      GRANT USAGE ON SCHEMA public TO mattermost;
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO mattermost;
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO mattermost;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO mattermost;
 
       -- Prometheus exporter
       DO $$
@@ -376,7 +527,7 @@ PY
       server = {
         http_port = 3000;
         domain = "localhost";  # Changed from rave.local to localhost  
-        root_url = "https://localhost:8221/grafana/";
+        root_url = "https://localhost:18221/grafana/";
         serve_from_sub_path = true;
       };
 
@@ -430,6 +581,7 @@ PY
 
   services.mattermost = {
     enable = true;
+    localDatabaseCreate = false;
     siteUrl = mattermostPublicUrl;
     siteName = "RAVE Mattermost";
     mutableConfig = true;
@@ -484,32 +636,37 @@ PY
       clientSecretFile = if config.services.rave.gitlab.useSecrets
         then config.sops.secrets."gitlab/oauth-provider-client-secret".path
         else pkgs.writeText "gitlab-oauth-client-secret" "development-client-secret";
-      autoSignIn = true;
+      autoSignIn = false;
       autoLinkUsers = true;
-      allowLocalSignin = false;
+      allowLocalSignin = true;
     };
   };
+
+  services.gitlab.extraConfig.gitlab.omniauth.full_host = lib.mkForce gitlabExternalUrl;
+  systemd.services.gitlab.environment.GITLAB_OMNIAUTH_FULL_HOST = gitlabExternalUrl;
+  services.gitlab.extraConfig.gitlab.port = lib.mkForce 18221;
 
   systemd.services.gitlab-mattermost-oauth = {
     description = "Ensure GitLab OAuth client for Mattermost exists";
     wantedBy = [ "multi-user.target" ];
-    after = [ "gitlab-autostart.service" "gitlab.service" ];
+    after = [ "gitlab.service" ];
     wants = [ "gitlab.service" ];
+    requires = [ "gitlab.service" ];
     serviceConfig = {
       Type = "oneshot";
       User = "gitlab";
       Group = "gitlab";
+      TimeoutStartSec = "60s";
+      RemainAfterExit = false;
     };
     environment = {
-      HOME = "/var/lib/gitlab";
+      HOME = "/var/gitlab/state/home";
       RAILS_ENV = "production";
     };
     script = ''
       set -euo pipefail
-      cd /var/lib/gitlab
-      ${gitlabRailsRunner} runner <<'RUBY'
-require "doorkeeper/application"
-
+      cd /var/gitlab/state
+      ${gitlabRailsRunner} runner - <<'RUBY'
 redirect_uri = '${mattermostGitlabRedirectUri}'
 uid = '${mattermostGitlabClientId}'
 secret = '${mattermostGitlabClientSecret}'
@@ -529,48 +686,6 @@ RUBY
   };
 
   systemd.services.mattermost.after = lib.mkAfter [ "gitlab-mattermost-oauth.service" ];
-
-  sops.secrets."mattermost/env" = {
-    owner = "mattermost";
-    group = "mattermost";
-    mode = "0600";
-  };
-
-  sops.secrets."mattermost/admin-username" = {
-    owner = "root";
-    group = "root";
-    mode = "0400";
-  };
-
-  sops.secrets."mattermost/admin-email" = {
-    owner = "root";
-    group = "root";
-    mode = "0400";
-  };
-
-  sops.secrets."mattermost/admin-password" = {
-    owner = "root";
-    group = "root";
-    mode = "0400";
-  };
-
-  sops.secrets."oidc/chat-control-client-secret" = {
-    owner = "root";
-    group = "root";
-    mode = "0400";
-  };
-
-  sops.secrets."gitlab/api-token" = {
-    owner = "root";
-    group = "root";
-    mode = "0400";
-  };
-
-  sops.secrets."gitlab/oauth-provider-client-secret" = {
-    owner = "gitlab";
-    group = "gitlab";
-    mode = "0400";
-  };
 
   # ===== NGINX CONFIGURATION =====
 
@@ -614,169 +729,160 @@ RUBY
       sslCertificate = "/var/lib/acme/localhost/cert.pem";
       sslCertificateKey = "/var/lib/acme/localhost/key.pem";
       
-      # Root location - dashboard
-      locations."/" = {
-        root = pkgs.writeTextDir "index.html" ''
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>RAVE - Complete Production Environment</title>
-              <style>
-                  * { margin: 0; padding: 0; box-sizing: border-box; }
-                  body { 
-                      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                      color: #333; min-height: 100vh; padding: 20px;
-                  }
-                  .container { max-width: 1200px; margin: 0 auto; }
-                  .header { text-align: center; color: white; margin-bottom: 40px; }
-                  .header h1 { font-size: 3rem; margin-bottom: 10px; }
-                  .services { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-                  .service-card {
-                      background: white; border-radius: 10px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-                      transition: transform 0.3s ease; text-decoration: none; color: #333;
-                  }
-                  .service-card:hover { transform: translateY(-5px); }
-                  .service-title { font-size: 1.5rem; margin-bottom: 10px; color: #667eea; }
-                  .service-desc { color: #666; margin-bottom: 15px; }
-                  .service-url { color: #764ba2; font-weight: bold; }
-                  .status { display: inline-block; padding: 4px 8px; border-radius: 20px; font-size: 0.8rem; }
-                  .status.active { background: #4ade80; color: white; }
-              </style>
-          </head>
-          <body>
-              <div class="container">
-                  <div class="header">
-                      <h1>🚀 RAVE</h1>
-                      <p>Complete Production Environment - All Services Ready</p>
+      locations = {
+        "/" = {
+            root = pkgs.writeTextDir "index.html" ''
+              <!DOCTYPE html>
+              <html lang="en">
+              <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <title>RAVE - Complete Production Environment</title>
+                  <style>
+                      * { margin: 0; padding: 0; box-sizing: border-box; }
+                      body {
+                          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                          color: #333; min-height: 100vh; padding: 20px;
+                      }
+                      .container { max-width: 1200px; margin: 0 auto; }
+                      .header { text-align: center; color: white; margin-bottom: 40px; }
+                      .header h1 { font-size: 3rem; margin-bottom: 10px; }
+                      .services { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+                      .service-card {
+                          background: white; border-radius: 10px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+                          transition: transform 0.3s ease; text-decoration: none; color: #333;
+                      }
+                      .service-card:hover { transform: translateY(-5px); }
+                      .service-title { font-size: 1.5rem; margin-bottom: 10px; color: #667eea; }
+                      .service-desc { color: #666; margin-bottom: 15px; }
+                      .service-url { color: #764ba2; font-weight: bold; }
+                      .status { display: inline-block; padding: 4px 8px; border-radius: 20px; font-size: 0.8rem; }
+                      .status.active { background: #4ade80; color: white; }
+                  </style>
+              </head>
+              <body>
+                  <div class="container">
+                      <div class="header">
+                          <h1>🚀 RAVE</h1>
+                          <p>Complete Production Environment - All Services Ready</p>
+                      </div>
+                      <div class="services">
+                          <a href="/gitlab/" class="service-card">
+                              <div class="service-title">🦊 GitLab</div>
+                              <div class="service-desc">Git repository management and CI/CD</div>
+                              <div class="service-url">https://localhost:18221/gitlab/</div>
+                              <span class="status active">Active</span>
+                          </a>
+                          <a href="/grafana/" class="service-card">
+                              <div class="service-title">📊 Grafana</div>
+                              <div class="service-desc">Monitoring dashboards and analytics</div>
+                              <div class="service-url">https://localhost:18221/grafana/</div>
+                              <span class="status active">Active</span>
+                          </a>
+                          <a href="${mattermostPublicUrl}/" class="service-card">
+                              <div class="service-title">💬 Mattermost</div>
+                              <div class="service-desc">Secure team chat and agent control</div>
+                              <div class="service-url">${mattermostPublicUrl}/</div>
+                              <span class="status active">Active</span>
+                          </a>
+                          <a href="/prometheus/" class="service-card">
+                              <div class="service-title">🔍 Prometheus</div>
+                              <div class="service-desc">Metrics collection and monitoring</div>
+                              <div class="service-url">https://localhost:18221/prometheus/</div>
+                              <span class="status active">Active</span>
+                          </a>
+                          <a href="/nats/" class="service-card">
+                              <div class="service-title">⚡ NATS JetStream</div>
+                              <div class="service-desc">High-performance messaging system</div>
+                              <div class="service-url">https://localhost:18221/nats/</div>
+                              <span class="status active">Active</span>
+                          </a>
+                      </div>
                   </div>
-                  <div class="services">
-                      <a href="/gitlab/" class="service-card">
-                          <div class="service-title">🦊 GitLab</div>
-                          <div class="service-desc">Git repository management and CI/CD</div>
-                          <div class="service-url">https://localhost:8221/gitlab/</div>
-                          <span class="status active">Active</span>
-                      </a>
-                      <a href="/grafana/" class="service-card">
-                          <div class="service-title">📊 Grafana</div>
-                          <div class="service-desc">Monitoring dashboards and analytics</div>
-                          <div class="service-url">https://localhost:8221/grafana/</div>
-                          <span class="status active">Active</span>
-                      </a>
-                      <a href="${mattermostPublicUrl}/" class="service-card">
-                          <div class="service-title">💬 Mattermost</div>
-                          <div class="service-desc">Secure team chat and agent control</div>
-                          <div class="service-url">${mattermostPublicUrl}/</div>
-                          <span class="status active">Active</span>
-                      </a>
-                      <a href="/prometheus/" class="service-card">
-                          <div class="service-title">🔍 Prometheus</div>
-                          <div class="service-desc">Metrics collection and monitoring</div>
-                          <div class="service-url">https://localhost:8221/prometheus/</div>
-                          <span class="status active">Active</span>
-                      </a>
-                      <a href="/nats/" class="service-card">
-                          <div class="service-title">⚡ NATS JetStream</div>
-                          <div class="service-desc">High-performance messaging system</div>
-                          <div class="service-url">https://localhost:8221/nats/</div>
-                          <span class="status active">Active</span>
-                      </a>
-                  </div>
-              </div>
-          </body>
-          </html>
-        '';
+              </body>
+              </html>
+            '';
+          };
+
+          "/login" = {
+            return = "302 ${mattermostPublicUrl}/";
+          };
+
+          "= /" = {
+            return = "302 ${mattermostPublicUrl}/";
+          };
+
+          "/grafana/" = {
+            proxyPass = "http://127.0.0.1:3000/";
+            proxyWebsockets = true;
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+            '';
+          };
+
+          "/prometheus/" = {
+            proxyPass = "http://127.0.0.1:9090/";
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+            '';
+          };
+
+          "/nats/" = {
+            proxyPass = "http://127.0.0.1:8222/";
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+            '';
+          };
+
+          "/mattermost/" = {
+            proxyPass = "http://127.0.0.1:8065";
+            proxyWebsockets = true;
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Ssl on;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection $connection_upgrade;
+              client_max_body_size 100M;
+              proxy_redirect off;
+              proxy_buffering off;
+            '';
+          };
+
+          "/mattermost" = {
+            proxyPass = "http://127.0.0.1:8065";
+            proxyWebsockets = true;
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Ssl on;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection $connection_upgrade;
+              client_max_body_size 100M;
+              proxy_redirect off;
+              proxy_buffering off;
+            '';
+          };
       };
 
-      locations."/login" = {
-        return = "302 ${mattermostPublicUrl}/";
-      };
-
-      locations."= /" = {
-        return = "302 ${mattermostPublicUrl}/";
-      };
-
-      # Grafana reverse proxy
-      locations."/grafana/" = {
-        proxyPass = "http://127.0.0.1:3000/";
-        proxyWebsockets = true;
-        extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-        '';
-      };
-      
-      # Prometheus reverse proxy
-      locations."/prometheus/" = {
-        proxyPass = "http://127.0.0.1:9090/";
-        extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-        '';
-      };
-      
-      # NATS monitoring reverse proxy  
-      locations."/nats/" = {
-        proxyPass = "http://127.0.0.1:8222/";
-        extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-        '';
-      };
-      
-      locations."= /mattermost" = {
-        return = "302 /mattermost/";
-      };
-
-      locations."/mattermost/" = {
-        extraConfig = ''
-          alias /var/lib/mattermost/client/;
-          index root.html;
-          try_files $uri $uri/ root.html;
-        '';
-      };
-
-      locations."/static/" = {
-        extraConfig = ''
-          alias /var/lib/mattermost/client/;
-          expires 1y;
-        '';
-      };
-
-      locations."/mattermost/static/" = {
-        extraConfig = ''
-          alias /var/lib/mattermost/client/;
-          expires 1y;
-        '';
-      };
-
-      locations."/mattermost/api/" = {
-        extraConfig = ''
-          proxy_pass http://127.0.0.1:8065;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection $connection_upgrade;
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_set_header Accept-Encoding "";
-          proxy_redirect off;
-          proxy_buffering off;
-        '';
-      };
-
-      
       # Global security headers
       extraConfig = ''
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
@@ -850,37 +956,10 @@ RUBY
         return = "302 /mattermost/";
       };
 
-      locations."= /mattermost" = {
-        return = "302 /mattermost/";
-      };
-
       locations."/mattermost/" = {
+        proxyPass = "http://127.0.0.1:8065";
+        proxyWebsockets = true;
         extraConfig = ''
-          alias /var/lib/mattermost/client/;
-          index root.html;
-          try_files $uri $uri/ root.html;
-        '';
-      };
-
-      locations."/static/" = {
-        extraConfig = ''
-          alias /var/lib/mattermost/client/;
-          expires 1y;
-        '';
-      };
-
-      locations."/mattermost/static/" = {
-        extraConfig = ''
-          alias /var/lib/mattermost/client/;
-          expires 1y;
-        '';
-      };
-
-      locations."/mattermost/api/" = {
-        extraConfig = ''
-          proxy_pass http://127.0.0.1:8065;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection $connection_upgrade;
           proxy_set_header Host "$host:$rave_forwarded_port";
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -888,7 +967,28 @@ RUBY
           proxy_set_header X-Forwarded-Port $rave_forwarded_port;
           proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
           proxy_set_header X-Forwarded-Ssl on;
-          proxy_set_header Accept-Encoding "";
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          client_max_body_size 100M;
+          proxy_redirect off;
+          proxy_buffering off;
+        '';
+      };
+
+      locations."/mattermost" = {
+        proxyPass = "http://127.0.0.1:8065";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_set_header Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Forwarded-Ssl on;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          client_max_body_size 100M;
           proxy_redirect off;
           proxy_buffering off;
         '';
@@ -1104,21 +1204,81 @@ EOF
     # Ensure PostgreSQL users exist before other services start
     postgresql.postStart = ''
       # Wait for PostgreSQL to be ready
-      sleep 10
-      
-      # Set passwords for database users (development only)
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER gitlab PASSWORD 'gitlab-production-password';" || true
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER grafana PASSWORD 'grafana-production-password';" || true  
+      sleep 5
+
+      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER grafana PASSWORD 'grafana-production-password';" || true
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER penpot PASSWORD 'penpot-production-password';" || true
-      
+
       # Grant additional permissions
       ${pkgs.postgresql}/bin/psql -U postgres -c "GRANT CONNECT ON DATABASE postgres TO grafana;" || true
       ${pkgs.postgresql}/bin/psql -U postgres -c "GRANT USAGE ON SCHEMA public TO grafana;" || true
     '';
-    
+    "gitlab-db-password" = lib.mkIf useSecrets {
+      description = "Synchronize GitLab database role password from sops secret";
+      wantedBy = [ "multi-user.target" ];
+      requiredBy = [ "gitlab-db-config.service" ];
+      before = [ "gitlab-db-config.service" ];
+      after = [ "postgresql.service" ];
+      requires = [ "postgresql.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        User = "postgres";
+        Group = "postgres";
+        TimeoutStartSec = "180s";
+        RemainAfterExit = true;
+      };
+      script = ''
+        set -euo pipefail
+
+        password_file='${gitlabDbPasswordFile}'
+        if [ ! -r "$password_file" ]; then
+          echo "gitlab-db-password: missing password secret at $password_file" >&2
+          exit 1
+        fi
+
+        for attempt in $(${pkgs.coreutils}/bin/seq 1 30); do
+          if ${pkgs.postgresql}/bin/pg_isready -q -d postgres; then
+            break
+          fi
+          sleep 2
+        done
+
+        if ! ${pkgs.postgresql}/bin/pg_isready -q -d postgres; then
+          echo "gitlab-db-password: PostgreSQL did not become ready" >&2
+          exit 1
+        fi
+
+        password="$(${pkgs.coreutils}/bin/tr -d '\n' < "$password_file")"
+        if [ -z "$password" ]; then
+          echo "gitlab-db-password: secret file was empty" >&2
+          exit 1
+        fi
+
+        ${pkgs.postgresql}/bin/psql \
+          --set=ON_ERROR_STOP=1 \
+          -v pass="$password" \
+          -d postgres <<'SQL'
+ALTER ROLE gitlab WITH PASSWORD :'pass';
+SQL
+      '';
+    };
+
     # GitLab depends on database and certificates
-    gitlab.after = [ "postgresql.service" "redis-main.service" "generate-localhost-certs.service" ];
-    gitlab.requires = [ "postgresql.service" "redis-main.service" ];
+    gitlab.after = [
+      "postgresql.service"
+      "gitlab-db-password.service"
+      "gitlab-db-config.service"
+      "redis-main.service"
+      "generate-localhost-certs.service"
+    ];
+    gitlab.requires = [
+      "postgresql.service"
+      "gitlab-db-password.service"
+      "gitlab-db-config.service"
+      "redis-main.service"
+    ];
+    "gitlab-db-config".after = lib.mkAfter [ "postgresql.service" "gitlab-db-password.service" ];
+    "gitlab-db-config".requires = lib.mkAfter [ "gitlab-db-password.service" ];
     
     # Grafana depends on database and certificates
     grafana.after = [ "postgresql.service" "generate-localhost-certs.service" ];
@@ -1135,6 +1295,13 @@ EOF
     ];
     nginx.requires = [ "generate-localhost-certs.service" ];
   };
+
+  systemd.tmpfiles.rules = [
+    "d /run/secrets 0755 root root -"
+    "d /run/secrets/gitlab 0750 postgres gitlab -"
+    "d /run/secrets/mattermost 0750 root mattermost -"
+    "d /run/secrets/oidc 0700 root root -"
+  ];
 
   system.activationScripts.installRootWelcome = {
     text = ''
@@ -1171,11 +1338,11 @@ echo "🚀 RAVE Complete Production Environment"
 echo "====================================="
 echo ""
 echo "✅ All Services Ready:"
-echo "   🦊 GitLab:      https://localhost:8221/gitlab/"
-echo "   📊 Grafana:     https://localhost:8221/grafana/"  
-echo "   💬 Mattermost:  https://localhost:8221/mattermost/"
-echo "   🔍 Prometheus:  https://localhost:8221/prometheus/"
-echo "   ⚡ NATS:        https://localhost:8221/nats/"
+echo "   🦊 GitLab:      https://localhost:18221/gitlab/"
+echo "   📊 Grafana:     https://localhost:18221/grafana/"  
+echo "   💬 Mattermost:  https://localhost:18231/mattermost/"
+echo "   🔍 Prometheus:  https://localhost:18221/prometheus/"
+echo "   ⚡ NATS:        https://localhost:18221/nats/"
 echo ""
 echo "🔑 Default Credentials:"
 echo "   GitLab root:    admin123456"
@@ -1184,7 +1351,7 @@ echo ""
 echo "🔧 Service Status:"
 systemctl status postgresql redis-main nats prometheus grafana gitlab mattermost rave-chat-bridge nginx --no-pager -l
 echo ""
-echo "🌐 Dashboard: https://localhost:8221/"
+echo "🌐 Dashboard: https://localhost:18221/"
 echo ""
 EOF
       chmod +x /root/welcome.sh

@@ -8,16 +8,17 @@ Your RAVE development VM stack is now fully functional! Here's everything you ne
 
 ### Launch the VM
 ```bash
-./launch-vm.sh
+rave vm launch-local
 ```
 
 ### Access Services
-Once the VM boots (2-3 minutes):
-- **🌐 Dashboard**: https://localhost:8443/
-- **🦊 GitLab**: https://localhost:8443/gitlab/ (root/admin123456)
-- **📊 Grafana**: https://localhost:8443/grafana/ (admin/admin123)
-- **🔍 Prometheus**: https://localhost:8443/prometheus/
-- **⚡ NATS**: https://localhost:8443/nats/
+Once the VM boots (5-7 minutes on first start while GitLab seeds data):
+- **🌐 Dashboard**: https://localhost:18221/
+- **🦊 GitLab**: https://localhost:18221/gitlab/
+- **💬 Mattermost**: https://localhost:18221/mattermost/
+- **📊 Grafana**: https://localhost:18221/grafana/
+- **🔍 Prometheus**: https://localhost:18221/prometheus/
+- **⚡ NATS**: https://localhost:18221/nats/
 
 ### SSH Access
 ```bash
@@ -41,18 +42,14 @@ sudo killall qemu-system-x86_64
 ### Build Commands
 ```bash
 # Build new VM image (if needed)
-./build-vm.sh
-
-# Or use Nix directly
-source ~/.nix-profile/etc/profile.d/nix.sh
-nix build
+rave vm build-image
 ```
 
 ## 📁 Important Files
 
-### Launch Scripts
-- `launch-vm.sh` - Simple VM launcher (ready to use)
-- `build-vm.sh` - Build script with error handling
+### Launch Commands
+- `rave vm launch-local` - Local QEMU launcher with port forwarding
+- `rave vm build-image` - Image build command with Nix integration
 - `cli/rave` - Management CLI (Python-based)
 
 ### Configuration
@@ -97,8 +94,8 @@ python3 cli/rave vm status my-company
 - **OS**: NixOS 24.11 (Vicuna)
 
 ### Network Ports
-- `8081` → VM:80 (HTTP redirect)
-- `8443` → VM:443 (HTTPS services)
+- `18220` → VM:8220 (HTTP redirect)
+- `18221` → VM:8221 (HTTPS services)
 - `2224` → VM:22 (SSH access)
 - `8889` → VM:8080 (Status page)
 
@@ -113,7 +110,7 @@ netstat -tuln | grep -E "(8081|8443|2224|8889)"
 sudo killall qemu-system-x86_64
 
 # Try launching again
-./launch-vm.sh
+rave vm launch-local
 ```
 
 ### Build Issues
@@ -121,7 +118,7 @@ sudo killall qemu-system-x86_64
 # Clean Nix store and rebuild
 nix-collect-garbage
 rm flake.lock
-./build-vm.sh
+rave vm build-image
 ```
 
 ### Service Issues

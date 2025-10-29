@@ -127,5 +127,4 @@ Use these ports when constructing production callback URLs (e.g., `https://gitla
 | `rave oauth bootstrap google --company <name>` | Emit (or run with `--run`) a tailored `gcloud alpha iam oauth-clients create` invocation. |
 | `rave oauth apply --company <name> --provider <google|github> --client-id …` | Push credentials into the running VM and update GitLab’s settings. |
 
-Keep `config/secrets.yaml` committed after each change so the CLI can resync secrets during VM boots (`rave secrets install <company>`).
-
+Keep `config/secrets.yaml` committed after each change so the CLI can resync secrets during VM creation and boots. After updating secrets, run `rave secrets install <company>` to push them into a running VM.

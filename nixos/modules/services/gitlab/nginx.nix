@@ -33,8 +33,6 @@ with lib;
 
               # Preserve sub-path context for relative_url_root
               proxy_set_header X-Script-Name /gitlab;
-              proxy_set_header X-Forwarded-Script-Name /gitlab;
-              proxy_set_header X-Forwarded-Prefix /gitlab;
               proxy_set_header X-Forwarded-Port $rave_forwarded_port;
 
               # File upload support
@@ -69,8 +67,6 @@ with lib;
               proxy_set_header X-Forwarded-Proto $scheme;
               proxy_set_header X-Forwarded-Ssl on;
               proxy_set_header X-Script-Name /gitlab;
-              proxy_set_header X-Forwarded-Script-Name /gitlab;
-              proxy_set_header X-Forwarded-Prefix /gitlab;
               proxy_set_header X-Forwarded-Port $rave_forwarded_port;
             '';
           };
@@ -86,8 +82,6 @@ with lib;
               proxy_set_header X-Forwarded-Proto $scheme;
               proxy_set_header X-Forwarded-Ssl on;
               proxy_set_header X-Script-Name /gitlab;
-              proxy_set_header X-Forwarded-Script-Name /gitlab;
-              proxy_set_header X-Forwarded-Prefix /gitlab;
               proxy_set_header X-Forwarded-Port $rave_forwarded_port;
 
               client_max_body_size 10G;

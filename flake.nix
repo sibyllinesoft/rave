@@ -45,7 +45,7 @@
               let
                 unstable = import (builtins.fetchTarball {
                   url = "https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz";
-                  sha256 = "02w5j06nl2gddh9ifz1647b8bilhzkqg9c93f14cl4k0kq9c8fl1";
+                  sha256 = "1vlmhgh1zdr00afxzsd7kfaynkc9zif0kwmbjmzvb1nqrwj05x3z";
                 }) {
                   system = prev.system;
                   config = prev.config;
