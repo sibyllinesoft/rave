@@ -187,7 +187,7 @@ in
                 omniauth = {
                   enabled = true;
                   allow_single_sign_on = [ meta.providerName ];
-                  block_auto_created_users = true;
+                  block_auto_created_users = false;
                   auto_link_user = if cfg.oauth.autoLinkUsers then [ meta.providerName ] else [];
                   providers = [ providerEntry ];
                 } // optionalAttrs cfg.oauth.autoSignIn {

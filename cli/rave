@@ -2212,7 +2212,7 @@ def oauth_apply(ctx, company: str, provider: str, client_id: Optional[str], clie
         auto_link = Array(omniauth['auto_link_user']).map(&:to_s)
         omniauth['auto_link_user'] = (auto_link | [slug])
 
-        omniauth['block_auto_created_users'] = true
+        omniauth['block_auto_created_users'] = false
 
         providers = Array(omniauth['providers']).dup
         providers.reject! { |existing| existing.is_a?(Hash) && existing['name'] == slug }

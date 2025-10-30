@@ -9,6 +9,8 @@ let
     else pkgs.writeText "gitlab-db-password" "gitlab-production-password";
   googleOauthClientId = "729118765955-7l2hgo3nrjaiol363cp8avf3m97shjo8.apps.googleusercontent.com";
   gitlabExternalUrl = "https://localhost:18221/gitlab";
+  gitlabInternalHttpsUrl = "https://localhost:18221/gitlab";
+  gitlabInternalHttpUrl = "http://127.0.0.1:8123";
   gitlabRailsRunner = "${config.system.path}/bin/gitlab-rails";
   gitlabPackage = config.services.gitlab.packages.gitlab;
   mattermostPkg = config.services.mattermost.package or pkgs.mattermost;
@@ -23,7 +25,7 @@ let
   mattermostLoginUrl = "${mattermostPublicUrl}/oauth/gitlab/login";
   mattermostBrandHtml = "Use the GitLab button below to sign in. If it does not appear, open ${mattermostLoginPath} manually.";
   mattermostGitlabClientId = "rave-mattermost";
-  mattermostGitlabClientSecret = "rave-mattermost-secret";
+  mattermostGitlabClientSecret = "gloas-18f9021e792192dda9f50be4df02cee925db5d36a09bf6867a33762fb874d539";
   mattermostGitlabRedirectUri = "${mattermostPublicUrl}/signup/gitlab/complete";
   gitlabSettingsJSON = builtins.toJSON {
     Enable = true;
@@ -32,8 +34,9 @@ let
     Secret = mattermostGitlabClientSecret;
     Scope = "read_user";
     AuthEndpoint = "${gitlabExternalUrl}/oauth/authorize";
-    TokenEndpoint = "${gitlabExternalUrl}/oauth/token";
-    UserAPIEndpoint = "${gitlabExternalUrl}/api/v4/user";
+    TokenEndpoint = "${gitlabInternalHttpUrl}/oauth/token";
+    UserAPIEndpoint = "${gitlabInternalHttpUrl}/api/v4/user";
+    SkipTLSVerification = true;
   };
   updateMattermostScript = pkgs.writeText "update-mattermost-config.py" ''
 #!/usr/bin/env python3
@@ -194,7 +197,8 @@ sops = lib.mkIf config.services.rave.gitlab.useSecrets {
     '')
     (lib.mkAfter ''
     SITE_URL=${lib.escapeShellArg mattermostPublicUrl} \
-    GITLAB_BASE=${lib.escapeShellArg gitlabExternalUrl} \
+    GITLAB_AUTH_BASE=${lib.escapeShellArg gitlabExternalUrl} \
+    GITLAB_API_BASE=${lib.escapeShellArg gitlabInternalHttpUrl} \
     GITLAB_CLIENT_ID=${lib.escapeShellArg mattermostGitlabClientId} \
     GITLAB_SECRET=${lib.escapeShellArg mattermostGitlabClientSecret} \
     GITLAB_REDIRECT=${lib.escapeShellArg mattermostGitlabRedirectUri} \
@@ -211,7 +215,8 @@ if not config_path.exists():
 site_url = os.environ.get('SITE_URL', 'https://localhost:18231/mattermost').rstrip('/')
 login_url = f"{site_url}/oauth/gitlab/login"
 login_path = urlparse(login_url).path or "/oauth/gitlab/login"
-gitlab_base = os.environ.get('GITLAB_BASE', 'https://localhost:18221/gitlab').rstrip('/')
+gitlab_auth_base = os.environ.get('GITLAB_AUTH_BASE', 'https://localhost:18221/gitlab').rstrip('/')
+gitlab_api_base = os.environ.get('GITLAB_API_BASE', 'http://localhost:8220/gitlab').rstrip('/')
 gitlab_client_id = os.environ.get("GITLAB_CLIENT_ID", "")
 gitlab_secret = os.environ.get("GITLAB_SECRET", "")
 gitlab_redirect = os.environ.get("GITLAB_REDIRECT", "")
@@ -234,9 +239,10 @@ gitlab['Enable'] = True
 gitlab['Id'] = gitlab_client_id
 gitlab['Secret'] = gitlab_secret
 gitlab['Scope'] = 'read_user'
-gitlab['AuthEndpoint'] = f"{gitlab_base}/oauth/authorize"
-gitlab['TokenEndpoint'] = f"{gitlab_base}/oauth/token"
-gitlab['UserAPIEndpoint'] = f"{gitlab_base}/api/v4/user"
+gitlab['AuthEndpoint'] = f"{gitlab_auth_base}/oauth/authorize"
+gitlab['TokenEndpoint'] = f"{gitlab_api_base}/oauth/token"
+gitlab['UserAPIEndpoint'] = f"{gitlab_api_base}/api/v4/user"
+gitlab['SkipTLSVerification'] = True
 gitlab['DiscoveryEndpoint'] = ""
 gitlab['EnableAuth'] = True
 gitlab['EnableSync'] = True
@@ -588,6 +594,7 @@ PY
     extraConfig = {
       ServiceSettings = {
         EnableLocalMode = false;
+        EnableInsecureOutgoingConnections = true;
       };
       EmailSettings = {
         EnableSignUpWithEmail = false;
@@ -603,11 +610,12 @@ PY
         Enable = true;
         EnableSync = true;
         AuthEndpoint = "${gitlabExternalUrl}/oauth/authorize";
-        TokenEndpoint = "${gitlabExternalUrl}/oauth/token";
-        UserAPIEndpoint = "${gitlabExternalUrl}/api/v4/user";
+        TokenEndpoint = "${gitlabInternalHttpsUrl}/oauth/token";
+        UserAPIEndpoint = "${gitlabInternalHttpsUrl}/api/v4/user";
         Id = mattermostGitlabClientId;
         Secret = mattermostGitlabClientSecret;
         Scope = "read_user";
+        SkipTLSVerification = true;
       };
     };
     # Use Mattermost defaults for data and log directories
@@ -617,9 +625,18 @@ PY
       else pkgs.writeText "mattermost-env" ''
         MM_SERVICESETTINGS_SITEURL=${mattermostPublicUrl}
         MM_SERVICESETTINGS_ENABLELOCALMODE=false
+        MM_SERVICESETTINGS_ENABLEINSECUREOUTGOINGCONNECTIONS=true
         MM_SQLSETTINGS_DRIVERNAME=postgres
         MM_SQLSETTINGS_DATASOURCE=postgres://mattermost:mmpgsecret@localhost:5432/mattermost?sslmode=disable&connect_timeout=10
         MM_BLEVESETTINGS_INDEXDIR=/var/lib/mattermost/bleve-indexes
+        MM_GITLABSETTINGS_ENABLE=true
+        MM_GITLABSETTINGS_ID=${mattermostGitlabClientId}
+        MM_GITLABSETTINGS_SECRET=${mattermostGitlabClientSecret}
+        MM_GITLABSETTINGS_SCOPE=read_user
+        MM_GITLABSETTINGS_AUTHENDPOINT=${gitlabExternalUrl}/oauth/authorize
+        MM_GITLABSETTINGS_TOKENENDPOINT=${gitlabInternalHttpUrl}/oauth/token
+        MM_GITLABSETTINGS_USERAPIENDPOINT=${gitlabInternalHttpUrl}/api/v4/user
+        MM_GITLABSETTINGS_SKIPTLSVERIFICATION=true
       '';
 
   };
@@ -649,14 +666,16 @@ PY
   systemd.services.gitlab-mattermost-oauth = {
     description = "Ensure GitLab OAuth client for Mattermost exists";
     wantedBy = [ "multi-user.target" ];
-    after = [ "gitlab.service" ];
+    after = [ "gitlab-db-config.service" "gitlab.service" ];
     wants = [ "gitlab.service" ];
-    requires = [ "gitlab.service" ];
+    requires = [ "gitlab-db-config.service" ];
     serviceConfig = {
       Type = "oneshot";
       User = "gitlab";
       Group = "gitlab";
-      TimeoutStartSec = "60s";
+      TimeoutStartSec = "900s";
+      Restart = "on-failure";
+      RestartSec = "30s";
       RemainAfterExit = false;
     };
     environment = {
@@ -721,6 +740,16 @@ RUBY
         {
           addr = "0.0.0.0";
           port = 8220;
+          ssl = false;
+        }
+        {
+          addr = "0.0.0.0";
+          port = 18221;
+          ssl = true;
+        }
+        {
+          addr = "0.0.0.0";
+          port = 18220;
           ssl = false;
         }
       ];
@@ -893,6 +922,27 @@ RUBY
         port_in_redirect off;
         absolute_redirect off;
       '';
+    };
+
+    # Internal loopback virtual host exposing GitLab without SSL/redirects for backend services
+    virtualHosts."gitlab-internal" = {
+      listen = [ { addr = "127.0.0.1"; port = 8123; ssl = false; } ];
+      serverName = "gitlab-internal";
+      locations."/" = {
+        proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_set_header Host "localhost";
+          proxy_set_header X-Forwarded-Host "localhost";
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto http;
+          proxy_set_header X-Forwarded-Ssl off;
+          proxy_set_header X-Forwarded-Port 8123;
+          proxy_redirect off;
+          rewrite ^/(.*)$ /gitlab/$1 break;
+        '';
+      };
     };
     
     # HTTP redirect to HTTPS
