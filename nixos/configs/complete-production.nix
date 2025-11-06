@@ -5,39 +5,364 @@
 let
   useSecrets = config.services.rave.gitlab.useSecrets;
   gitlabDbPasswordFile = if useSecrets
-    then config.sops.secrets."gitlab/db-password".path
+    then "/run/secrets/gitlab/db-password"
     else pkgs.writeText "gitlab-db-password" "gitlab-production-password";
   googleOauthClientId = "729118765955-7l2hgo3nrjaiol363cp8avf3m97shjo8.apps.googleusercontent.com";
-  gitlabExternalUrl = "https://localhost:18221/gitlab";
-  gitlabInternalHttpsUrl = "https://localhost:18221/gitlab";
-  gitlabInternalHttpUrl = "http://127.0.0.1:8123";
+  gitlabExternalUrl = "https://localhost:8443/gitlab";
+  gitlabInternalHttpsUrl = "https://localhost:8443/gitlab";
+  gitlabInternalHttpUrl = "https://localhost:8443/gitlab";
   gitlabRailsRunner = "${config.system.path}/bin/gitlab-rails";
   gitlabPackage = config.services.gitlab.packages.gitlab;
   mattermostPkg = config.services.mattermost.package or pkgs.mattermost;
-  mattermostPublicUrl = "https://localhost:18231/mattermost";
+  mattermostPublicUrl = "https://localhost:8443/mattermost";
   mattermostPath =
     let
       matchResult = builtins.match "https://[^/]+(.*)" mattermostPublicUrl;
     in
     if matchResult == null || matchResult == [] then "" else builtins.head matchResult;
+  mattermostTeamName = "rave";
+  mattermostTeamDisplayName = "RAVE";
+  mattermostBuildsChannelName = "builds";
+  mattermostBuildsChannelDisplayName = "Builds";
   mattermostLoginPath =
     if mattermostPath == "" then "/oauth/gitlab/login" else "${mattermostPath}/oauth/gitlab/login";
   mattermostLoginUrl = "${mattermostPublicUrl}/oauth/gitlab/login";
   mattermostBrandHtml = "Use the GitLab button below to sign in. If it does not appear, open ${mattermostLoginPath} manually.";
-  mattermostGitlabClientId = "rave-mattermost";
-  mattermostGitlabClientSecret = "gloas-18f9021e792192dda9f50be4df02cee925db5d36a09bf6867a33762fb874d539";
+  mattermostGitlabClientId = "41622b028bfb499bcadfcdf42a8618734a6cebc901aa8f77661bceeebc7aabba";
+  mattermostGitlabClientSecretFile = if useSecrets
+    then "/run/secrets/gitlab/oauth-mattermost-client-secret"
+    else null;
+  mattermostGitlabSecretFallback = "gloas-18f9021e792192dda9f50be4df02cee925db5d36a09bf6867a33762fb874d539";
   mattermostGitlabRedirectUri = "${mattermostPublicUrl}/signup/gitlab/complete";
   gitlabSettingsJSON = builtins.toJSON {
     Enable = true;
     EnableSync = true;
     Id = mattermostGitlabClientId;
-    Secret = mattermostGitlabClientSecret;
     Scope = "read_user";
     AuthEndpoint = "${gitlabExternalUrl}/oauth/authorize";
     TokenEndpoint = "${gitlabInternalHttpUrl}/oauth/token";
     UserAPIEndpoint = "${gitlabInternalHttpUrl}/api/v4/user";
     SkipTLSVerification = true;
   };
+  pythonWithRequests = pkgs.python3.withPackages (ps: with ps; [ requests ]);
+  mattermostAdminUsernameFile = if useSecrets
+    then "/run/secrets/mattermost/admin-username"
+    else pkgs.writeText "mattermost-admin-username" "admin";
+  mattermostAdminPasswordFile = if useSecrets
+    then "/run/secrets/mattermost/admin-password"
+    else pkgs.writeText "mattermost-admin-password" "Password123!";
+  mattermostAdminEmailFile = if useSecrets
+    then "/run/secrets/mattermost/admin-email"
+    else pkgs.writeText "mattermost-admin-email" "admin@example.com";
+  gitlabApiTokenFile = if useSecrets
+    then "/run/secrets/gitlab/api-token"
+    else pkgs.writeText "gitlab-api-token" "development-token";
+  ensureGitlabMattermostCiScript = pkgs.writeScript "ensure-gitlab-mattermost-ci.py" ''
+#!${pythonWithRequests}/bin/python3
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any, Dict, Iterable
+
+import requests
+from requests import Session
+
+
+def read_first_line(path: str) -> str:
+    try:
+        data = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise SystemExit(f"required secret file missing: {path}")
+    value = data.strip()
+    if not value:
+        raise SystemExit(f"secret file {path} was empty")
+    return value
+
+
+def parse_verify_flag(raw: str) -> Any:
+    value = raw.strip().lower()
+    if value in ("", "false", "0", "no", "off"):
+        return False
+    if value in ("true", "1", "yes", "on"):
+        return True
+    return raw
+
+
+def wait_for_api(session: Session, url: str, name: str, *, attempts: int = 60, delay: float = 5.0) -> None:
+    for _ in range(attempts):
+        try:
+            response = session.get(url, timeout=5)
+            if response.status_code == 200:
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(delay)
+    raise SystemExit(f"{name} API did not become ready: {url}")
+
+
+def mattermost_login(session: Session, base_url: str, login_ids: Iterable[str], password: str) -> None:
+    for login_id in login_ids:
+        if not login_id:
+            continue
+        try:
+            response = session.post(
+                f"{base_url}/api/v4/users/login",
+                json={"login_id": login_id, "password": password},
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            last_error = exc
+            continue
+
+        if response.status_code == 200:
+            token = response.headers.get("Token")
+            if not token:
+                last_error = RuntimeError("Mattermost login response missing session token")
+                break
+            session.headers["Authorization"] = f"Bearer {token}"
+            return
+
+        last_error = RuntimeError(f"Mattermost login failed: {response.status_code} {response.text}")
+
+    if 'last_error' in locals():
+        raise SystemExit(str(last_error))
+    raise SystemExit("Mattermost login failed: no login IDs were provided")
+
+
+def ensure_team(session: Session, base_url: str, name: str, display_name: str) -> Dict[str, Any]:
+    response = session.get(f"{base_url}/api/v4/teams/name/{name}", timeout=10)
+    if response.status_code == 200:
+        return response.json()
+    if response.status_code != 404:
+        raise SystemExit(f"failed to query team '{name}': {response.status_code} {response.text}")
+
+    response = session.post(
+        f"{base_url}/api/v4/teams",
+        json={"name": name, "display_name": display_name, "type": "O"},
+        timeout=10,
+    )
+    if response.status_code not in (200, 201):
+        raise SystemExit(f"failed to create Mattermost team '{name}': {response.status_code} {response.text}")
+    return response.json()
+
+
+def ensure_channel(session: Session, base_url: str, team_id: str, name: str, display_name: str) -> Dict[str, Any]:
+    response = session.get(
+        f"{base_url}/api/v4/teams/{team_id}/channels/name/{name}",
+        timeout=10,
+    )
+    if response.status_code == 200:
+        return response.json()
+    if response.status_code != 404:
+        raise SystemExit(f"failed to query channel '{name}': {response.status_code} {response.text}")
+
+    response = session.post(
+        f"{base_url}/api/v4/channels",
+        json={"team_id": team_id, "name": name, "display_name": display_name, "type": "O"},
+        timeout=10,
+    )
+    if response.status_code not in (200, 201):
+        raise SystemExit(f"failed to create Mattermost channel '{name}': {response.status_code} {response.text}")
+    return response.json()
+
+
+def list_incoming_hooks(session: Session, base_url: str) -> Iterable[Dict[str, Any]]:
+    page = 0
+    per_page = 200
+    while True:
+        response = session.get(
+            f"{base_url}/api/v4/hooks/incoming",
+            params={"page": page, "per_page": per_page},
+            timeout=10,
+        )
+        if response.status_code != 200:
+            raise SystemExit(f"failed to list Mattermost incoming hooks: {response.status_code} {response.text}")
+        hooks = response.json()
+        if not hooks:
+            break
+        yield from hooks
+        if len(hooks) < per_page:
+            break
+        page += 1
+
+
+def ensure_incoming_hook(
+    session: Session,
+    base_url: str,
+    team_id: str,
+    channel_id: str,
+    display_name: str,
+    username: str,
+) -> Dict[str, Any]:
+    for hook in list_incoming_hooks(session, base_url):
+        if hook.get("channel_id") == channel_id and hook.get("display_name") == display_name:
+            return hook
+
+    response = session.post(
+        f"{base_url}/api/v4/hooks/incoming",
+        json={
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "display_name": display_name,
+            "description": "GitLab CI pipeline notifications",
+            "username": username,
+        },
+        timeout=10,
+    )
+    if response.status_code not in (200, 201):
+        raise SystemExit(f"failed to create Mattermost incoming webhook: {response.status_code} {response.text}")
+    return response.json()
+
+
+def fetch_all_projects(session: Session, base_url: str) -> Iterable[Dict[str, Any]]:
+    page = 1
+    per_page = 100
+    while True:
+        response = session.get(
+            f"{base_url}/projects",
+            params={"membership": True, "simple": True, "per_page": per_page, "page": page},
+            timeout=10,
+        )
+        if response.status_code != 200:
+            raise SystemExit(f"failed to list GitLab projects: {response.status_code} {response.text}")
+        chunk = response.json()
+        if not chunk:
+            break
+        yield from chunk
+        if len(chunk) < per_page:
+            break
+        page += 1
+
+
+def configure_project_integration(
+    session: Session,
+    base_url: str,
+    project_id: int,
+    webhook_url: str,
+    channel_name: str,
+    username: str,
+) -> None:
+    payload = {
+        "webhook": webhook_url,
+        "username": username,
+        "channel": f"#{channel_name}",
+        "notify_only_broken_pipelines": False,
+        "branches_to_be_notified": "all",
+        "push_events": False,
+        "issues_events": False,
+        "confidential_issues_events": False,
+        "merge_requests_events": True,  # Enable MR notifications for code review workflow
+        "tag_push_events": True,        # Enable tag notifications for releases
+        "note_events": False,
+        "confidential_note_events": False,
+        "pipeline_events": True,
+        "wiki_page_events": False,
+        "job_events": True,             # Enable job failure notifications
+        "deployment_events": True,      # Enable deployment notifications
+        "active": True,
+    }
+    response = session.put(
+        f"{base_url}/projects/{project_id}/services/mattermost",
+        json=payload,
+        timeout=10,
+    )
+    if response.status_code not in (200, 201):
+        raise SystemExit(
+            f"failed to configure Mattermost integration for project {project_id}: "
+            f"{response.status_code} {response.text}"
+        )
+
+
+def main() -> None:
+    mattermost_base = os.environ.get("MATTERMOST_BASE_URL", "http://127.0.0.1:8065").rstrip("/")
+    mattermost_site = os.environ.get("MATTERMOST_SITE_URL", mattermost_base).rstrip("/")
+    mattermost_team_name = os.environ["MATTERMOST_TEAM_NAME"]
+    mattermost_team_display = os.environ["MATTERMOST_TEAM_DISPLAY_NAME"]
+    mattermost_channel_name = os.environ["MATTERMOST_CHANNEL_NAME"]
+    mattermost_channel_display = os.environ["MATTERMOST_CHANNEL_DISPLAY_NAME"]
+    mattermost_hook_display = os.environ.get("MATTERMOST_HOOK_DISPLAY_NAME", "GitLab CI Builds")
+    mattermost_username = os.environ.get("MATTERMOST_HOOK_USERNAME", "gitlab-ci")
+    mattermost_verify = parse_verify_flag(os.environ.get("MATTERMOST_VERIFY_TLS", "false"))
+
+    mattermost_username_file = os.environ["MATTERMOST_ADMIN_USERNAME_FILE"]
+    mattermost_password_file = os.environ["MATTERMOST_ADMIN_PASSWORD_FILE"]
+    mattermost_email_file = os.environ.get("MATTERMOST_ADMIN_EMAIL_FILE", "")
+    gitlab_token_file = os.environ["GITLAB_API_TOKEN_FILE"]
+    gitlab_base = os.environ.get("GITLAB_API_BASE_URL", "https://localhost:8443/gitlab/api/v4").rstrip("/")
+    gitlab_verify = parse_verify_flag(os.environ.get("GITLAB_VERIFY_TLS", "false"))
+
+    mm_username = read_first_line(mattermost_username_file)
+    mm_password = read_first_line(mattermost_password_file)
+    mm_email = ""
+    if mattermost_email_file:
+        try:
+            mm_email = read_first_line(mattermost_email_file)
+        except SystemExit:
+            mm_email = ""
+    gitlab_token = read_first_line(gitlab_token_file)
+
+    mm_session = requests.Session()
+    mm_session.verify = mattermost_verify
+    wait_for_api(mm_session, f"{mattermost_base}/api/v4/system/ping", "Mattermost")
+    login_candidates = []
+    seen = set()
+    for candidate in (mm_email, mm_username):
+        candidate = candidate.strip()
+        if candidate and candidate not in seen:
+            login_candidates.append(candidate)
+            seen.add(candidate)
+    mattermost_login(mm_session, mattermost_base, login_candidates, mm_password)
+
+    team = ensure_team(mm_session, mattermost_base, mattermost_team_name, mattermost_team_display)
+    channel = ensure_channel(mm_session, mattermost_base, team["id"], mattermost_channel_name, mattermost_channel_display)
+    hook = ensure_incoming_hook(
+        mm_session,
+        mattermost_base,
+        team["id"],
+        channel["id"],
+        mattermost_hook_display,
+        mattermost_username,
+    )
+    hook_id = hook["id"]
+    webhook_internal = f"{mattermost_base}/hooks/{hook_id}"
+
+    gitlab_session = requests.Session()
+    gitlab_session.headers["PRIVATE-TOKEN"] = gitlab_token
+    gitlab_session.verify = gitlab_verify
+    wait_for_api(gitlab_session, f"{gitlab_base}/version", "GitLab")
+
+    projects = list(fetch_all_projects(gitlab_session, gitlab_base))
+    for project in projects:
+        configure_project_integration(
+            gitlab_session,
+            gitlab_base,
+            project["id"],
+            webhook_internal,
+            mattermost_channel_name,
+            mattermost_hook_display,
+        )
+
+    print(f"[ci-bridge] Mattermost webhook {hook_id} linked to channel '{mattermost_channel_name}' in team '{mattermost_team_name}'")
+    print(f"[ci-bridge] Configured {len(projects)} GitLab project(s) for Mattermost notifications")
+
+    summary = {
+        "mattermost_team": mattermost_team_name,
+        "mattermost_channel": mattermost_channel_name,
+        "incoming_hook": hook_id,
+        "configured_projects": [p["path_with_namespace"] for p in projects],
+        "webhook_url_internal": webhook_internal,
+        "webhook_url_external": f"{mattermost_site}/hooks/{hook_id}",
+    }
+    output_path = Path("/var/lib/rave/gitlab-mattermost-ci.json")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    output_path.chmod(0o600)
+
+
+if __name__ == "__main__":
+    main()
+  '';
   updateMattermostScript = pkgs.writeText "update-mattermost-config.py" ''
 #!/usr/bin/env python3
 import json
@@ -93,9 +418,12 @@ in
     ../modules/security/hardening.nix
   ];
 
-sops = lib.mkIf config.services.rave.gitlab.useSecrets {
+# SOPS configuration - DISABLE built-in activation to prevent conflicts
+# Only use our custom sops-init service which runs after AGE key is available
+sops = lib.mkIf false {
   defaultSopsFile = ../../config/secrets.yaml;
   age.keyFile = "/var/lib/sops-nix/key.txt";
+  validateSopsFiles = false;
   secrets = {
     "mattermost/env" = {
       owner = "mattermost";
@@ -109,21 +437,21 @@ sops = lib.mkIf config.services.rave.gitlab.useSecrets {
       group = "root";
       mode = "0400";
       path = "/run/secrets/mattermost/admin-username";
-      restartUnits = [ "mattermost.service" ];
+      restartUnits = [ "mattermost.service" "gitlab-mattermost-ci-bridge.service" ];
     };
     "mattermost/admin-email" = {
       owner = "root";
       group = "root";
       mode = "0400";
       path = "/run/secrets/mattermost/admin-email";
-      restartUnits = [ "mattermost.service" ];
+      restartUnits = [ "mattermost.service" "gitlab-mattermost-ci-bridge.service" ];
     };
     "mattermost/admin-password" = {
       owner = "root";
       group = "root";
       mode = "0400";
       path = "/run/secrets/mattermost/admin-password";
-      restartUnits = [ "mattermost.service" ];
+      restartUnits = [ "mattermost.service" "gitlab-mattermost-ci-bridge.service" ];
     };
     "oidc/chat-control-client-secret" = {
       owner = "root";
@@ -136,6 +464,7 @@ sops = lib.mkIf config.services.rave.gitlab.useSecrets {
       group = "root";
       mode = "0400";
       path = "/run/secrets/gitlab/api-token";
+      restartUnits = [ "gitlab-mattermost-ci-bridge.service" ];
     };
     "gitlab/root-password" = {
       owner = "gitlab";
@@ -149,7 +478,7 @@ sops = lib.mkIf config.services.rave.gitlab.useSecrets {
       group = "gitlab";
       mode = "0440";
       path = "/run/secrets/gitlab/db-password";
-      restartUnits = [ "gitlab-db-password.service" ];
+      restartUnits = [ "postgresql.service" ];
     };
     "gitlab/secret-key-base" = {
       owner = "gitlab";
@@ -186,8 +515,166 @@ sops = lib.mkIf config.services.rave.gitlab.useSecrets {
       path = "/run/secrets/gitlab/oauth-provider-client-secret";
       restartUnits = [ "gitlab.service" ];
     };
+    "gitlab/oauth-mattermost-client-secret" = {
+      owner = "gitlab";
+      group = "gitlab";
+      mode = "0400";
+      path = "/run/secrets/gitlab/oauth-mattermost-client-secret";
+      restartUnits = [ "gitlab.service" "gitlab-mattermost-oauth.service" ];
+    };
   };
 };
+
+  # Mount SOPS keys filesystem (for AGE key access via virtfs)
+  systemd.services.mount-sops-keys = lib.mkIf config.services.rave.gitlab.useSecrets {
+    description = "Mount SOPS keys filesystem for AGE key access";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "local-fs.target" ];
+    before = [ "install-age-key.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      User = "root";
+      Group = "root";
+    };
+    script = ''
+      set -euo pipefail
+      
+      # Create mount point
+      mkdir -p /host-keys
+      
+      # Try to mount virtfs with detailed error reporting
+      echo "Attempting to mount virtfs with tag 'sops-keys'..."
+      if mount -t 9p -o trans=virtio,version=9p2000.L,rw sops-keys /host-keys; then
+        echo "SOPS keys filesystem mounted successfully at /host-keys"
+        ls -la /host-keys/
+        if [ -f /host-keys/keys.txt ]; then
+          echo "AGE keys file found in mounted filesystem"
+        else
+          echo "WARNING: AGE keys file not found in mounted filesystem"
+        fi
+      else
+        echo "Failed to mount virtfs - this may be development mode"
+        echo "Available virtio devices:"
+        ls -la /sys/bus/virtio/devices/ || echo "No virtio devices found"
+        echo "Supported filesystems:"
+        grep 9p /proc/filesystems || echo "9p filesystem not supported"
+      fi
+    '';
+  };
+
+  # Install AGE key from host system for E2E testing
+  systemd.services.install-age-key = lib.mkIf config.services.rave.gitlab.useSecrets {
+    description = "Install AGE key from host system";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "mount-sops-keys.service" ];
+    before = [ "sops-init.service" "sops-nix.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      User = "root";
+      Group = "root";
+    };
+    script = ''
+      set -euo pipefail
+      
+      # Create SOPS directory
+      mkdir -p /var/lib/sops-nix
+      
+      # Copy AGE key from host system
+      # Canonical approach: virtfs mounting by CLI, fallback to environment
+      if mountpoint -q /host-keys && [ -f /host-keys/keys.txt ]; then
+        echo "Installing AGE key from virtfs-mounted host directory (canonical)"
+        cp /host-keys/keys.txt /var/lib/sops-nix/key.txt
+        chmod 600 /var/lib/sops-nix/key.txt
+        echo "AGE key installed successfully"
+      elif [ -n "''${SOPS_AGE_KEY:-}" ]; then
+        echo "Installing AGE key from environment variable (fallback)"
+        echo "$SOPS_AGE_KEY" > /var/lib/sops-nix/key.txt
+        chmod 600 /var/lib/sops-nix/key.txt
+        echo "AGE key installed successfully"
+      else
+        echo "No AGE key found - VM will run in development mode"
+        echo "To enable production mode, use CLI with AGE keys (preferred)"
+        echo "Or set SOPS_AGE_KEY environment variable (fallback)"
+        exit 0
+      fi
+    '';
+  };
+
+  # SOPS initialization service to ensure secrets are available
+  systemd.services.sops-init = lib.mkIf config.services.rave.gitlab.useSecrets {
+    description = "Initialize SOPS secrets";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "install-age-key.service" ];
+    before = [ "gitlab-db-password.service" "gitlab.service" "mattermost.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      User = "root";
+      Group = "root";
+    };
+    script = ''
+      set -euo pipefail
+      
+      # Check if AGE key exists
+      if [ ! -f /var/lib/sops-nix/key.txt ]; then
+        echo "AGE key missing at /var/lib/sops-nix/key.txt"
+        exit 1
+      fi
+      
+      # Check if secrets file exists
+      if [ ! -f ${../../config/secrets.yaml} ]; then
+        echo "SOPS secrets file missing"
+        exit 1
+      fi
+      
+      # Export AGE key for SOPS
+      export SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt
+      
+      # Create secrets directories with proper permissions
+      mkdir -p /run/secrets/gitlab /run/secrets/mattermost /run/secrets/oidc
+      
+      # Helper function to extract and write secret
+      extract_secret() {
+        local key="$1"
+        local path="$2"
+        local owner="$3"
+        local group="$4"
+        local mode="$5"
+        
+        echo "Extracting secret: $key -> $path"
+        ${pkgs.sops}/bin/sops -d --extract "[\"$key\"]" ${../../config/secrets.yaml} > "$path"
+        chown "$owner:$group" "$path"
+        chmod "$mode" "$path"
+      }
+      
+      # Extract all the secrets that were previously defined in SOPS configuration
+      # NOTE: Using nested YAML structure from secrets.yaml file
+      
+      # Mattermost secrets
+      extract_secret "mattermost\"][\"env" "/run/secrets/mattermost/env" "mattermost" "mattermost" "0600"
+      extract_secret "mattermost\"][\"admin-username" "/run/secrets/mattermost/admin-username" "root" "root" "0400"
+      extract_secret "mattermost\"][\"admin-email" "/run/secrets/mattermost/admin-email" "root" "root" "0400"
+      extract_secret "mattermost\"][\"admin-password" "/run/secrets/mattermost/admin-password" "root" "root" "0400"
+      
+      # OIDC secrets
+      extract_secret "oidc\"][\"chat-control-client-secret" "/run/secrets/oidc/chat-control-client-secret" "root" "root" "0400"
+      
+      # GitLab secrets
+      extract_secret "gitlab\"][\"api-token" "/run/secrets/gitlab/api-token" "root" "root" "0400"
+      extract_secret "gitlab\"][\"root-password" "/run/secrets/gitlab/root-password" "gitlab" "gitlab" "0400"
+      extract_secret "gitlab\"][\"db-password" "/run/secrets/gitlab/db-password" "postgres" "gitlab" "0440"
+      extract_secret "gitlab\"][\"secret-key-base" "/run/secrets/gitlab/secret-key-base" "gitlab" "gitlab" "0400"
+      extract_secret "gitlab\"][\"db-key-base" "/run/secrets/gitlab/db-key-base" "gitlab" "gitlab" "0400"
+      extract_secret "gitlab\"][\"otp-key-base" "/run/secrets/gitlab/otp-key-base" "gitlab" "gitlab" "0400"
+      extract_secret "gitlab\"][\"jws-key-base" "/run/secrets/gitlab/jws-key-base" "gitlab" "gitlab" "0400"
+      extract_secret "gitlab\"][\"oauth-provider-client-secret" "/run/secrets/gitlab/oauth-provider-client-secret" "gitlab" "gitlab" "0400"
+      extract_secret "gitlab\"][\"oauth-mattermost-client-secret" "/run/secrets/gitlab/oauth-mattermost-client-secret" "gitlab" "gitlab" "0400"
+      
+      echo "SOPS secrets extracted successfully"
+    '';
+  };
 
   systemd.services.mattermost.preStart = lib.mkMerge [
     (lib.mkBefore ''
@@ -200,8 +687,11 @@ sops = lib.mkIf config.services.rave.gitlab.useSecrets {
     GITLAB_AUTH_BASE=${lib.escapeShellArg gitlabExternalUrl} \
     GITLAB_API_BASE=${lib.escapeShellArg gitlabInternalHttpUrl} \
     GITLAB_CLIENT_ID=${lib.escapeShellArg mattermostGitlabClientId} \
-    GITLAB_SECRET=${lib.escapeShellArg mattermostGitlabClientSecret} \
-    GITLAB_REDIRECT=${lib.escapeShellArg mattermostGitlabRedirectUri} \
+    ${if useSecrets then ''
+    GITLAB_SECRET_FILE=${lib.escapeShellArg mattermostGitlabClientSecretFile} \
+    '' else ''
+    GITLAB_SECRET=${lib.escapeShellArg mattermostGitlabSecretFallback} \
+    ''}GITLAB_REDIRECT=${lib.escapeShellArg mattermostGitlabRedirectUri} \
     ${pkgs.python3}/bin/python3 <<'PY'
 import json
 import os
@@ -212,13 +702,18 @@ config_path = Path('/var/lib/mattermost/config/config.json')
 if not config_path.exists():
     raise SystemExit(0)
 
-site_url = os.environ.get('SITE_URL', 'https://localhost:18231/mattermost').rstrip('/')
+site_url = os.environ.get('SITE_URL', 'https://localhost:8443/mattermost').rstrip('/')
 login_url = f"{site_url}/oauth/gitlab/login"
 login_path = urlparse(login_url).path or "/oauth/gitlab/login"
-gitlab_auth_base = os.environ.get('GITLAB_AUTH_BASE', 'https://localhost:18221/gitlab').rstrip('/')
-gitlab_api_base = os.environ.get('GITLAB_API_BASE', 'http://localhost:8220/gitlab').rstrip('/')
+gitlab_auth_base = os.environ.get('GITLAB_AUTH_BASE', 'https://localhost:8443/gitlab').rstrip('/')
+gitlab_api_base = os.environ.get('GITLAB_API_BASE', 'https://localhost:8443/gitlab').rstrip('/')
 gitlab_client_id = os.environ.get("GITLAB_CLIENT_ID", "")
+secret_path = os.environ.get("GITLAB_SECRET_FILE", "")
 gitlab_secret = os.environ.get("GITLAB_SECRET", "")
+if secret_path:
+    secret_file = Path(secret_path)
+    if secret_file.is_file():
+        gitlab_secret = secret_file.read_text(encoding="utf-8").strip()
 gitlab_redirect = os.environ.get("GITLAB_REDIRECT", "")
 brand_html = "Use the GitLab button below to sign in. If it does not appear, open {path} manually.".format(
     path=login_path
@@ -269,7 +764,7 @@ PY
   boot.loader.grub.device = "/dev/vda";
   boot.initrd.availableKernelModules = [ "ata_piix" "uhci_hcd" "xen_blkfront" "vmw_pvscsi" ];
   boot.initrd.kernelModules = [ ];
-  boot.kernelModules = [ "kvm-intel" "kvm-amd" ];
+  boot.kernelModules = [ "kvm-intel" "kvm-amd" "9p" "9pnet" "9pnet_virtio" ];
   boot.extraModulePackages = [ ];
 
   # System
@@ -281,6 +776,13 @@ PY
   fileSystems."/" = {
     device = "/dev/disk/by-label/nixos";
     fsType = "ext4";
+  };
+
+  # SOPS keys mount for AGE key (when available via virtfs)
+  fileSystems."/host-keys" = {
+    device = "sops-keys";
+    fsType = "9p";
+    options = [ "trans=virtio" "version=9p2000.L" "rw" "noauto" "nofail" ];
   };
 
   # User configuration
@@ -533,7 +1035,7 @@ PY
       server = {
         http_port = 3000;
         domain = "localhost";  # Changed from rave.local to localhost  
-        root_url = "https://localhost:18221/grafana/";
+        root_url = "https://localhost:8443/grafana/";
         serve_from_sub_path = true;
       };
 
@@ -583,6 +1085,51 @@ PY
     };
   };
 
+  # ===== COTURN STUN/TURN SERVER =====
+  
+  services.coturn = {
+    enable = true;
+    no-cli = true;
+    no-tcp-relay = true;
+    min-port = 49152;
+    max-port = 65535;
+    use-auth-secret = true;
+    static-auth-secret = "rave-coturn-development-secret-2025";
+    realm = "localhost";
+    listening-ips = [ "0.0.0.0" ];
+    
+    extraConfig = ''
+      # For development use - more permissive than production
+      verbose
+      fingerprint
+      lt-cred-mech
+      
+      # Security: block private IP ranges
+      no-multicast-peers
+      denied-peer-ip=0.0.0.0-0.255.255.255
+      denied-peer-ip=10.0.0.0-10.255.255.255
+      denied-peer-ip=100.64.0.0-100.127.255.255
+      denied-peer-ip=127.0.0.0-127.255.255.255
+      denied-peer-ip=169.254.0.0-169.254.255.255
+      denied-peer-ip=172.16.0.0-172.31.255.255
+      denied-peer-ip=192.0.0.0-192.0.0.255
+      denied-peer-ip=192.0.2.0-192.0.2.255
+      denied-peer-ip=192.88.99.0-192.88.99.255
+      denied-peer-ip=192.168.0.0-192.168.255.255
+      denied-peer-ip=198.18.0.0-198.19.255.255
+      denied-peer-ip=198.51.100.0-198.51.100.255
+      denied-peer-ip=203.0.113.0-203.0.113.255
+      denied-peer-ip=240.0.0.0-255.255.255.255
+      denied-peer-ip=::1
+      denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
+      denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
+      denied-peer-ip=2001::-2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff
+      denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+    '';
+  };
+
   # ===== MATTERMOST CHAT =====
 
   services.mattermost = {
@@ -610,18 +1157,48 @@ PY
         Enable = true;
         EnableSync = true;
         AuthEndpoint = "${gitlabExternalUrl}/oauth/authorize";
-        TokenEndpoint = "${gitlabInternalHttpsUrl}/oauth/token";
-        UserAPIEndpoint = "${gitlabInternalHttpsUrl}/api/v4/user";
+        TokenEndpoint = "${gitlabInternalHttpUrl}/oauth/token";
+        UserAPIEndpoint = "${gitlabInternalHttpUrl}/api/v4/user";
         Id = mattermostGitlabClientId;
-        Secret = mattermostGitlabClientSecret;
         Scope = "read_user";
         SkipTLSVerification = true;
+      };
+      PluginSettings = {
+        Enable = true;
+        EnableUploads = true;
+        ClientDirectory = "/var/lib/mattermost/plugins/client";
+        Directory = "/var/lib/mattermost/plugins/server";
+        Plugins = {
+          "com.mattermost.calls" = {
+            enable = true;
+            # Calls plugin configuration
+            DefaultEnabled = true;
+            EnableRinging = true;
+            ICEServers = [
+              {
+                urls = [ "stun:localhost:3478" ];
+              }
+              {
+                urls = [ "turn:localhost:3478" ];
+                username = "mattermost";
+                credential = "rave-coturn-development-secret-2025";
+              }
+            ];
+            RTCServerPort = 8443;
+            TURNServerCredentials = "rave-coturn-development-secret-2025";
+            MaxCallParticipants = 8;
+            NeedsHTTPS = false; # Dev environment
+            AllowEnableCalls = true;
+            EnableTranscriptions = false; # Disable transcriptions for development
+            EnableRecordings = false; # Disable recordings for development
+          };
+        };
       };
     };
     # Use Mattermost defaults for data and log directories
 
     environmentFile = if config.services.rave.gitlab.useSecrets
-      then config.sops.secrets."mattermost/env".path
+      then "/run/secrets/mattermost/env"
       else pkgs.writeText "mattermost-env" ''
         MM_SERVICESETTINGS_SITEURL=${mattermostPublicUrl}
         MM_SERVICESETTINGS_ENABLELOCALMODE=false
@@ -631,7 +1208,7 @@ PY
         MM_BLEVESETTINGS_INDEXDIR=/var/lib/mattermost/bleve-indexes
         MM_GITLABSETTINGS_ENABLE=true
         MM_GITLABSETTINGS_ID=${mattermostGitlabClientId}
-        MM_GITLABSETTINGS_SECRET=${mattermostGitlabClientSecret}
+        MM_GITLABSETTINGS_SECRET=${mattermostGitlabSecretFallback}
         MM_GITLABSETTINGS_SCOPE=read_user
         MM_GITLABSETTINGS_AUTHENDPOINT=${gitlabExternalUrl}/oauth/authorize
         MM_GITLABSETTINGS_TOKENENDPOINT=${gitlabInternalHttpUrl}/oauth/token
@@ -651,7 +1228,7 @@ PY
       provider = "google";
       clientId = googleOauthClientId;
       clientSecretFile = if config.services.rave.gitlab.useSecrets
-        then config.sops.secrets."gitlab/oauth-provider-client-secret".path
+        then "/run/secrets/gitlab/oauth-provider-client-secret"
         else pkgs.writeText "gitlab-oauth-client-secret" "development-client-secret";
       autoSignIn = false;
       autoLinkUsers = true;
@@ -661,7 +1238,7 @@ PY
 
   services.gitlab.extraConfig.gitlab.omniauth.full_host = lib.mkForce gitlabExternalUrl;
   systemd.services.gitlab.environment.GITLAB_OMNIAUTH_FULL_HOST = gitlabExternalUrl;
-  services.gitlab.extraConfig.gitlab.port = lib.mkForce 18221;
+  services.gitlab.extraConfig.gitlab.port = lib.mkForce 8443;
 
   systemd.services.gitlab-mattermost-oauth = {
     description = "Ensure GitLab OAuth client for Mattermost exists";
@@ -688,7 +1265,12 @@ PY
       ${gitlabRailsRunner} runner - <<'RUBY'
 redirect_uri = '${mattermostGitlabRedirectUri}'
 uid = '${mattermostGitlabClientId}'
-secret = '${mattermostGitlabClientSecret}'
+secret_file = '${if useSecrets then mattermostGitlabClientSecretFile else ""}'
+secret = if !secret_file.empty? && File.exist?(secret_file)
+  File.read(secret_file).strip
+else
+  '${mattermostGitlabSecretFallback}'
+end
 name = 'RAVE Mattermost'
 scopes = 'read_user'
 
@@ -705,6 +1287,100 @@ RUBY
   };
 
   systemd.services.mattermost.after = lib.mkAfter [ "gitlab-mattermost-oauth.service" ];
+
+  # Mattermost Calls plugin installation service
+  systemd.services.mattermost-calls-plugin = {
+    description = "Install Mattermost Calls plugin";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "mattermost.service" ];
+    wants = [ "mattermost.service" ];
+    
+    serviceConfig = {
+      Type = "oneshot";
+      User = "mattermost";
+      Group = "mattermost";
+      RemainAfterExit = true;
+    };
+    
+    script = ''
+      set -euo pipefail
+      
+      PLUGIN_DIR="/var/lib/mattermost/plugins"
+      PLUGIN_ID="com.mattermost.calls"
+      PLUGIN_VERSION="v1.0.1"
+      DOWNLOAD_URL="https://github.com/mattermost/mattermost-plugin-calls/releases/download/$PLUGIN_VERSION/$PLUGIN_ID-$PLUGIN_VERSION.tar.gz"
+      
+      echo "Installing Mattermost Calls plugin..."
+      
+      # Create plugin directory if it doesn't exist
+      mkdir -p "$PLUGIN_DIR"
+      
+      # Check if plugin is already installed
+      if [ -d "$PLUGIN_DIR/$PLUGIN_ID" ]; then
+        echo "Calls plugin already installed at $PLUGIN_DIR/$PLUGIN_ID"
+        exit 0
+      fi
+      
+      # Download and extract plugin
+      echo "Downloading Calls plugin from $DOWNLOAD_URL"
+      cd "$PLUGIN_DIR"
+      ${pkgs.wget}/bin/wget -O calls-plugin.tar.gz "$DOWNLOAD_URL" || {
+        echo "Failed to download Calls plugin, continuing without it"
+        exit 0
+      }
+      
+      ${pkgs.gnutar}/bin/tar -xzf calls-plugin.tar.gz
+      rm calls-plugin.tar.gz
+      
+      # Set proper permissions
+      chown -R mattermost:mattermost "$PLUGIN_DIR"
+      
+      echo "Mattermost Calls plugin installed successfully"
+    '';
+  };
+
+  systemd.services.gitlab-mattermost-ci-bridge = {
+    description = "Configure Mattermost builds channel and GitLab CI notifications";
+    wantedBy = [ "multi-user.target" ];
+    after = [
+      "gitlab-mattermost-oauth.service"
+      "gitlab.service"
+      "mattermost.service"
+    ];
+    requires = [
+      "gitlab.service"
+      "mattermost.service"
+    ];
+    serviceConfig = {
+      Type = "oneshot";
+      User = "root";
+      Group = "root";
+      TimeoutStartSec = "600s";
+      Restart = "on-failure";
+      RestartSec = "30s";
+    };
+    environment = {
+      MATTERMOST_BASE_URL = "http://127.0.0.1:8065";
+      MATTERMOST_SITE_URL = mattermostPublicUrl;
+      MATTERMOST_TEAM_NAME = mattermostTeamName;
+      MATTERMOST_TEAM_DISPLAY_NAME = mattermostTeamDisplayName;
+      MATTERMOST_CHANNEL_NAME = mattermostBuildsChannelName;
+      MATTERMOST_CHANNEL_DISPLAY_NAME = mattermostBuildsChannelDisplayName;
+      MATTERMOST_HOOK_DISPLAY_NAME = "GitLab CI Builds";
+      MATTERMOST_HOOK_USERNAME = "gitlab-ci";
+      MATTERMOST_ADMIN_USERNAME_FILE = mattermostAdminUsernameFile;
+      MATTERMOST_ADMIN_PASSWORD_FILE = mattermostAdminPasswordFile;
+      MATTERMOST_ADMIN_EMAIL_FILE = mattermostAdminEmailFile;
+      MATTERMOST_VERIFY_TLS = "false";
+      GITLAB_API_BASE_URL = "https://localhost:8443/gitlab/api/v4";
+      GITLAB_API_TOKEN_FILE = gitlabApiTokenFile;
+      GITLAB_VERIFY_TLS = "false";
+    };
+    script = ''
+      set -euo pipefail
+      ${ensureGitlabMattermostCiScript}
+    '';
+  };
 
   # ===== NGINX CONFIGURATION =====
 
@@ -734,22 +1410,12 @@ RUBY
       listen = [
         {
           addr = "0.0.0.0";
-          port = 8221;
+          port = 443;
           ssl = true;
         }
         {
           addr = "0.0.0.0";
-          port = 8220;
-          ssl = false;
-        }
-        {
-          addr = "0.0.0.0";
-          port = 18221;
-          ssl = true;
-        }
-        {
-          addr = "0.0.0.0";
-          port = 18220;
+          port = 80;
           ssl = false;
         }
       ];
@@ -800,13 +1466,13 @@ RUBY
                           <a href="/gitlab/" class="service-card">
                               <div class="service-title">🦊 GitLab</div>
                               <div class="service-desc">Git repository management and CI/CD</div>
-                              <div class="service-url">https://localhost:18221/gitlab/</div>
+                              <div class="service-url">https://localhost:8443/gitlab/</div>
                               <span class="status active">Active</span>
                           </a>
                           <a href="/grafana/" class="service-card">
                               <div class="service-title">📊 Grafana</div>
                               <div class="service-desc">Monitoring dashboards and analytics</div>
-                              <div class="service-url">https://localhost:18221/grafana/</div>
+                              <div class="service-url">https://localhost:8443/grafana/</div>
                               <span class="status active">Active</span>
                           </a>
                           <a href="${mattermostPublicUrl}/" class="service-card">
@@ -818,13 +1484,13 @@ RUBY
                           <a href="/prometheus/" class="service-card">
                               <div class="service-title">🔍 Prometheus</div>
                               <div class="service-desc">Metrics collection and monitoring</div>
-                              <div class="service-url">https://localhost:18221/prometheus/</div>
+                              <div class="service-url">https://localhost:8443/prometheus/</div>
                               <span class="status active">Active</span>
                           </a>
                           <a href="/nats/" class="service-card">
                               <div class="service-title">⚡ NATS JetStream</div>
                               <div class="service-desc">High-performance messaging system</div>
-                              <div class="service-url">https://localhost:18221/nats/</div>
+                              <div class="service-url">https://localhost:8443/nats/</div>
                               <span class="status active">Active</span>
                           </a>
                       </div>
@@ -1061,7 +1727,11 @@ RUBY
   };
 
   # Ensure GitLab is started after the database configuration completes.
-  systemd.services."gitlab-db-config".unitConfig.OnSuccess = [ "gitlab-autostart.service" ];
+  systemd.services."gitlab-db-config".unitConfig = {
+    OnSuccess = [ "gitlab-autostart.service" ];
+  } // lib.optionalAttrs useSecrets {
+    ConditionPathExists = "/run/secrets/gitlab/db-password";
+  };
 
   systemd.services."gitlab-autostart" = {
     description = "Ensure GitLab starts after database configuration";
@@ -1252,10 +1922,17 @@ EOF
   # System services dependency management
   systemd.services = {
     # Ensure PostgreSQL users exist before other services start
+    postgresql = {
+      after = [ "postgres-gitlab-group-fix.service" ];
+      wants = [ "postgres-gitlab-group-fix.service" ];
+    };
     postgresql.postStart = ''
       # Wait for PostgreSQL to be ready
-      sleep 5
+      while ! ${pkgs.postgresql_15}/bin/pg_isready -d postgres > /dev/null 2>&1; do
+        sleep 1
+      done
 
+      # Update user passwords (non-SOPS secrets only)
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER grafana PASSWORD 'grafana-production-password';" || true
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER penpot PASSWORD 'penpot-production-password';" || true
 
@@ -1263,72 +1940,76 @@ EOF
       ${pkgs.postgresql}/bin/psql -U postgres -c "GRANT CONNECT ON DATABASE postgres TO grafana;" || true
       ${pkgs.postgresql}/bin/psql -U postgres -c "GRANT USAGE ON SCHEMA public TO grafana;" || true
     '';
-    "gitlab-db-password" = lib.mkIf useSecrets {
-      description = "Synchronize GitLab database role password from sops secret";
+    
+    # Separate service for GitLab password setup after SOPS is fully ready
+    gitlab-password-setup = {
+      description = "Set GitLab database password from SOPS secret";
       wantedBy = [ "multi-user.target" ];
-      requiredBy = [ "gitlab-db-config.service" ];
-      before = [ "gitlab-db-config.service" ];
-      after = [ "postgresql.service" ];
-      requires = [ "postgresql.service" ];
+      after = [ "postgresql.service" "sops-init.service" ];
+      requires = [ "postgresql.service" "sops-init.service" ];
       serviceConfig = {
         Type = "oneshot";
-        User = "postgres";
-        Group = "postgres";
-        TimeoutStartSec = "180s";
         RemainAfterExit = true;
+        User = "root";  # Run as root to ensure secret access
       };
+      environment.PATH = lib.mkForce "${pkgs.postgresql_15}/bin:${pkgs.sudo}/bin:${pkgs.coreutils}/bin";
       script = ''
-        set -euo pipefail
-
-        password_file='${gitlabDbPasswordFile}'
-        if [ ! -r "$password_file" ]; then
-          echo "gitlab-db-password: missing password secret at $password_file" >&2
-          exit 1
-        fi
-
-        for attempt in $(${pkgs.coreutils}/bin/seq 1 30); do
-          if ${pkgs.postgresql}/bin/pg_isready -q -d postgres; then
-            break
-          fi
+        # Wait for PostgreSQL to be ready
+        while ! ${pkgs.postgresql_15}/bin/pg_isready -d postgres > /dev/null 2>&1; do
+          echo "Waiting for PostgreSQL to be ready..."
           sleep 2
         done
 
-        if ! ${pkgs.postgresql}/bin/pg_isready -q -d postgres; then
-          echo "gitlab-db-password: PostgreSQL did not become ready" >&2
-          exit 1
-        fi
+        # Wait for SOPS secret to be available
+        timeout=30
+        while [ ! -f "/run/secrets/gitlab/db-password" ] || [ ! -s "/run/secrets/gitlab/db-password" ]; do
+          if [ $timeout -le 0 ]; then
+            echo "Timeout waiting for SOPS secret"
+            exit 1
+          fi
+          echo "Waiting for SOPS secret to be available..."
+          sleep 1
+          timeout=$((timeout - 1))
+        done
 
-        password="$(${pkgs.coreutils}/bin/tr -d '\n' < "$password_file")"
-        if [ -z "$password" ]; then
-          echo "gitlab-db-password: secret file was empty" >&2
+        # Set GitLab password from SOPS secret
+        GITLAB_PASSWORD=$(cat /run/secrets/gitlab/db-password)
+        
+        # Create gitlab role if it doesn't exist, then set password
+        # Use a simpler approach without heredoc to avoid syntax issues
+        sudo -u postgres ${pkgs.postgresql_15}/bin/psql -d postgres -c \
+          "DO \$\$ BEGIN
+             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gitlab') THEN
+               CREATE ROLE gitlab WITH LOGIN CREATEDB;
+             END IF;
+           END \$\$;" || {
+          echo "Failed to create GitLab role"
           exit 1
-        fi
-
-        ${pkgs.postgresql}/bin/psql \
-          --set=ON_ERROR_STOP=1 \
-          -v pass="$password" \
-          -d postgres <<'SQL'
-ALTER ROLE gitlab WITH PASSWORD :'pass';
-SQL
+        }
+        
+        # Set the password securely using stdin to avoid command line exposure
+        echo "ALTER ROLE gitlab WITH PASSWORD '$GITLAB_PASSWORD';" | \
+          sudo -u postgres ${pkgs.postgresql_15}/bin/psql -d postgres || {
+          echo "Failed to set GitLab password"
+          exit 1
+        }
+        echo "GitLab database password successfully updated from SOPS secret"
       '';
     };
 
-    # GitLab depends on database and certificates
+    # GitLab depends on database, certificates, and password setup
     gitlab.after = [
       "postgresql.service"
-      "gitlab-db-password.service"
-      "gitlab-db-config.service"
       "redis-main.service"
       "generate-localhost-certs.service"
+      "gitlab-password-setup.service"
     ];
     gitlab.requires = [
       "postgresql.service"
-      "gitlab-db-password.service"
-      "gitlab-db-config.service"
       "redis-main.service"
+      "gitlab-password-setup.service"
     ];
-    "gitlab-db-config".after = lib.mkAfter [ "postgresql.service" "gitlab-db-password.service" ];
-    "gitlab-db-config".requires = lib.mkAfter [ "gitlab-db-password.service" ];
+    # GitLab database password now set by gitlab-password-setup.service
     
     # Grafana depends on database and certificates
     grafana.after = [ "postgresql.service" "generate-localhost-certs.service" ];
@@ -1360,9 +2041,9 @@ SQL
 echo "Welcome to the RAVE complete VM"
 echo "Forwarded ports:"
 echo "  SSH          : localhost:12222 (user root, password rave-root)"
-echo "  GitLab HTTPS : https://localhost:18221/gitlab/"
+echo "  GitLab HTTPS : https://localhost:8443/gitlab/"
 echo "  Mattermost   : ${mattermostPublicUrl}/"
-echo "  Grafana      : https://localhost:18221/grafana/"
+echo "  Grafana      : https://localhost:8443/grafana/"
 echo "  Prometheus   : http://localhost:19090/"
 echo ""
 WELCOME
@@ -1388,11 +2069,11 @@ echo "🚀 RAVE Complete Production Environment"
 echo "====================================="
 echo ""
 echo "✅ All Services Ready:"
-echo "   🦊 GitLab:      https://localhost:18221/gitlab/"
-echo "   📊 Grafana:     https://localhost:18221/grafana/"  
-echo "   💬 Mattermost:  https://localhost:18231/mattermost/"
-echo "   🔍 Prometheus:  https://localhost:18221/prometheus/"
-echo "   ⚡ NATS:        https://localhost:18221/nats/"
+echo "   🦊 GitLab:      https://localhost:8443/gitlab/"
+echo "   📊 Grafana:     https://localhost:8443/grafana/"  
+echo "   💬 Mattermost:  https://localhost:8443/mattermost/"
+echo "   🔍 Prometheus:  https://localhost:8443/prometheus/"
+echo "   ⚡ NATS:        https://localhost:8443/nats/"
 echo ""
 echo "🔑 Default Credentials:"
 echo "   GitLab root:    admin123456"
@@ -1401,7 +2082,7 @@ echo ""
 echo "🔧 Service Status:"
 systemctl status postgresql redis-main nats prometheus grafana gitlab mattermost rave-chat-bridge nginx --no-pager -l
 echo ""
-echo "🌐 Dashboard: https://localhost:18221/"
+echo "🌐 Dashboard: https://localhost:8443/"
 echo ""
 EOF
       chmod +x /root/welcome.sh
