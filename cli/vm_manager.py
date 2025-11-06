@@ -19,10 +19,23 @@ from platform_utils import PlatformManager
 class VMManager:
     """Manages RAVE virtual machine operations."""
     
-    def __init__(self, vms_dir: Path):
+    # Default port configuration
+    DEFAULT_PORTS = {
+        "http": 8081,
+        "https": 8443,
+        "ssh": 2224,
+        "test": 8889
+    }
+    
+    def __init__(self, vms_dir: Path, port_config: Optional[Dict[str, int]] = None):
         self.vms_dir = vms_dir
         self.vms_dir.mkdir(parents=True, exist_ok=True)
         self.platform = PlatformManager()
+        
+        # Override default ports with any provided configuration
+        self.port_config = self.DEFAULT_PORTS.copy()
+        if port_config:
+            self.port_config.update(port_config)
     
     def check_prerequisites(self) -> Dict[str, any]:
         """Check if all required tools are available for VM operations."""
@@ -146,16 +159,34 @@ class VMManager:
 
         return {"success": False, "error": last_error or description}
 
-    def _get_next_port_range(self) -> tuple:
-        """Get next available port range for VM."""
-        # Start from 8100 and increment by 10 for each VM
-        existing_vms = list(self.vms_dir.glob("*.json"))
-        base_port = 8100 + (len(existing_vms) * 10)
+    def _get_port_range(self, requested_ports: Optional[Dict[str, int]] = None) -> tuple:
+        """Get port range for VM using defaults or requested ports."""
+        # Start with configured defaults
+        ports = self.port_config.copy()
+        
+        # Override with any specifically requested ports
+        if requested_ports:
+            ports.update(requested_ports)
+        
+        # Check availability and find alternatives if needed
+        final_ports = {}
+        
+        for port_type in ["http", "https", "ssh", "test"]:
+            preferred_port = ports[port_type]
+            
+            if self._host_port_available(preferred_port):
+                final_ports[port_type] = preferred_port
+            else:
+                # Find next available port starting from preferred + 1
+                alternative_port = self._find_next_available_port(preferred_port + 1)
+                final_ports[port_type] = alternative_port
+                print(f"⚠️  Port {preferred_port} ({port_type}) unavailable, using {alternative_port}")
+        
         return (
-            base_port,      # HTTP
-            base_port + 1,  # HTTPS
-            base_port + 2,  # SSH
-            base_port + 3   # Test page
+            final_ports["http"],
+            final_ports["https"], 
+            final_ports["ssh"],
+            final_ports["test"]
         )
 
     def _host_port_available(self, port: int) -> bool:
@@ -167,6 +198,13 @@ class VMManager:
             except OSError:
                 return False
         return True
+    
+    def _find_next_available_port(self, start_port: int, max_attempts: int = 100) -> int:
+        """Find the next available port starting from start_port."""
+        for port in range(start_port, start_port + max_attempts):
+            if self._host_port_available(port):
+                return port
+        raise RuntimeError(f"Could not find available port in range {start_port}-{start_port + max_attempts}")
     
     def _build_vm_image(self, company_name: str = None, ssh_public_key: str = None) -> Dict[str, any]:
         """Build VM image using Nix."""
@@ -541,6 +579,7 @@ exit
         company_name: str,
         keypair_path: str,
         age_key_path: Optional[Path] = None,
+        custom_ports: Optional[Dict[str, int]] = None,
     ) -> Dict[str, any]:
         """Create a new company VM."""
         if self._load_vm_config(company_name):
@@ -576,7 +615,7 @@ exit
                 print("⚠️  Built image path not found; falling back to cached image")
                 image_source = None
 
-        http_port, https_port, ssh_port, test_port = self._get_next_port_range()
+        http_port, https_port, ssh_port, test_port = self._get_port_range(custom_ports)
 
         config: Dict[str, any] = {
             "name": company_name,
@@ -661,15 +700,9 @@ exit
             (ports['test'], 8080)
         ]
 
-        # Ensure legacy external ports remain available for tooling that expects them.
-        required_legacy_ports = {
-            18221: 443,
-        }
-        optional_legacy_ports = {
-            18220: 80,
-            18231: 443,
-            18230: 80,
-        }
+        # Legacy ports removed to avoid OAuth redirect conflicts
+        required_legacy_ports = {}
+        optional_legacy_ports = {}
         existing_host_ports = {host for host, _ in port_forwards}
 
         for host_port, guest_port in required_legacy_ports.items():
@@ -697,11 +730,22 @@ exit
 
             port_forwards.append((host_port, guest_port))
             existing_host_ports.add(host_port)
-        memory_gb = 4
+        memory_gb = 12
+        
+        # Get AGE key directory for SOPS secrets
+        age_key_dir = self.platform.get_age_key_directory()
+        age_key_dir_str = str(age_key_dir) if age_key_dir else None
+        
+        if age_key_dir:
+            print(f"🔑 AGE keys found at {age_key_dir} - SOPS secrets will be available")
+        else:
+            print("⚠️  No AGE keys found - VM will run in development mode without SOPS secrets")
+        
         cmd, env = self.platform.get_vm_start_command(
             config['image_path'], 
             memory_gb=memory_gb,
-            port_forwards=port_forwards
+            port_forwards=port_forwards,
+            age_key_dir=age_key_dir_str
         )
 
         pidfile = self.platform.get_temp_dir() / f"rave-{company_name}.pid"

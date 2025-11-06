@@ -139,6 +139,41 @@ Host System (Ubuntu)
 ./cli/rave oauth status penpot
 ```
 
+## 🔧 ENVIRONMENT CONFIGURATION
+
+### SOPS Configuration (REQUIRED)
+**CRITICAL**: The VM requires SOPS_AGE_KEY environment variable to decrypt secrets. This was the root cause of previous SOPS initialization failures.
+
+```bash
+# Set your AGE key for SOPS secret decryption
+export SOPS_AGE_KEY=$(grep '^AGE-SECRET-KEY' ~/.config/sops/age/keys.txt)
+
+# Verify your AGE key is available
+echo $SOPS_AGE_KEY | head -c 50
+# Should output: AGE-SECRET-KEY-1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+**Environment Files:**
+- `.env` - Contains your actual configuration including SOPS_AGE_KEY
+- `.env.example` - Template with placeholder values for all required variables
+
+**Key Environment Variables:**
+```bash
+# SOPS Configuration - REQUIRED for VM secret management
+SOPS_AGE_KEY=$(grep '^AGE-SECRET-KEY' ~/.config/sops/age/keys.txt)
+
+# OAuth Configuration
+GOOGLE_OAUTH_CLIENT_ID=your-google-oauth-client-id
+GOOGLE_OAUTH_CLIENT_SECRET=your-google-oauth-client-secret
+GITHUB_OAUTH_CLIENT_ID=your-github-oauth-client-id
+GITHUB_OAUTH_CLIENT_SECRET=your-github-oauth-client-secret
+```
+
+**⚠️ Important Notes:**
+- Without SOPS_AGE_KEY, the VM will fail with "FAILED Failed to start Initialize SOPS secrets"
+- The AGE key must match your `~/.config/sops/age/keys.txt` file
+- This variable must be set when starting VMs either via CLI or manual commands
+
 ## 🚀 CONSOLIDATED BUILD COMMANDS (Current - August 2025)
 
 ### Primary Build Process (ALWAYS USE THIS)

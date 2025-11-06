@@ -69,8 +69,8 @@ vm_start() {
     echo -e "${BLUE}🔧 Starting VM with port forwarding...${NC}"
     nohup qemu-system-x86_64 \
         -drive file="$VM_IMAGE",format=qcow2 \
-        -m 4G \
-        -smp 2 \
+        -m 12G \
+        -smp 4 \
         -netdev user,id=net0,hostfwd=tcp::8081-:80,hostfwd=tcp::8889-:8080,hostfwd=tcp::2224-:22,hostfwd=tcp::8443-:443,hostfwd=tcp::8888-:8888 \
         -device virtio-net-pci,netdev=net0 \
         -nographic > /tmp/rave-vm.log 2>&1 &

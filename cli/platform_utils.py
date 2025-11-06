@@ -189,8 +189,37 @@ class PlatformManager:
 
         return Path(result.stdout.strip())
     
-    def get_vm_start_command(self, image_path: str, memory_gb: int = 4,
-                             port_forwards: List[Tuple[int, int]] = None) -> Tuple[List[str], Optional[Dict[str, str]]]:
+    def get_age_key_directory(self) -> Optional[Path]:
+        """Get the directory containing AGE keys for SOPS, or None if not found."""
+        # Standard SOPS/AGE key location
+        age_key_file = Path.home() / ".config" / "sops" / "age" / "keys.txt"
+        
+        if age_key_file.exists():
+            return age_key_file.parent
+        
+        # Alternative: look for AGE key in home directory
+        home_age_key = Path.home() / ".age" / "key.txt"
+        if home_age_key.exists():
+            return home_age_key.parent
+            
+        # Check if age-keygen has generated keys
+        try:
+            result = subprocess.run(
+                ["age-keygen", "-y", str(age_key_file)],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                return age_key_file.parent
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+            
+        return None
+    
+    def get_vm_start_command(self, image_path: str, memory_gb: int = 12,
+                             port_forwards: List[Tuple[int, int]] = None,
+                             age_key_dir: Optional[str] = None) -> Tuple[List[str], Optional[Dict[str, str]]]:
         """Generate command and environment for starting a VM."""
         repo_root = Path(__file__).resolve().parent.parent
         nix_vm_launcher = repo_root / "result" / "bin" / "run-rave-complete-vm"
@@ -240,6 +269,12 @@ class PlatformManager:
             cmd.extend([
                 "-netdev", "user,id=net0",
                 "-device", "virtio-net-pci,netdev=net0"
+            ])
+
+        # AGE key sharing via virtfs
+        if age_key_dir:
+            cmd.extend([
+                "-virtfs", f"local,path={age_key_dir},mount_tag=sops-keys,security_model=none"
             ])
 
         # Platform-specific optimizations

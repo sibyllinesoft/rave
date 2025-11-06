@@ -14,8 +14,15 @@
     # Allow SSH and common HTTP/HTTPS ports
     allowedTCPPorts = [ 22 80 443 ];
     
+    # Allow STUN/TURN server for WebRTC calls
+    allowedUDPPorts = [ 3478 ]; # STUN/TURN port
+    allowedUDPPortRanges = [
+      { from = 49152; to = 65535; } # RTC media ports for coturn
+    ];
+    
     # Allow specific services (these will be opened by service modules as needed)
     # GitLab: 8080, Matrix: 8008, Monitoring: 3000, 9090
+    # Coturn: 3478 (UDP), 49152-65535 (UDP RTC)
   };
 
   # SSH configuration for secure remote access

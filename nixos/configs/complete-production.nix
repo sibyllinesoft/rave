@@ -567,7 +567,7 @@ sops = lib.mkIf false {
   systemd.services.install-age-key = lib.mkIf config.services.rave.gitlab.useSecrets {
     description = "Install AGE key from host system";
     wantedBy = [ "multi-user.target" ];
-    after = [ "mount-sops-keys.service" ];
+    after = [ "local-fs.target" ];
     before = [ "sops-init.service" "sops-nix.service" ];
     serviceConfig = {
       Type = "oneshot";
@@ -581,24 +581,42 @@ sops = lib.mkIf false {
       # Create SOPS directory
       mkdir -p /var/lib/sops-nix
       
-      # Copy AGE key from host system
-      # Canonical approach: virtfs mounting by CLI, fallback to environment
-      if mountpoint -q /host-keys && [ -f /host-keys/keys.txt ]; then
-        echo "Installing AGE key from virtfs-mounted host directory (canonical)"
-        cp /host-keys/keys.txt /var/lib/sops-nix/key.txt
-        chmod 600 /var/lib/sops-nix/key.txt
-        echo "AGE key installed successfully"
-      elif [ -n "''${SOPS_AGE_KEY:-}" ]; then
+      # Create mount point for virtfs
+      mkdir -p /host-keys
+      
+      # Try to mount virtfs first (preferred method)
+      echo "Attempting to mount virtfs for AGE keys..."
+      if mount -t 9p -o trans=virtio,version=9p2000.L,rw sops-keys /host-keys 2>/dev/null; then
+        echo "✅ virtfs mounted successfully"
+        if [ -f /host-keys/keys.txt ]; then
+          echo "Installing AGE key from virtfs-mounted host directory (canonical)"
+          cp /host-keys/keys.txt /var/lib/sops-nix/key.txt
+          chmod 600 /var/lib/sops-nix/key.txt
+          echo "AGE key installed successfully from virtfs"
+          exit 0
+        else
+          echo "⚠️ virtfs mounted but keys.txt not found"
+          umount /host-keys 2>/dev/null || true
+        fi
+      else
+        echo "ℹ️ virtfs not available, trying fallback methods..."
+      fi
+      
+      # Fallback to environment variable
+      if [ -n "''${SOPS_AGE_KEY:-}" ]; then
         echo "Installing AGE key from environment variable (fallback)"
         echo "$SOPS_AGE_KEY" > /var/lib/sops-nix/key.txt
         chmod 600 /var/lib/sops-nix/key.txt
-        echo "AGE key installed successfully"
-      else
-        echo "No AGE key found - VM will run in development mode"
-        echo "To enable production mode, use CLI with AGE keys (preferred)"
-        echo "Or set SOPS_AGE_KEY environment variable (fallback)"
+        echo "AGE key installed successfully from environment"
         exit 0
       fi
+      
+      # No AGE key available
+      echo "⚠️ No AGE key found - VM will run in development mode"
+      echo "To enable production mode:"
+      echo "  1. Use RAVE CLI with AGE keys (preferred - auto virtfs)"
+      echo "  2. Set SOPS_AGE_KEY environment variable (fallback)"
+      exit 0
     '';
   };
 

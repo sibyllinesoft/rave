@@ -57,8 +57,8 @@
             )
           ];
 
-          virtualisation.diskSize = 32 * 1024; # 32GB to accommodate GitLab closure
-          virtualisation.memorySize = 8192;
+          virtualisation.diskSize = 40 * 1024; # 40GB to accommodate GitLab closure + headroom
+          virtualisation.memorySize = 12288; # 12GB for better build performance
           virtualisation.useNixStoreImage = false;
           virtualisation.sharedDirectories = lib.mkForce {};
           virtualisation.mountHostNixStore = lib.mkForce false;

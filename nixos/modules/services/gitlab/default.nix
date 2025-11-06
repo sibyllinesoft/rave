@@ -140,29 +140,30 @@ in
       
       # Secrets configuration - use sops-nix in production
       initialRootPasswordFile = if config.services.rave.gitlab.useSecrets
-        then config.sops.secrets."gitlab/root-password".path or "/run/secrets/gitlab-root-password"
+        then config.sops.secrets."gitlab/root-password".path or "/run/secrets/gitlab/root-password"
         else pkgs.writeText "gitlab-root-password" "development-password";
         
+      # Use SOPS secret for database password
       databasePasswordFile = if config.services.rave.gitlab.useSecrets
-        then config.sops.secrets."gitlab/db-password".path or "/run/secrets/gitlab-db-password"
-        else pkgs.writeText "gitlab-db-password" "gitlab-production-password";
+        then config.sops.secrets."gitlab/db-password".path or "/run/secrets/gitlab/db-password"
+        else pkgs.writeText "gitlab-db-password-dummy" "dummy";
         
       # All required secrets for GitLab
       secrets = {
         secretFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/secret-key-base".path or "/run/secrets/gitlab-secret"
+          then config.sops.secrets."gitlab/secret-key-base".path or "/run/secrets/gitlab/secret-key-base"
           else pkgs.writeText "gitlab-secret-key-base" "development-secret-key-base-dummy";
           
         otpFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/otp-key-base".path or "/run/secrets/gitlab-otp"
+          then config.sops.secrets."gitlab/otp-key-base".path or "/run/secrets/gitlab/otp-key-base"
           else pkgs.writeText "gitlab-otp-key-base" "development-otp-key-base-dummy";
           
         dbFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/db-key-base".path or "/run/secrets/gitlab-db"
+          then config.sops.secrets."gitlab/db-key-base".path or "/run/secrets/gitlab/db-key-base"
           else pkgs.writeText "gitlab-db-key-base" "development-db-key-base-dummy";
           
         jwsFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/jws-key-base".path or "/run/secrets/gitlab-jws"
+          then config.sops.secrets."gitlab/jws-key-base".path or "/run/secrets/gitlab/jws-key-base"
           else pkgs.writeText "jwt-signing-key" "development-jwt-signing-key-dummy";
         
         # Add missing Active Record secrets to prevent build warnings
@@ -385,6 +386,25 @@ in
     
     # Enhanced KVM access
     users.groups.kvm.members = [ "gitlab-runner" ];
+    
+    # Fix: Add postgres user to gitlab group via systemd service
+    # This resolves the gitlab-db-password.service failure where postgres user
+    # cannot read /run/secrets/gitlab/db-password due to group permissions
+    systemd.services.postgres-gitlab-group-fix = {
+      description = "Add postgres user to gitlab group for secret access";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "postgresql.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = "root";
+      };
+      script = ''
+        # Add postgres user to gitlab group
+        ${pkgs.shadow}/bin/usermod -a -G gitlab postgres
+        echo "Added postgres user to gitlab group"
+      '';
+    };
 
     # Firewall configuration for GitLab services
     networking.firewall.allowedTCPPorts = [ 

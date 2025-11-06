@@ -56,6 +56,15 @@ with lib;
             '';
           };
 
+          # GitLab static content (PWA icons, emojis, etc.)
+          "~ ^/gitlab/(-/.*)$" = {
+            alias = "${gitlabPackage}/share/gitlab/public$1";
+            extraConfig = ''
+              expires 1y;
+              try_files $uri =404;
+            '';
+          };
+
           # GitLab uploads and user content
           "~ ^/gitlab/(uploads|files)/" = {
             proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";

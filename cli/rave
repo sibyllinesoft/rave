@@ -369,8 +369,12 @@ def cli(ctx):
     """
     ensure_config_dir()
     ctx.ensure_object(dict)
-    ctx.obj['config'] = load_config()
-    ctx.obj['vm_manager'] = VMManager(VMS_DIR)
+    config = load_config()
+    ctx.obj['config'] = config
+    
+    # Extract port configuration from config file
+    port_config = config.get('default_ports', {})
+    ctx.obj['vm_manager'] = VMManager(VMS_DIR, port_config)
     ctx.obj['user_manager'] = UserManager()
     ctx.obj['oauth_manager'] = OAuthManager()
     ctx.obj['platform'] = PlatformManager()
@@ -1257,8 +1261,13 @@ def launch_local(
 @vm.command()
 @click.argument('company_name')
 @click.option('--keypair', required=True, help='Path to SSH keypair for VM access')
+@click.option('--http-port', type=int, help='HTTP port (default: 8081)')
+@click.option('--https-port', type=int, help='HTTPS port (default: 8443)')
+@click.option('--ssh-port', type=int, help='SSH port (default: 2224)')
+@click.option('--test-port', type=int, help='Test page port (default: 8889)')
 @click.pass_context
-def create(ctx, company_name: str, keypair: str):
+def create(ctx, company_name: str, keypair: str, http_port: Optional[int], https_port: Optional[int], 
+           ssh_port: Optional[int], test_port: Optional[int]):
     """Create a new company development environment VM."""
     vm_manager = ctx.obj['vm_manager']
 
@@ -1303,9 +1312,23 @@ def create(ctx, company_name: str, keypair: str):
             "VM will be created with the current encrypted defaults."
         )
 
+    # Build custom port configuration from command line options
+    custom_ports = {}
+    if http_port is not None:
+        custom_ports["http"] = http_port
+    if https_port is not None:
+        custom_ports["https"] = https_port
+    if ssh_port is not None:
+        custom_ports["ssh"] = ssh_port
+    if test_port is not None:
+        custom_ports["test"] = test_port
+    
+    if custom_ports:
+        click.echo(f"🔌 Using custom ports: {', '.join(f'{k}:{v}' for k, v in custom_ports.items())}")
+
     try:
         age_key_for_install = age_key_path if age_key_ready else None
-        result = vm_manager.create_vm(company_name, keypair, age_key_for_install)
+        result = vm_manager.create_vm(company_name, keypair, age_key_for_install, custom_ports if custom_ports else None)
         if result['success']:
             click.echo(f"✅ VM '{company_name}' created successfully!")
             warnings = result.get('warnings', [])
@@ -1503,6 +1526,60 @@ def logs(ctx, company_name: str, service: Optional[str], follow: bool, tail: int
     except Exception as e:
         click.echo(f"❌ Error getting logs: {e}")
         sys.exit(1)
+
+@vm.command()
+@click.option('--show', is_flag=True, help='Show current port configuration')
+@click.option('--set-http-port', type=int, help='Set default HTTP port')
+@click.option('--set-https-port', type=int, help='Set default HTTPS port')
+@click.option('--set-ssh-port', type=int, help='Set default SSH port')
+@click.option('--set-test-port', type=int, help='Set default test port')
+@click.option('--reset', is_flag=True, help='Reset to built-in defaults')
+@click.pass_context
+def config(ctx, show: bool, set_http_port: Optional[int], set_https_port: Optional[int], 
+           set_ssh_port: Optional[int], set_test_port: Optional[int], reset: bool):
+    """Configure default VM ports."""
+    config = ctx.obj['config']
+    vm_manager = ctx.obj['vm_manager']
+    
+    if show or (not any([set_http_port, set_https_port, set_ssh_port, set_test_port, reset])):
+        click.echo("📊 Current port configuration:")
+        current_ports = vm_manager.port_config
+        click.echo(f"   HTTP:  {current_ports['http']}")
+        click.echo(f"   HTTPS: {current_ports['https']}")
+        click.echo(f"   SSH:   {current_ports['ssh']}")
+        click.echo(f"   Test:  {current_ports['test']}")
+        return
+    
+    if reset:
+        if 'default_ports' in config:
+            del config['default_ports']
+        save_config(config)
+        click.echo("✅ Port configuration reset to built-in defaults")
+        click.echo("   Restart CLI for changes to take effect")
+        return
+    
+    # Update configuration
+    if 'default_ports' not in config:
+        config['default_ports'] = {}
+    
+    updates = []
+    if set_http_port is not None:
+        config['default_ports']['http'] = set_http_port
+        updates.append(f"HTTP: {set_http_port}")
+    if set_https_port is not None:
+        config['default_ports']['https'] = set_https_port
+        updates.append(f"HTTPS: {set_https_port}")
+    if set_ssh_port is not None:
+        config['default_ports']['ssh'] = set_ssh_port
+        updates.append(f"SSH: {set_ssh_port}")
+    if set_test_port is not None:
+        config['default_ports']['test'] = set_test_port
+        updates.append(f"Test: {set_test_port}")
+    
+    if updates:
+        save_config(config)
+        click.echo(f"✅ Updated default ports: {', '.join(updates)}")
+        click.echo("   Restart CLI for changes to take effect")
 
 # User Management Commands
 @cli.group()
