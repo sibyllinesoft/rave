@@ -213,3 +213,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **Experience the org dev sysadmin superpower: Multi-tenant development environments in 30 seconds.** 🚀
+
+## 📚 Documentation Hub
+The repository’s living documentation is now organized via the Divio model. Start with `docs/README.md` for links to tutorials, how-to guides, reference material, and explanation/architecture deep dives. Each entry lists which legacy documents still need to migrate so contributors can help retire duplicates safely.
