@@ -34,6 +34,11 @@ from platform_utils import PlatformManager
 DEFAULT_AGE_KEY_PATH = Path.home() / ".config" / "sops" / "age" / "keys.txt"
 DEFAULT_SECRETS_FILE = Path("config/secrets.yaml")
 
+PROFILE_ATTRS = {
+    "production": "rave-qcow2",
+    "dev": "rave-qcow2-dev",
+}
+
 PROVIDER_META = {
     "google": {
         "slug": "google_oauth2",
@@ -984,10 +989,17 @@ def _check_port_available(port: int) -> bool:
 
 @vm.command(name="build-image")
 @click.option(
-    "--attr",
-    default="rave-qcow2",
+    "--profile",
+    type=click.Choice(sorted(PROFILE_ATTRS.keys())),
+    default="production",
     show_default=True,
-    help="Nix flake attribute to build",
+    help="Named VM profile to build (ignored if --attr is provided)",
+)
+@click.option(
+    "--attr",
+    default=None,
+    show_default=False,
+    help="Custom Nix flake attribute to build (overrides --profile)",
 )
 @click.option(
     "--output",
@@ -1016,6 +1028,7 @@ def _check_port_available(port: int) -> bool:
 @click.pass_context
 def build_image(
     ctx,
+    profile: str,
     attr: str,
     output: str,
     skip_symlink: bool,
@@ -1033,12 +1046,20 @@ def build_image(
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d")
     output_path = repo_root / output
-    stamp_name = f"rave-complete-{timestamp}.qcow2"
+    if attr is None and profile == "production":
+        stamp_prefix = "rave-complete"
+    elif attr is None:
+        stamp_prefix = f"rave-{profile}"
+    else:
+        stamp_prefix = "rave-custom"
+    stamp_name = f"{stamp_prefix}-{timestamp}.qcow2"
     stamped_path = repo_root / stamp_name
 
-    click.echo("🛠️  Building qcow2 image via Nix...")
+    selected_attr = attr or PROFILE_ATTRS[profile]
+
+    click.echo(f"🛠️  Building qcow2 image via Nix ({selected_attr})...")
     build_cmd = platform.get_nix_build_command()
-    build_cmd.extend(["--show-trace", f".#{attr}"])
+    build_cmd.extend(["--show-trace", f".#{selected_attr}"])
     result = subprocess.run(build_cmd, cwd=repo_root)
     if result.returncode != 0:
         click.echo("❌ nix build failed. Scroll up for details.")
@@ -1111,9 +1132,9 @@ def build_image(
 )
 @click.option(
     "--https-port",
-    default=18221,
+    default=8443,
     show_default=True,
-    help="Primary host port forwarded to guest :8221",
+    help="Primary host port forwarded to guest :443",
 )
 @click.option("--ssh-port", default=2224, show_default=True, help="Forward host port to guest :22")
 @click.option("--status-port", default=8889, show_default=True, help="Forward host port to guest :8080")
@@ -1150,12 +1171,8 @@ def launch_local(
     ]
 
     required_legacy_ports = {
-        18221: 8221,
     }
     optional_legacy_ports = {
-        18220: 8220,
-        18231: 8231,
-        18230: 8230,
     }
 
     click.echo("🔍 Checking port availability...")
@@ -1211,11 +1228,13 @@ def launch_local(
     click.echo(f"   Memory: {memory}")
     click.echo(f"   CPUs  : {cpus}")
     click.echo("")
-    primary_https_port = 18221 if 18221 in forwarded_hosts else https_port
+    primary_https_port = https_port
     click.echo("📊 Service URLs (available after boot):")
     click.echo(f"   🌐 Dashboard:  https://localhost:{primary_https_port}/")
     click.echo(f"   🦊 GitLab:     https://localhost:{primary_https_port}/gitlab/")
     click.echo(f"   💬 Mattermost: https://localhost:{primary_https_port}/mattermost/")
+    click.echo(f"   📚 Outline:    https://localhost:{primary_https_port}/outline/")
+    click.echo(f"   🧠 n8n:        https://localhost:{primary_https_port}/n8n/")
     click.echo("")
     click.echo(f"🔑 SSH Access: ssh -p {ssh_port} root@localhost (password: debug123)")
     click.echo("🔴 To stop: press Ctrl+C in this terminal or kill the QEMU process.")

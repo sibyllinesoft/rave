@@ -58,6 +58,8 @@ Each build drops a qcow2 under `result/`. Copy it to `artifacts/` (gitignored) w
 cp result/nixos.qcow2 artifacts/rave-${PROFILE}-$(date +%Y%m%d).qcow2
 ```
 
+Prefer the CLI? Run `rave vm build-image --profile dev` (or omit `--profile` for production) so the images land alongside the usual stamped filenames.
+
 ### Option B: CLI helper
 ```bash
 rave vm build-image --profile production

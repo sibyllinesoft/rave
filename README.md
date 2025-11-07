@@ -164,6 +164,8 @@ additional hostnames (e.g. `--domain app.dev.vm`).
 | `rave-qcow2` (default) | `nix build .#rave-qcow2` | Full production stack with Outline + n8n and higher resource defaults (12 GB RAM, 40 GB disk). |
 | `rave-qcow2-dev` | `nix build .#rave-qcow2-dev` | Lightweight dev image with Outline/n8n disabled and smaller VM footprint (≈8 GB RAM, 30 GB disk). |
 
+From the CLI, run `rave vm build-image --profile dev` for the lightweight variant (default `production`), or pass `--attr` if you need a custom flake output.
+
 Use `nix build .#rave-qcow2-dev` when you need a faster local iteration loop, and swap back to the full profile before publishing artifacts.
 
 ## 🔧 Development

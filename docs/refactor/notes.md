@@ -61,3 +61,4 @@
 ## Pass 10: Dev-Minimal Profile
 - Added `nixos/configs/dev-minimal.nix` which imports the full configuration but forces Outline/n8n off and shrinks VM resources (8 GB RAM, 30 GB disk).
 - Updated `flake.nix` so `nix build .#rave-qcow2-dev` spits out the lightweight image, and documented both profiles in `README.md` plus the provisioning how-to.
+- `rave vm build-image` now accepts `--profile {production,dev}` (with `production` default) so humans/agents can select the right flake output without remembering raw attribute names; `--attr` remains for custom builds.
