@@ -130,7 +130,9 @@ temp/
 cache/
 .cache/
 *.cache/
+local-artifacts/
 artifacts/
+run/
 workspace/
 
 # -----------------------------------------------------------------------------
