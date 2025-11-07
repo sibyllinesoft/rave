@@ -21,3 +21,6 @@ RAVE now follows the Divio documentation model so contributors and AI agents can
 | `docs/security/SECURITY_MODEL.md` | Explanation | Link from Explanation index |
 
 Until files are physically moved, keep editing the originals; this README tracks migration status so we can update links without guesswork.
+
+## Published Guides
+- **How-to:** `docs/how-to/repo-hygiene.md` — run the hygiene script before committing to keep artifacts out of Git.
