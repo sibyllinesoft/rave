@@ -64,3 +64,4 @@
 - `rave vm build-image` now accepts `--profile {production,dev}` (with `production` default) so humans/agents can select the right flake output without remembering raw attribute names; `--attr` remains for custom builds.
 - Dashboard + welcome scripts now query `services.rave.*.enable` so Outline/n8n cards disappear automatically in the dev profile.
 - Added `rave vm list-profiles` so automation can discover available flake outputs without hardcoding names; README/how-to reference the command.
+- `rave vm launch-local` accepts `--profile` and defaults image/service messaging to match the selected build (dev profile now hides Outline/n8n URLs).

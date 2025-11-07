@@ -166,7 +166,7 @@ additional hostnames (e.g. `--domain app.dev.vm`).
 
 Run `rave vm list-profiles` to print this matrix (and any future custom profiles) from the CLI.
 
-From the CLI, run `rave vm build-image --profile dev` for the lightweight variant (default `production`), or pass `--attr` if you need a custom flake output.
+From the CLI, run `rave vm build-image --profile dev` for the lightweight variant (default `production`), or pass `--attr` if you need a custom flake output. `rave vm launch-local --profile dev` now picks the matching qcow2 and hides services that profile disables.
 
 Use `nix build .#rave-qcow2-dev` when you need a faster local iteration loop, and swap back to the full profile before publishing artifacts.
 The landing dashboard and welcome script automatically hide Outline/n8n (or any future optional services) when those modules are disabled.

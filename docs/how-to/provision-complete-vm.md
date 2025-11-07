@@ -71,9 +71,11 @@ This wraps the same flake output and drops the qcow2 under `run/`.
 1. Start the VM (CLI preferred):
    ```bash
    rave vm launch-local \
+     --profile production \
      --image artifacts/rave-complete-YYYYMMDD.qcow2 \
      --https-port 18221 --ssh-port 2224
    ```
+   For the lightweight image, use `--profile dev` (and the matching qcow2 path).
 2. Wait for GitLab to finish first-boot migrations (≈5–7 minutes). Watch logs with:
    ```bash
    rave vm logs localhost gitlab --follow

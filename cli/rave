@@ -34,18 +34,26 @@ from platform_utils import PlatformManager
 DEFAULT_AGE_KEY_PATH = Path.home() / ".config" / "sops" / "age" / "keys.txt"
 DEFAULT_SECRETS_FILE = Path("config/secrets.yaml")
 
-PROFILE_METADATA: Dict[str, Dict[str, str]] = {
+PROFILE_METADATA: Dict[str, Dict[str, Any]] = {
     "production": {
         "attr": "rave-qcow2",
-        "description": "Full stack (GitLab, Mattermost, Outline, n8n, observability)",
+        "description": "Full stack (GitLab, Mattermost, Penpot, Outline, n8n, observability)",
+        "default_image": "rave-complete-localhost.qcow2",
+        "features": {"penpot": True, "outline": True, "n8n": True},
     },
     "dev": {
         "attr": "rave-qcow2-dev",
         "description": "Slimmer build (Outline + n8n disabled, lower RAM/disk)",
+        "default_image": "rave-dev-localhost.qcow2",
+        "features": {"penpot": True, "outline": False, "n8n": False},
     },
 }
 
 PROFILE_ATTRS = {name: meta["attr"] for name, meta in PROFILE_METADATA.items()}
+
+
+def _profile_feature(profile: str, feature: str) -> bool:
+    return PROFILE_METADATA.get(profile, {}).get("features", {}).get(feature, False)
 
 PROVIDER_META = {
     "google": {
@@ -1022,9 +1030,9 @@ def _check_port_available(port: int) -> bool:
 )
 @click.option(
     "--output",
-    default="rave-complete-localhost.qcow2",
-    show_default=True,
-    help="Symlink path that points at the latest image",
+    default=None,
+    show_default=False,
+    help="Symlink path that points at the latest image (defaults per profile)",
 )
 @click.option(
     "--skip-symlink",
@@ -1064,6 +1072,8 @@ def build_image(
         sys.exit(1)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d")
+    if output is None:
+        output = PROFILE_METADATA[profile]["default_image"]
     output_path = repo_root / output
     if attr is None and profile == "production":
         stamp_prefix = "rave-complete"
@@ -1135,10 +1145,17 @@ def build_image(
 
 @vm.command(name="launch-local")
 @click.option(
-    "--image",
-    default="rave-complete-localhost.qcow2",
+    "--profile",
+    type=click.Choice(sorted(PROFILE_ATTRS.keys())),
+    default="production",
     show_default=True,
-    help="qcow2 image to boot",
+    help="Named VM profile; controls default image and service list",
+)
+@click.option(
+    "--image",
+    default=None,
+    show_default=False,
+    help="qcow2 image to boot (defaults per profile)",
 )
 @click.option("--memory", default="8G", show_default=True, help="Guest memory allocation")
 @click.option("--cpus", default=4, show_default=True, help="Guest vCPU count")
@@ -1161,6 +1178,7 @@ def build_image(
 @click.pass_context
 def launch_local(
     ctx,
+    profile: str,
     image: str,
     memory: str,
     cpus: int,
@@ -1175,6 +1193,8 @@ def launch_local(
     platform: PlatformManager = ctx.obj["platform"]
     repo_root = Path.cwd()
 
+    if image is None:
+        image = PROFILE_METADATA[profile]["default_image"]
     image_path = Path(image)
     if not image_path.is_absolute():
         image_path = repo_root / image_path
@@ -1246,14 +1266,19 @@ def launch_local(
     click.echo(f"   Image : {image_path}")
     click.echo(f"   Memory: {memory}")
     click.echo(f"   CPUs  : {cpus}")
+    click.echo(f"   Profile: {profile}")
     click.echo("")
     primary_https_port = https_port
     click.echo("📊 Service URLs (available after boot):")
     click.echo(f"   🌐 Dashboard:  https://localhost:{primary_https_port}/")
     click.echo(f"   🦊 GitLab:     https://localhost:{primary_https_port}/gitlab/")
     click.echo(f"   💬 Mattermost: https://localhost:{primary_https_port}/mattermost/")
-    click.echo(f"   📚 Outline:    https://localhost:{primary_https_port}/outline/")
-    click.echo(f"   🧠 n8n:        https://localhost:{primary_https_port}/n8n/")
+    if _profile_feature(profile, "penpot"):
+        click.echo(f"   🎨 Penpot:     https://localhost:{primary_https_port}/penpot/")
+    if _profile_feature(profile, "outline"):
+        click.echo(f"   📚 Outline:    https://localhost:{primary_https_port}/outline/")
+    if _profile_feature(profile, "n8n"):
+        click.echo(f"   🧠 n8n:        https://localhost:{primary_https_port}/n8n/")
     click.echo("")
     click.echo(f"🔑 SSH Access: ssh -p {ssh_port} root@localhost (password: debug123)")
     click.echo("🔴 To stop: press Ctrl+C in this terminal or kill the QEMU process.")
