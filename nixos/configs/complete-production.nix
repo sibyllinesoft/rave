@@ -74,6 +74,49 @@ let
   n8nEncryptionKey = "n8n-encryption-key-2d01b6dba90441e8a6f7ec2af3327ef2";
   n8nBasicAuthPassword = "n8n-basic-admin-password";
   n8nBasePath = "/n8n";
+  outlineCardHtml = lib.optionalString config.services.rave.outline.enable ''
+                          <a href="/outline/" class="service-card">
+                              <div class="service-title">📚 Outline</div>
+                              <div class="service-desc">Knowledge base and documentation hub</div>
+                              <div class="service-url">${outlinePublicUrl}/</div>
+                              <span class="status active">Active</span>
+                          </a>
+'';
+  n8nCardHtml = lib.optionalString config.services.rave.n8n.enable ''
+                          <a href="/n8n/" class="service-card">
+                              <div class="service-title">🧠 n8n</div>
+                              <div class="service-desc">Automation workflows & integrations</div>
+                              <div class="service-url">${n8nPublicUrl}/</div>
+                              <span class="status active">Active</span>
+                          </a>
+'';
+  outlineWelcomePrimary = lib.optionalString config.services.rave.outline.enable ''
+echo "  Outline      : ${outlinePublicUrl}/"
+'';
+  n8nWelcomePrimary = lib.optionalString config.services.rave.n8n.enable ''
+echo "  n8n          : ${n8nPublicUrl}/"
+'';
+  outlineWelcomeFancy = lib.optionalString config.services.rave.outline.enable ''
+echo "   📚 Outline:     ${outlinePublicUrl}/"
+'';
+  n8nWelcomeFancy = lib.optionalString config.services.rave.n8n.enable ''
+echo "   🧠 n8n:         ${n8nPublicUrl}/"
+'';
+  welcomeStatusServices = lib.concatStringsSep " " (
+    [
+      "postgresql"
+      "redis-main"
+      "nats"
+      "prometheus"
+      "grafana"
+      "gitlab"
+      "mattermost"
+      "rave-chat-bridge"
+      "nginx"
+    ]
+    ++ lib.optionals config.services.rave.outline.enable [ "outline" ]
+    ++ lib.optionals config.services.rave.n8n.enable [ "n8n" ]
+  );
   ensureGitlabMattermostCiScript = pkgs.writeScript "ensure-gitlab-mattermost-ci.py" ''
 #!${pythonWithRequests}/bin/python3
 import json
@@ -1570,18 +1613,7 @@ RUBY
                               <div class="service-url">https://localhost:${baseHttpsPort}/nats/</div>
                               <span class="status active">Active</span>
                           </a>
-                          <a href="/outline/" class="service-card">
-                              <div class="service-title">📚 Outline</div>
-                              <div class="service-desc">Knowledge base and documentation hub</div>
-                              <div class="service-url">${outlinePublicUrl}/</div>
-                              <span class="status active">Active</span>
-                          </a>
-                          <a href="/n8n/" class="service-card">
-                              <div class="service-title">🧠 n8n</div>
-                              <div class="service-desc">Low-code automation and workflows</div>
-                              <div class="service-url">${n8nPublicUrl}/</div>
-                              <span class="status active">Active</span>
-                          </a>
+${outlineCardHtml}${n8nCardHtml}
                       </div>
                   </div>
               </body>
@@ -2123,16 +2155,17 @@ EOF
     grafana.requires = [ "postgresql.service" ];
     
     # nginx depends on certificates and all backend services
-    nginx.after = [ 
-      "generate-localhost-certs.service" 
-      "gitlab.service"
-      "grafana.service" 
-      "mattermost.service"
-      "outline.service"
-      "n8n.service"
-      "prometheus.service"
-      "nats.service"
-    ];
+    nginx.after = 
+      [
+        "generate-localhost-certs.service" 
+        "gitlab.service"
+        "grafana.service" 
+        "mattermost.service"
+        "prometheus.service"
+        "nats.service"
+      ]
+      ++ lib.optionals config.services.rave.outline.enable [ "outline.service" ]
+      ++ lib.optionals config.services.rave.n8n.enable [ "n8n.service" ];
     nginx.requires = [ "generate-localhost-certs.service" ];
   };
 
@@ -2154,8 +2187,7 @@ echo "  GitLab HTTPS : https://localhost:${baseHttpsPort}/gitlab/"
 echo "  Mattermost   : ${mattermostPublicUrl}/"
 echo "  Grafana      : https://localhost:${baseHttpsPort}/grafana/"
 echo "  Prometheus   : http://localhost:19090/"
-echo "  Outline      : ${outlinePublicUrl}/"
-echo "  n8n          : ${n8nPublicUrl}/"
+${outlineWelcomePrimary}${n8nWelcomePrimary}
 echo ""
 WELCOME
       chmod 0755 /root/welcome.sh
@@ -2185,15 +2217,14 @@ echo "   📊 Grafana:     https://localhost:${baseHttpsPort}/grafana/"
 echo "   💬 Mattermost:  https://localhost:${baseHttpsPort}/mattermost/"
 echo "   🔍 Prometheus:  https://localhost:${baseHttpsPort}/prometheus/"
 echo "   ⚡ NATS:        https://localhost:${baseHttpsPort}/nats/"
-echo "   📚 Outline:     ${outlinePublicUrl}/"
-echo "   🧠 n8n:         ${n8nPublicUrl}/"
+${outlineWelcomeFancy}${n8nWelcomeFancy}
 echo ""
 echo "🔑 Default Credentials:"
 echo "   GitLab root:    admin123456"
 echo "   Grafana:        admin/admin123"
 echo ""
 echo "🔧 Service Status:"
-systemctl status postgresql redis-main nats prometheus grafana gitlab mattermost outline n8n rave-chat-bridge nginx --no-pager -l
+systemctl status ${welcomeStatusServices} --no-pager -l
 echo ""
 echo "🌐 Dashboard: https://localhost:${baseHttpsPort}/"
 echo ""
