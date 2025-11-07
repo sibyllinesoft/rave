@@ -44,15 +44,18 @@ This how-to combines the old "COMPLETE-BUILD" and "PRODUCTION-SECRETS-GUIDE" pla
 ## Step 3 – Build the Image
 You can use either the raw Nix build or the CLI wrapper.
 
-### Option A: Nix Flake (supports port overrides)
+### Option A: Nix Flake (supports profiles + port overrides)
+Pick the profile that matches your use case:
+
+| Profile | Command | When to use |
+| --- | --- | --- |
+| Production | `nix build .#rave-qcow2` | Full stack, all services enabled, larger resource footprint. |
+| Dev-minimal | `nix build .#rave-qcow2-dev` | Faster local iteration (Outline + n8n disabled, smaller VM). |
+| Custom port | `nix build .#rave-qcow2-port-9443` | Same as production but with a baked-in HTTPS port override. |
+
+Each build drops a qcow2 under `result/`. Copy it to `artifacts/` (gitignored) with a meaningful name:
 ```bash
-nix build .#rave-qcow2
-# or
-nix build .#rave-qcow2-port-9443
-```
-The qcow2 artifact lands in `result/`. Copy it to `artifacts/` (gitignored) with a meaningful name:
-```bash
-cp result/nixos.qcow2 artifacts/rave-complete-$(date +%Y%m%d).qcow2
+cp result/nixos.qcow2 artifacts/rave-${PROFILE}-$(date +%Y%m%d).qcow2
 ```
 
 ### Option B: CLI helper

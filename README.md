@@ -157,6 +157,15 @@ After issuing the certificate, hit the dashboard at `https://localhost:18221/` a
 `https://chat.localtest.me:18221/` for green locks. Add `--domain` flags if you expose the VM on
 additional hostnames (e.g. `--domain app.dev.vm`).
 
+## 🧱 VM Profiles
+
+| Profile | Build Command | Notes |
+| --- | --- | --- |
+| `rave-qcow2` (default) | `nix build .#rave-qcow2` | Full production stack with Outline + n8n and higher resource defaults (12 GB RAM, 40 GB disk). |
+| `rave-qcow2-dev` | `nix build .#rave-qcow2-dev` | Lightweight dev image with Outline/n8n disabled and smaller VM footprint (≈8 GB RAM, 30 GB disk). |
+
+Use `nix build .#rave-qcow2-dev` when you need a faster local iteration loop, and swap back to the full profile before publishing artifacts.
+
 ## 🔧 Development
 
 ### Building VMs

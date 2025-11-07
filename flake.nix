@@ -35,11 +35,15 @@
   outputs = { self, nixpkgs, nixos-generators, sops-nix, ... }:
     let
       system = "x86_64-linux";
-      vmModules = [
-        ./nixos/configs/complete-production.nix
+      
+      # Build-time port configuration (can be overridden)
+      makeVmModules = { httpsPort ? 8443, configModule ? ./nixos/configs/complete-production.nix }: [
+        configModule
         sops-nix.nixosModules.sops
         "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
         ({ lib, ... }: {
+          # Pass port configuration to the NixOS module
+          services.rave.ports.https = httpsPort;
           nixpkgs.overlays = [
             (final: prev:
               let
@@ -57,14 +61,17 @@
             )
           ];
 
-          virtualisation.diskSize = 40 * 1024; # 40GB to accommodate GitLab closure + headroom
-          virtualisation.memorySize = 12288; # 12GB for better build performance
+          virtualisation.diskSize = lib.mkDefault (40 * 1024); # 40GB default
+          virtualisation.memorySize = lib.mkDefault 12288; # 12GB default
           virtualisation.useNixStoreImage = false;
           virtualisation.sharedDirectories = lib.mkForce {};
           virtualisation.mountHostNixStore = lib.mkForce false;
           virtualisation.writableStore = lib.mkForce false;
         })
       ];
+      
+      vmModules = makeVmModules {}; # Default port 8443
+      devVmModules = makeVmModules { configModule = ./nixos/configs/dev-minimal.nix; };
     in {
     # P2.2: NixOS VM test infrastructure
     tests.x86_64-linux = {
@@ -73,12 +80,43 @@
 
     # VM image packages - Production only
     packages.${system} = rec {
-      # Complete production image - ALL services pre-configured and ready
+      # Complete production image - ALL services pre-configured and ready (default port 8443)
       rave-qcow2 = nixos-generators.nixosGenerate {
         inherit system;
         format = "qcow";
         customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
         modules = vmModules;
+      };
+
+      # Custom port build function - usage: nix build --override-input httpsPort 9443
+      rave-qcow2-custom-port = httpsPort: nixos-generators.nixosGenerate {
+        inherit system;
+        format = "qcow";
+        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
+        modules = makeVmModules { inherit httpsPort; };
+      };
+
+      # Common port variants
+      rave-qcow2-port-7443 = nixos-generators.nixosGenerate {
+        inherit system;
+        format = "qcow";
+        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
+        modules = makeVmModules { httpsPort = 7443; };
+      };
+
+      rave-qcow2-port-9443 = nixos-generators.nixosGenerate {
+        inherit system;
+        format = "qcow";
+        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
+        modules = makeVmModules { httpsPort = 9443; };
+      };
+
+      # Lightweight dev image (Outline/n8n disabled, reduced resources)
+      rave-qcow2-dev = nixos-generators.nixosGenerate {
+        inherit system;
+        format = "qcow";
+        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
+        modules = devVmModules;
       };
 
       default = rave-qcow2;

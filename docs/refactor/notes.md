@@ -57,3 +57,7 @@
 ## Pass 9: n8n Module
 - Mirrored the modularization approach for n8n (`nixos/modules/services/n8n/default.nix`), capturing its Docker unit, nginx routing, and Postgres bootstrap in one place.
 - `nixos/configs/complete-production.nix` now just sets `services.rave.n8n` options; removing n8n from the minimal profile is as simple as flipping `enable = false`.
+
+## Pass 10: Dev-Minimal Profile
+- Added `nixos/configs/dev-minimal.nix` which imports the full configuration but forces Outline/n8n off and shrinks VM resources (8 GB RAM, 30 GB disk).
+- Updated `flake.nix` so `nix build .#rave-qcow2-dev` spits out the lightweight image, and documented both profiles in `README.md` plus the provisioning how-to.
