@@ -3,7 +3,6 @@
 Use this section for architecture deep dives, ADRs, and rationale documents.
 
 Short-term migration targets:
-- `docs/ARCHITECTURE.md`
 - `docs/security/SECURITY_MODEL.md`
 - `docs/adr/*`
 - `docs/NATS-IMPLEMENTATION-SUMMARY.md`

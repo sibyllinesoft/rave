@@ -16,13 +16,14 @@ RAVE now follows the Divio documentation model so contributors and AI agents can
 | `WORKING-SETUP.md` | Tutorial | ✅ Moved to `docs/tutorials/working-setup.md` (root file is now a pointer) |
 | `COMPLETE-BUILD.md` | Explanation/How-to | Mostly covered by `docs/how-to/provision-complete-vm.md`; keep for deep-dive context until trimmed |
 | `PRODUCTION-SECRETS-GUIDE.md` | How-to | Superseded by the provisioning guide; carve out a future \"Rotate Secrets\" doc |
-| `docs/ARCHITECTURE.md` | Explanation | Move to `docs/explanation/architecture.md` and cross-link ADRs |
-| `docs/SERVICES-OVERVIEW.md` | Reference | Needs update for CLI-first workflow |
+| `docs/ARCHITECTURE.md` | Explanation | ✅ Lives at `docs/explanation/architecture.md` (root file is a pointer) |
+| `docs/SERVICES-OVERVIEW.md` | Reference | ✅ Lives at `docs/reference/services-overview.md`; refresh content for CLI-first workflow |
 | `docs/security/SECURITY_MODEL.md` | Explanation | Link from Explanation index |
 
 Until files are physically moved, keep editing the originals; this README tracks migration status so we can update links without guesswork.
 
 ## Published Guides
 - **Tutorial:** `docs/tutorials/working-setup.md` — walkthrough for launching the dev VM locally.
+- **Explanation:** `docs/explanation/architecture.md` — system context, capability map, and runtime topology.
 - **How-to:** `docs/how-to/repo-hygiene.md` — run the hygiene script before committing to keep artifacts out of Git.
 - **How-to:** `docs/how-to/provision-complete-vm.md` — single source of truth for building, launching, and publishing qcow2 images with SOPS secrets.

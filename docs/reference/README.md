@@ -7,5 +7,6 @@ Initial scope:
 - Port matrices for each environment profile
 - Secrets catalog + expected SOPS paths
 - API schemas (GitLab OAuth, Mattermost bridge, chat-control contracts)
+- Consolidated services overview (`services-overview.md`)
 
 Prefer auto-generated content when possible to avoid drift.

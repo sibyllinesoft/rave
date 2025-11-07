@@ -3,7 +3,7 @@
 ## 1. Purpose & Approach
 - Capture the state of the repository as observed on 2025-11-07 to explain how the platform is assembled today.
 - Highlight structural patterns that contribute to perceived cruft and AI-agent confusion, based on direct inspection plus existing documentation.
-- Inputs: `README.md`, `docs/ARCHITECTURE.md`, ADRs under `docs/adr/`, CLI sources in `cli/`, Nix stack under `flake.nix` and `nixos/**`, runtime service code in `services/**`, and operational guides in the repo root + `docs/`.
+- Inputs: `README.md`, `docs/explanation/architecture.md`, ADRs under `docs/adr/`, CLI sources in `cli/`, Nix stack under `flake.nix` and `nixos/**`, runtime service code in `services/**`, and operational guides in the repo root + `docs/`.
 
 ## 2. Repository Topology
 - Active code and infrastructure live beside large artifacts: a dozen `*.qcow2` images, log directories (`run/`, `logs/`), and complete data volumes under `gitlab-complete/` checked into the repo root. This makes directory discovery noisy and breaks expectations for source-only repos.
@@ -30,7 +30,7 @@
 - Multiple service-specific directories (`gitlab-complete/`, `postgres/`, `nixos/static/`, `matrix-setup/`) hold runtime data snapshots that overlap with what the QCOW images already package, hinting at ad-hoc recovery workflows rather than a clean infrastructure-as-code boundary.
 
 ## 6. Documentation & Knowledge Assets
-- Core references include `README.md` (high-level pitch), `docs/ARCHITECTURE.md` (conceptual diagrams), `docs/SERVICES-OVERVIEW.md` (Docker Compose era), and ADRs in `docs/adr/` for P0–P2 milestones. Later capabilities—chat-control bridge, Outline/n8n inclusion, CLI mandates—lack ADR coverage.
+- Core references include `README.md` (high-level pitch), `docs/explanation/architecture.md` (conceptual diagrams), `docs/reference/services-overview.md` (historical Docker Compose era), and ADRs in `docs/adr/` for P0–P2 milestones. Later capabilities—chat-control bridge, Outline/n8n inclusion, CLI mandates—lack ADR coverage.
 - Operational guides such as `WORKING-SETUP.md`, `COMPLETE-BUILD.md`, and `PRODUCTION-SECRETS-GUIDE.md` repeat overlapping steps (install Nix, build QCOW, bootstrap secrets) with slight variations, but none establish a canonical “operator runbook.”
 - Security guidance is fragmented: `docs/security/SECURITY_MODEL.md`, `PRODUCTION-SECRETS-GUIDE.md`, and inline README content each describe different portions of the secrets story (Age key generation, `rave secrets init`, manual SOPS editing).
 - There is no single architecture index linking to the many Markdown files, so AI agents (and humans) have to brute-force search to find the right doc for a task.

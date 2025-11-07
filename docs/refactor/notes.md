@@ -14,7 +14,7 @@
 - How is secrets management evolving (SOPS/age) and where is the source of truth recorded (only `config/secrets.yaml` template?)?
 
 ## Leads for Deeper Dives
-- Read `docs/ARCHITECTURE.md` + ADRs to map intended architecture vs. repo reality.
+- Read `docs/explanation/architecture.md` + ADRs to map intended architecture vs. repo reality.
 - Trace CLI commands (especially `vm_manager.py`) to see how it orchestrates Nix builds, asset staging, and secret sync.
 - Inventory automation scripts in `scripts/` and `build-scripts/` to see which ones are obsolete vs. still wired into CI/CD.
 

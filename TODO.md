@@ -301,7 +301,7 @@ Your build process creates `result-*` symlinks and `*.qcow2` images. These shoul
 
 #### **Step 3.2: Consolidate Documentation**
 
-You have several summary markdown files (`GITLAB-COMPLETE-SYSTEM.md`, `DEMO-RESULTS.md`, etc.). This information should be moved into your primary documentation (`README.md`, `docs/ARCHITECTURE.md`, or the ADRs).
+You have several summary markdown files (`GITLAB-COMPLETE-SYSTEM.md`, `DEMO-RESULTS.md`, etc.). This information should be moved into your primary documentation (`README.md`, `docs/explanation/architecture.md`, or the ADRs).
 
 1.  **Review** these files and copy any essential, long-term information into your main docs.
 2.  **Delete** the summary files once their content is migrated.
