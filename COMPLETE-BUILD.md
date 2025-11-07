@@ -1,5 +1,7 @@
 # RAVE Complete Production Build
 
+> **Heads-up:** This document is now largely covered by the Divio how-to at `docs/how-to/provision-complete-vm.md`. Keep using this file for historical architecture details until the migration is finished.
+
 This document describes the **complete, consolidated NixOS VM configuration** that includes ALL services properly configured and working from the start.
 
 ## 🚀 Quick Start

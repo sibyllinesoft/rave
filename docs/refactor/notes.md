@@ -43,3 +43,8 @@
 - Documentation organization: Divio documentation system (tutorials, how-to, reference, explanation) fits the current sprawl and gives us a ready-made taxonomy for regrouping Markdown assets plus automation opportunities (e.g., `divio-docs-gen`).
 - Secrets management: SOPS guidance reinforces age-based key management via `~/.config/sops/age/keys.txt` and environment overrides, backing a push to eliminate baked-in fallback credentials.
 - Infrastructure testing: NixOS manual/wiki highlight modularizing configs and using NixOS VM tests; nix.dev’s integration-testing tutorial can anchor a new CI lane for `nixosTests`.
+
+## Pass 7: Divio Migration Sprint
+- Relocated `WORKING-SETUP.md` under `docs/tutorials/` and left a stub in the root so existing links keep working.
+- Authored `docs/how-to/provision-complete-vm.md`, merging the actionable parts of `COMPLETE-BUILD.md` and `PRODUCTION-SECRETS-GUIDE.md` into one operator playbook.
+- Tagged the legacy guides with pointers to the new pages and updated `docs/README.md` plus the tutorials/how-to indexes to reflect what is published vs. pending.

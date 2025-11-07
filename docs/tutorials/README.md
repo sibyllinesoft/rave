@@ -2,8 +2,10 @@
 
 Audience: newcomers bootstrapping a full RAVE environment end-to-end.
 
-Planned entries:
-- Working Setup (from `WORKING-SETUP.md`)
+## Published
+- [Working Setup](working-setup.md) — end-to-end walkthrough for launching the complete dev VM locally.
+
+## In Progress
 - First company build with `rave vm create`
 - Troubleshooting checklist for first boot
 

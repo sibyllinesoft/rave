@@ -1,5 +1,7 @@
 # Production Secrets Management Guide
 
+> **Heads-up:** Day-to-day provisioning now lives in `docs/how-to/provision-complete-vm.md`. This document remains for legacy context until we extract a dedicated \"Rotate Secrets\" guide.
+
 ## 🔐 SOPS + AGE Encryption for Production Deployment
 
 This guide provides the complete process for securely deploying RAVE with encrypted secrets for production use.
