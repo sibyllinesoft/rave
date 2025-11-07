@@ -3,18 +3,21 @@
 { config, pkgs, lib, ... }:
 
 let
+  # Build-time port configuration (can be overridden via flake)
+  baseHttpsPort = toString config.services.rave.ports.https;
+  
   useSecrets = config.services.rave.gitlab.useSecrets;
   gitlabDbPasswordFile = if useSecrets
     then "/run/secrets/gitlab/db-password"
     else pkgs.writeText "gitlab-db-password" "gitlab-production-password";
   googleOauthClientId = "729118765955-7l2hgo3nrjaiol363cp8avf3m97shjo8.apps.googleusercontent.com";
-  gitlabExternalUrl = "https://localhost:8443/gitlab";
-  gitlabInternalHttpsUrl = "https://localhost:8443/gitlab";
-  gitlabInternalHttpUrl = "https://localhost:8443/gitlab";
+  gitlabExternalUrl = "https://localhost:${baseHttpsPort}/gitlab";
+  gitlabInternalHttpsUrl = "https://localhost:${baseHttpsPort}/gitlab";
+  gitlabInternalHttpUrl = "https://localhost:${baseHttpsPort}/gitlab";
   gitlabRailsRunner = "${config.system.path}/bin/gitlab-rails";
   gitlabPackage = config.services.gitlab.packages.gitlab;
   mattermostPkg = config.services.mattermost.package or pkgs.mattermost;
-  mattermostPublicUrl = "https://localhost:8443/mattermost";
+  mattermostPublicUrl = "https://localhost:${baseHttpsPort}/mattermost";
   mattermostPath =
     let
       matchResult = builtins.match "https://[^/]+(.*)" mattermostPublicUrl;
@@ -57,6 +60,20 @@ let
   gitlabApiTokenFile = if useSecrets
     then "/run/secrets/gitlab/api-token"
     else pkgs.writeText "gitlab-api-token" "development-token";
+  outlinePublicUrl = "https://localhost:${baseHttpsPort}/outline";
+  outlineDockerImage = "outlinewiki/outline:latest";
+  outlineHostPort = 8310;
+  outlineDbPassword = "outline-production-password";
+  outlineSecretKey = "outline-secret-key-4c8d8a4c9f004aa4868b9e19767b2e8e";
+  outlineUtilsSecret = "outline-utils-secret-d4c2b6a5a9c2474f8fb3b77d0b0fbd89";
+  outlineRedisDb = 5;
+  n8nPublicUrl = "https://localhost:${baseHttpsPort}/n8n";
+  n8nDockerImage = "n8nio/n8n:latest";
+  n8nHostPort = 5678;
+  n8nDbPassword = "n8n-production-password";
+  n8nEncryptionKey = "n8n-encryption-key-2d01b6dba90441e8a6f7ec2af3327ef2";
+  n8nBasicAuthPassword = "n8n-basic-admin-password";
+  n8nBasePath = "/n8n";
   ensureGitlabMattermostCiScript = pkgs.writeScript "ensure-gitlab-mattermost-ci.py" ''
 #!${pythonWithRequests}/bin/python3
 import json
@@ -289,7 +306,7 @@ def main() -> None:
     mattermost_password_file = os.environ["MATTERMOST_ADMIN_PASSWORD_FILE"]
     mattermost_email_file = os.environ.get("MATTERMOST_ADMIN_EMAIL_FILE", "")
     gitlab_token_file = os.environ["GITLAB_API_TOKEN_FILE"]
-    gitlab_base = os.environ.get("GITLAB_API_BASE_URL", "https://localhost:8443/gitlab/api/v4").rstrip("/")
+    gitlab_base = os.environ.get("GITLAB_API_BASE_URL", f"https://localhost:{os.environ.get('RAVE_HOST_HTTPS_PORT', '8443')}/gitlab/api/v4").rstrip("/")
     gitlab_verify = parse_verify_flag(os.environ.get("GITLAB_VERIFY_TLS", "false"))
 
     mm_username = read_first_line(mattermost_username_file)
@@ -404,6 +421,26 @@ if __name__ == "__main__":
   '';
 in
 {
+  services.rave.outline = {
+    enable = true;
+    publicUrl = outlinePublicUrl;
+    dockerImage = outlineDockerImage;
+    hostPort = outlineHostPort;
+    dbPassword = outlineDbPassword;
+    secretKey = outlineSecretKey;
+    utilsSecret = outlineUtilsSecret;
+    redisDb = outlineRedisDb;
+  };
+
+  # Option definitions for RAVE configuration
+  options.services.rave.ports = {
+    https = lib.mkOption {
+      type = lib.types.int;
+      default = 8443;
+      description = "HTTPS port for the RAVE VM services";
+    };
+  };
+
   imports = [
     # Foundation modules
     ../modules/foundation/base.nix
@@ -412,6 +449,7 @@ in
 
     # Service modules
     ../modules/services/gitlab/default.nix
+    ../modules/services/outline/default.nix
 
     # Security modules
     # ../modules/security/certificates.nix  # DISABLED: Using inline certificate generation instead
@@ -720,11 +758,11 @@ config_path = Path('/var/lib/mattermost/config/config.json')
 if not config_path.exists():
     raise SystemExit(0)
 
-site_url = os.environ.get('SITE_URL', 'https://localhost:8443/mattermost').rstrip('/')
+site_url = os.environ.get('SITE_URL', f'https://localhost:{os.environ.get("RAVE_HOST_HTTPS_PORT", "8443")}/mattermost').rstrip('/')
 login_url = f"{site_url}/oauth/gitlab/login"
 login_path = urlparse(login_url).path or "/oauth/gitlab/login"
-gitlab_auth_base = os.environ.get('GITLAB_AUTH_BASE', 'https://localhost:8443/gitlab').rstrip('/')
-gitlab_api_base = os.environ.get('GITLAB_API_BASE', 'https://localhost:8443/gitlab').rstrip('/')
+gitlab_auth_base = os.environ.get('GITLAB_AUTH_BASE', f'https://localhost:{os.environ.get("RAVE_HOST_HTTPS_PORT", "8443")}/gitlab').rstrip('/')
+gitlab_api_base = os.environ.get('GITLAB_API_BASE', f'https://localhost:{os.environ.get("RAVE_HOST_HTTPS_PORT", "8443")}/gitlab').rstrip('/')
 gitlab_client_id = os.environ.get("GITLAB_CLIENT_ID", "")
 secret_path = os.environ.get("GITLAB_SECRET_FILE", "")
 gitlab_secret = os.environ.get("GITLAB_SECRET", "")
@@ -829,17 +867,19 @@ PY
     package = pkgs.postgresql_15;
     
     # Pre-create ALL required databases and users
-    ensureDatabases = [ "gitlab" "grafana" "penpot" "mattermost" ];
+    ensureDatabases = [ "gitlab" "grafana" "penpot" "mattermost" "n8n" ];
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
       { name = "grafana"; ensureDBOwnership = true; }
       { name = "penpot"; ensureDBOwnership = true; }
       { name = "mattermost"; ensureDBOwnership = true; }
+      { name = "n8n"; ensureDBOwnership = true; }
       { name = "prometheus"; ensureDBOwnership = false; }
     ];
     
-    # Optimized settings for VM environment
+    # Optimized settings for VM environment (merged with listen_addresses)
     settings = {
+      listen_addresses = lib.mkForce "localhost,172.17.0.1";
       max_connections = 200;
       shared_buffers = "512MB";
       effective_cache_size = "2GB";
@@ -873,6 +913,10 @@ PY
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mattermost')
       \gexec
 
+      SELECT format('CREATE ROLE %I LOGIN', 'n8n')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'n8n')
+      \gexec
+
       SELECT format('CREATE ROLE %I LOGIN', 'prometheus')
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'prometheus')
       \gexec
@@ -894,6 +938,10 @@ PY
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'mattermost')
       \\gexec
 
+      SELECT format('CREATE DATABASE %I OWNER %I', 'n8n', 'n8n')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'n8n')
+      \gexec
+
       -- GitLab database setup
       ALTER ROLE gitlab CREATEDB;
       GRANT ALL PRIVILEGES ON DATABASE gitlab TO gitlab;
@@ -911,6 +959,10 @@ PY
       -- Penpot database setup  
       GRANT ALL PRIVILEGES ON DATABASE penpot TO penpot;
       ALTER USER penpot WITH PASSWORD 'penpot-production-password';
+
+      -- n8n automation database setup
+      GRANT ALL PRIVILEGES ON DATABASE n8n TO n8n;
+      ALTER USER n8n WITH PASSWORD '${n8nDbPassword}';
 
       -- Mattermost database setup
       DO $$
@@ -948,6 +1000,8 @@ PY
     enable = true;
     port = 6379;
     settings = {
+      # Listen on all interfaces to allow Docker container access
+      bind = lib.mkForce "0.0.0.0";
       maxmemory = "1GB";
       maxmemory-policy = "allkeys-lru";
       save = [ "900 1" "300 10" "60 10000" ];
@@ -1053,7 +1107,7 @@ PY
       server = {
         http_port = 3000;
         domain = "localhost";  # Changed from rave.local to localhost  
-        root_url = "https://localhost:8443/grafana/";
+        root_url = "https://localhost:${baseHttpsPort}/grafana/";
         serve_from_sub_path = true;
       };
 
@@ -1158,6 +1212,7 @@ PY
     mutableConfig = true;
     extraConfig = {
       ServiceSettings = {
+        SiteURL = mattermostPublicUrl;
         EnableLocalMode = false;
         EnableInsecureOutgoingConnections = true;
       };
@@ -1202,7 +1257,7 @@ PY
                 credential = "rave-coturn-development-secret-2025";
               }
             ];
-            RTCServerPort = 8443;
+            RTCServerPort = lib.toInt baseHttpsPort;
             TURNServerCredentials = "rave-coturn-development-secret-2025";
             MaxCallParticipants = 8;
             NeedsHTTPS = false; # Dev environment
@@ -1236,6 +1291,54 @@ PY
 
   };
 
+  # ===== N8N AUTOMATION PLATFORM =====
+
+  systemd.services.n8n = {
+    description = "n8n automation service (Docker)";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "docker.service" "postgresql.service" ];
+    requires = [ "docker.service" "postgresql.service" ];
+    serviceConfig = {
+      Type = "simple";
+      Restart = "always";
+      RestartSec = 10;
+      ExecStartPre = [
+        "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker rm -f n8n || true'"
+        "${pkgs.docker}/bin/docker pull ${n8nDockerImage}"
+        "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker volume create n8n-data || true'"
+      ];
+      ExecStart = pkgs.writeShellScript "n8n-start" ''
+        exec ${pkgs.docker}/bin/docker run \
+          --name n8n \
+          --rm \
+          -p 127.0.0.1:${toString n8nHostPort}:5678 \
+          -v n8n-data:/home/node/.n8n \
+          -e DB_TYPE=postgresdb \
+          -e DB_POSTGRESDB_DATABASE=n8n \
+          -e DB_POSTGRESDB_USER=n8n \
+          -e DB_POSTGRESDB_PASSWORD=${n8nDbPassword} \
+          -e DB_POSTGRESDB_HOST=172.17.0.1 \
+          -e DB_POSTGRESDB_PORT=5432 \
+          -e N8N_ENCRYPTION_KEY=${n8nEncryptionKey} \
+          -e N8N_HOST=localhost \
+          -e N8N_PORT=5678 \
+          -e N8N_PROTOCOL=https \
+          -e N8N_BASE_PATH=${n8nBasePath} \
+          -e N8N_EDITOR_BASE_URL=${n8nPublicUrl} \
+          -e WEBHOOK_URL=${n8nPublicUrl} \
+          -e GENERIC_TIMEZONE=UTC \
+          -e N8N_DIAGNOSTICS_ENABLED=false \
+          -e N8N_VERSION_NOTIFICATIONS_ENABLED=false \
+          -e N8N_BASIC_AUTH_ACTIVE=true \
+          -e N8N_BASIC_AUTH_USER=admin \
+          -e N8N_BASIC_AUTH_PASSWORD=${n8nBasicAuthPassword} \
+          -e NODE_ENV=production \
+          ${n8nDockerImage}
+      '';
+      ExecStop = "${pkgs.docker}/bin/docker stop n8n";
+    };
+  };
+
   services.rave.gitlab = {
     enable = true;
     host = "localhost";
@@ -1256,7 +1359,7 @@ PY
 
   services.gitlab.extraConfig.gitlab.omniauth.full_host = lib.mkForce gitlabExternalUrl;
   systemd.services.gitlab.environment.GITLAB_OMNIAUTH_FULL_HOST = gitlabExternalUrl;
-  services.gitlab.extraConfig.gitlab.port = lib.mkForce 8443;
+  services.gitlab.extraConfig.gitlab.port = lib.mkForce (lib.toInt baseHttpsPort);
 
   systemd.services.gitlab-mattermost-oauth = {
     description = "Ensure GitLab OAuth client for Mattermost exists";
@@ -1292,7 +1395,12 @@ end
 name = 'RAVE Mattermost'
 scopes = 'read_user'
 
-app = Doorkeeper::Application.find_or_initialize_by(uid: uid)
+# Force delete existing application to ensure clean configuration
+existing_app = Doorkeeper::Application.find_by(uid: uid)
+existing_app&.destroy!
+
+app = Doorkeeper::Application.new
+app.uid = uid
 app.name = name
 app.redirect_uri = redirect_uri
 app.secret = secret
@@ -1390,7 +1498,7 @@ RUBY
       MATTERMOST_ADMIN_PASSWORD_FILE = mattermostAdminPasswordFile;
       MATTERMOST_ADMIN_EMAIL_FILE = mattermostAdminEmailFile;
       MATTERMOST_VERIFY_TLS = "false";
-      GITLAB_API_BASE_URL = "https://localhost:8443/gitlab/api/v4";
+      GITLAB_API_BASE_URL = "https://localhost:${baseHttpsPort}/gitlab/api/v4";
       GITLAB_API_TOKEN_FILE = gitlabApiTokenFile;
       GITLAB_VERIFY_TLS = "false";
     };
@@ -1484,13 +1592,13 @@ RUBY
                           <a href="/gitlab/" class="service-card">
                               <div class="service-title">🦊 GitLab</div>
                               <div class="service-desc">Git repository management and CI/CD</div>
-                              <div class="service-url">https://localhost:8443/gitlab/</div>
+                              <div class="service-url">https://localhost:${baseHttpsPort}/gitlab/</div>
                               <span class="status active">Active</span>
                           </a>
                           <a href="/grafana/" class="service-card">
                               <div class="service-title">📊 Grafana</div>
                               <div class="service-desc">Monitoring dashboards and analytics</div>
-                              <div class="service-url">https://localhost:8443/grafana/</div>
+                              <div class="service-url">https://localhost:${baseHttpsPort}/grafana/</div>
                               <span class="status active">Active</span>
                           </a>
                           <a href="${mattermostPublicUrl}/" class="service-card">
@@ -1502,13 +1610,25 @@ RUBY
                           <a href="/prometheus/" class="service-card">
                               <div class="service-title">🔍 Prometheus</div>
                               <div class="service-desc">Metrics collection and monitoring</div>
-                              <div class="service-url">https://localhost:8443/prometheus/</div>
+                              <div class="service-url">https://localhost:${baseHttpsPort}/prometheus/</div>
                               <span class="status active">Active</span>
                           </a>
                           <a href="/nats/" class="service-card">
                               <div class="service-title">⚡ NATS JetStream</div>
                               <div class="service-desc">High-performance messaging system</div>
-                              <div class="service-url">https://localhost:8443/nats/</div>
+                              <div class="service-url">https://localhost:${baseHttpsPort}/nats/</div>
+                              <span class="status active">Active</span>
+                          </a>
+                          <a href="/outline/" class="service-card">
+                              <div class="service-title">📚 Outline</div>
+                              <div class="service-desc">Knowledge base and documentation hub</div>
+                              <div class="service-url">${outlinePublicUrl}/</div>
+                              <span class="status active">Active</span>
+                          </a>
+                          <a href="/n8n/" class="service-card">
+                              <div class="service-title">🧠 n8n</div>
+                              <div class="service-desc">Low-code automation and workflows</div>
+                              <div class="service-url">${n8nPublicUrl}/</div>
                               <span class="status active">Active</span>
                           </a>
                       </div>
@@ -1522,9 +1642,6 @@ RUBY
             return = "302 ${mattermostPublicUrl}/";
           };
 
-          "= /" = {
-            return = "302 ${mattermostPublicUrl}/";
-          };
 
           "/grafana/" = {
             proxyPass = "http://127.0.0.1:3000/";
@@ -1555,6 +1672,29 @@ RUBY
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
             '';
+          };
+
+          "/n8n/" = {
+            proxyPass = "http://127.0.0.1:${toString n8nHostPort}";
+            proxyWebsockets = true;
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Prefix /n8n;
+              proxy_set_header X-Forwarded-Ssl on;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection $connection_upgrade;
+              client_max_body_size 100M;
+              proxy_redirect off;
+            '';
+          };
+
+          "/n8n" = {
+            return = "302 /n8n/";
           };
 
           "/mattermost/" = {
@@ -1686,9 +1826,6 @@ RUBY
       sslCertificate = "/var/lib/acme/localhost/cert.pem";
       sslCertificateKey = "/var/lib/acme/localhost/key.pem";
 
-      locations."= /" = {
-        return = "302 /mattermost/";
-      };
 
       locations."/mattermost/" = {
         proxyPass = "http://127.0.0.1:8065";
@@ -1953,6 +2090,7 @@ EOF
       # Update user passwords (non-SOPS secrets only)
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER grafana PASSWORD 'grafana-production-password';" || true
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER penpot PASSWORD 'penpot-production-password';" || true
+      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER n8n PASSWORD '${n8nDbPassword}';" || true
 
       # Grant additional permissions
       ${pkgs.postgresql}/bin/psql -U postgres -c "GRANT CONNECT ON DATABASE postgres TO grafana;" || true
@@ -2039,6 +2177,8 @@ EOF
       "gitlab.service"
       "grafana.service" 
       "mattermost.service"
+      "outline.service"
+      "n8n.service"
       "prometheus.service"
       "nats.service"
     ];
@@ -2059,10 +2199,12 @@ EOF
 echo "Welcome to the RAVE complete VM"
 echo "Forwarded ports:"
 echo "  SSH          : localhost:12222 (user root, password rave-root)"
-echo "  GitLab HTTPS : https://localhost:8443/gitlab/"
+echo "  GitLab HTTPS : https://localhost:${baseHttpsPort}/gitlab/"
 echo "  Mattermost   : ${mattermostPublicUrl}/"
-echo "  Grafana      : https://localhost:8443/grafana/"
+echo "  Grafana      : https://localhost:${baseHttpsPort}/grafana/"
 echo "  Prometheus   : http://localhost:19090/"
+echo "  Outline      : ${outlinePublicUrl}/"
+echo "  n8n          : ${n8nPublicUrl}/"
 echo ""
 WELCOME
       chmod 0755 /root/welcome.sh
@@ -2087,20 +2229,22 @@ echo "🚀 RAVE Complete Production Environment"
 echo "====================================="
 echo ""
 echo "✅ All Services Ready:"
-echo "   🦊 GitLab:      https://localhost:8443/gitlab/"
-echo "   📊 Grafana:     https://localhost:8443/grafana/"  
-echo "   💬 Mattermost:  https://localhost:8443/mattermost/"
-echo "   🔍 Prometheus:  https://localhost:8443/prometheus/"
-echo "   ⚡ NATS:        https://localhost:8443/nats/"
+echo "   🦊 GitLab:      https://localhost:${baseHttpsPort}/gitlab/"
+echo "   📊 Grafana:     https://localhost:${baseHttpsPort}/grafana/"  
+echo "   💬 Mattermost:  https://localhost:${baseHttpsPort}/mattermost/"
+echo "   🔍 Prometheus:  https://localhost:${baseHttpsPort}/prometheus/"
+echo "   ⚡ NATS:        https://localhost:${baseHttpsPort}/nats/"
+echo "   📚 Outline:     ${outlinePublicUrl}/"
+echo "   🧠 n8n:         ${n8nPublicUrl}/"
 echo ""
 echo "🔑 Default Credentials:"
 echo "   GitLab root:    admin123456"
 echo "   Grafana:        admin/admin123"
 echo ""
 echo "🔧 Service Status:"
-systemctl status postgresql redis-main nats prometheus grafana gitlab mattermost rave-chat-bridge nginx --no-pager -l
+systemctl status postgresql redis-main nats prometheus grafana gitlab mattermost outline n8n rave-chat-bridge nginx --no-pager -l
 echo ""
-echo "🌐 Dashboard: https://localhost:8443/"
+echo "🌐 Dashboard: https://localhost:${baseHttpsPort}/"
 echo ""
 EOF
       chmod +x /root/welcome.sh
