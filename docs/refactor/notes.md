@@ -53,3 +53,7 @@
 - Extracted the Outline stack into `nixos/modules/services/outline/default.nix` with typed options (`services.rave.outline.*`) so it can be toggled per profile.
 - Trimmed `nixos/configs/complete-production.nix` to consume those options, removing inline Docker/nginx/sql snippets and letting the module append Postgres initialization fragments via `mkAfter`.
 - This creates the first reusable profile hook for eventually building a minimal image without Outline or other heavy services.
+
+## Pass 9: n8n Module
+- Mirrored the modularization approach for n8n (`nixos/modules/services/n8n/default.nix`), capturing its Docker unit, nginx routing, and Postgres bootstrap in one place.
+- `nixos/configs/complete-production.nix` now just sets `services.rave.n8n` options; removing n8n from the minimal profile is as simple as flipping `enable = false`.

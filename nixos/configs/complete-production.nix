@@ -432,6 +432,17 @@ in
     redisDb = outlineRedisDb;
   };
 
+  services.rave.n8n = {
+    enable = true;
+    publicUrl = n8nPublicUrl;
+    dockerImage = n8nDockerImage;
+    hostPort = n8nHostPort;
+    dbPassword = n8nDbPassword;
+    encryptionKey = n8nEncryptionKey;
+    basicAuthPassword = n8nBasicAuthPassword;
+    basePath = n8nBasePath;
+  };
+
   # Option definitions for RAVE configuration
   options.services.rave.ports = {
     https = lib.mkOption {
@@ -450,6 +461,7 @@ in
     # Service modules
     ../modules/services/gitlab/default.nix
     ../modules/services/outline/default.nix
+    ../modules/services/n8n/default.nix
 
     # Security modules
     # ../modules/security/certificates.nix  # DISABLED: Using inline certificate generation instead
@@ -867,13 +879,12 @@ PY
     package = pkgs.postgresql_15;
     
     # Pre-create ALL required databases and users
-    ensureDatabases = [ "gitlab" "grafana" "penpot" "mattermost" "n8n" ];
+    ensureDatabases = [ "gitlab" "grafana" "penpot" "mattermost" ];
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
       { name = "grafana"; ensureDBOwnership = true; }
       { name = "penpot"; ensureDBOwnership = true; }
       { name = "mattermost"; ensureDBOwnership = true; }
-      { name = "n8n"; ensureDBOwnership = true; }
       { name = "prometheus"; ensureDBOwnership = false; }
     ];
     
@@ -913,10 +924,6 @@ PY
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mattermost')
       \gexec
 
-      SELECT format('CREATE ROLE %I LOGIN', 'n8n')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'n8n')
-      \gexec
-
       SELECT format('CREATE ROLE %I LOGIN', 'prometheus')
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'prometheus')
       \gexec
@@ -938,10 +945,6 @@ PY
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'mattermost')
       \\gexec
 
-      SELECT format('CREATE DATABASE %I OWNER %I', 'n8n', 'n8n')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'n8n')
-      \gexec
-
       -- GitLab database setup
       ALTER ROLE gitlab CREATEDB;
       GRANT ALL PRIVILEGES ON DATABASE gitlab TO gitlab;
@@ -959,10 +962,6 @@ PY
       -- Penpot database setup  
       GRANT ALL PRIVILEGES ON DATABASE penpot TO penpot;
       ALTER USER penpot WITH PASSWORD 'penpot-production-password';
-
-      -- n8n automation database setup
-      GRANT ALL PRIVILEGES ON DATABASE n8n TO n8n;
-      ALTER USER n8n WITH PASSWORD '${n8nDbPassword}';
 
       -- Mattermost database setup
       DO $$
@@ -1289,54 +1288,6 @@ PY
         MM_GITLABSETTINGS_SKIPTLSVERIFICATION=true
       '';
 
-  };
-
-  # ===== N8N AUTOMATION PLATFORM =====
-
-  systemd.services.n8n = {
-    description = "n8n automation service (Docker)";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "docker.service" "postgresql.service" ];
-    requires = [ "docker.service" "postgresql.service" ];
-    serviceConfig = {
-      Type = "simple";
-      Restart = "always";
-      RestartSec = 10;
-      ExecStartPre = [
-        "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker rm -f n8n || true'"
-        "${pkgs.docker}/bin/docker pull ${n8nDockerImage}"
-        "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker volume create n8n-data || true'"
-      ];
-      ExecStart = pkgs.writeShellScript "n8n-start" ''
-        exec ${pkgs.docker}/bin/docker run \
-          --name n8n \
-          --rm \
-          -p 127.0.0.1:${toString n8nHostPort}:5678 \
-          -v n8n-data:/home/node/.n8n \
-          -e DB_TYPE=postgresdb \
-          -e DB_POSTGRESDB_DATABASE=n8n \
-          -e DB_POSTGRESDB_USER=n8n \
-          -e DB_POSTGRESDB_PASSWORD=${n8nDbPassword} \
-          -e DB_POSTGRESDB_HOST=172.17.0.1 \
-          -e DB_POSTGRESDB_PORT=5432 \
-          -e N8N_ENCRYPTION_KEY=${n8nEncryptionKey} \
-          -e N8N_HOST=localhost \
-          -e N8N_PORT=5678 \
-          -e N8N_PROTOCOL=https \
-          -e N8N_BASE_PATH=${n8nBasePath} \
-          -e N8N_EDITOR_BASE_URL=${n8nPublicUrl} \
-          -e WEBHOOK_URL=${n8nPublicUrl} \
-          -e GENERIC_TIMEZONE=UTC \
-          -e N8N_DIAGNOSTICS_ENABLED=false \
-          -e N8N_VERSION_NOTIFICATIONS_ENABLED=false \
-          -e N8N_BASIC_AUTH_ACTIVE=true \
-          -e N8N_BASIC_AUTH_USER=admin \
-          -e N8N_BASIC_AUTH_PASSWORD=${n8nBasicAuthPassword} \
-          -e NODE_ENV=production \
-          ${n8nDockerImage}
-      '';
-      ExecStop = "${pkgs.docker}/bin/docker stop n8n";
-    };
   };
 
   services.rave.gitlab = {
