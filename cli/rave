@@ -34,10 +34,18 @@ from platform_utils import PlatformManager
 DEFAULT_AGE_KEY_PATH = Path.home() / ".config" / "sops" / "age" / "keys.txt"
 DEFAULT_SECRETS_FILE = Path("config/secrets.yaml")
 
-PROFILE_ATTRS = {
-    "production": "rave-qcow2",
-    "dev": "rave-qcow2-dev",
+PROFILE_METADATA: Dict[str, Dict[str, str]] = {
+    "production": {
+        "attr": "rave-qcow2",
+        "description": "Full stack (GitLab, Mattermost, Outline, n8n, observability)",
+    },
+    "dev": {
+        "attr": "rave-qcow2-dev",
+        "description": "Slimmer build (Outline + n8n disabled, lower RAM/disk)",
+    },
 }
+
+PROFILE_ATTRS = {name: meta["attr"] for name, meta in PROFILE_METADATA.items()}
 
 PROVIDER_META = {
     "google": {
@@ -976,6 +984,17 @@ def prerequisites(ctx):
 def vm():
     """Virtual Machine management commands."""
     pass
+
+
+@vm.command(name="list-profiles")
+def list_profiles():
+    """List available VM build profiles and their flake attributes."""
+    click.echo("Available VM profiles:\n")
+    for name in sorted(PROFILE_METADATA.keys()):
+        meta = PROFILE_METADATA[name]
+        click.echo(f"• {name}: {meta['attr']} — {meta['description']}")
+    click.echo("\nUse `rave vm build-image --profile <name>` or pass --attr for custom builds.")
+
 
 def _check_port_available(port: int) -> bool:
     """Return True if the port is free on localhost."""

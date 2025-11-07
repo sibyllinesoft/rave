@@ -59,6 +59,7 @@ cp result/nixos.qcow2 artifacts/rave-${PROFILE}-$(date +%Y%m%d).qcow2
 ```
 
 Prefer the CLI? Run `rave vm build-image --profile dev` (or omit `--profile` for production) so the images land alongside the usual stamped filenames.
+Use `rave vm list-profiles` any time you need to see the current set of supported profiles/attributes.
 
 ### Option B: CLI helper
 ```bash

@@ -63,3 +63,4 @@
 - Updated `flake.nix` so `nix build .#rave-qcow2-dev` spits out the lightweight image, and documented both profiles in `README.md` plus the provisioning how-to.
 - `rave vm build-image` now accepts `--profile {production,dev}` (with `production` default) so humans/agents can select the right flake output without remembering raw attribute names; `--attr` remains for custom builds.
 - Dashboard + welcome scripts now query `services.rave.*.enable` so Outline/n8n cards disappear automatically in the dev profile.
+- Added `rave vm list-profiles` so automation can discover available flake outputs without hardcoding names; README/how-to reference the command.
