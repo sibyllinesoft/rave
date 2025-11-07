@@ -18,6 +18,7 @@ let
   gitlabPackage = config.services.gitlab.packages.gitlab;
   mattermostPkg = config.services.mattermost.package or pkgs.mattermost;
   mattermostPublicUrl = "https://localhost:${baseHttpsPort}/mattermost";
+  penpotPublicUrl = "https://localhost:${baseHttpsPort}/penpot";
   mattermostPath =
     let
       matchResult = builtins.match "https://[^/]+(.*)" mattermostPublicUrl;
@@ -60,6 +61,7 @@ let
   gitlabApiTokenFile = if useSecrets
     then "/run/secrets/gitlab/api-token"
     else pkgs.writeText "gitlab-api-token" "development-token";
+  penpotPublicUrl = "https://localhost:${baseHttpsPort}/penpot";
   outlinePublicUrl = "https://localhost:${baseHttpsPort}/outline";
   outlineDockerImage = "outlinewiki/outline:latest";
   outlineHostPort = 8310;
@@ -74,6 +76,14 @@ let
   n8nEncryptionKey = "n8n-encryption-key-2d01b6dba90441e8a6f7ec2af3327ef2";
   n8nBasicAuthPassword = "n8n-basic-admin-password";
   n8nBasePath = "/n8n";
+  penpotCardHtml = lib.optionalString config.services.rave.penpot.enable ''
+                          <a href="/penpot/" class="service-card">
+                              <div class="service-title">🎨 Penpot</div>
+                              <div class="service-desc">Design collaboration (GitLab OIDC)</div>
+                              <div class="service-url">${penpotPublicUrl}/</div>
+                              <span class="status active">Active</span>
+                          </a>
+'';
   outlineCardHtml = lib.optionalString config.services.rave.outline.enable ''
                           <a href="/outline/" class="service-card">
                               <div class="service-title">📚 Outline</div>
@@ -90,11 +100,17 @@ let
                               <span class="status active">Active</span>
                           </a>
 '';
+  penpotWelcomePrimary = lib.optionalString config.services.rave.penpot.enable ''
+echo "  Penpot       : ${penpotPublicUrl}/"
+'';
   outlineWelcomePrimary = lib.optionalString config.services.rave.outline.enable ''
 echo "  Outline      : ${outlinePublicUrl}/"
 '';
   n8nWelcomePrimary = lib.optionalString config.services.rave.n8n.enable ''
 echo "  n8n          : ${n8nPublicUrl}/"
+'';
+  penpotWelcomeFancy = lib.optionalString config.services.rave.penpot.enable ''
+echo "   🎨 Penpot:      ${penpotPublicUrl}/"
 '';
   outlineWelcomeFancy = lib.optionalString config.services.rave.outline.enable ''
 echo "   📚 Outline:     ${outlinePublicUrl}/"
@@ -114,6 +130,7 @@ echo "   🧠 n8n:         ${n8nPublicUrl}/"
       "rave-chat-bridge"
       "nginx"
     ]
+    ++ lib.optionals config.services.rave.penpot.enable [ "penpot-backend" "penpot-frontend" "penpot-exporter" ]
     ++ lib.optionals config.services.rave.outline.enable [ "outline" ]
     ++ lib.optionals config.services.rave.n8n.enable [ "n8n" ]
   );
@@ -484,6 +501,20 @@ in
     encryptionKey = n8nEncryptionKey;
     basicAuthPassword = n8nBasicAuthPassword;
     basePath = n8nBasePath;
+  };
+
+  services.rave.penpot = {
+    enable = true;
+    host = "localhost";
+    publicUrl = penpotPublicUrl;
+    database.password = "penpot-production-password";
+    redis.port = 6380;
+    oidc = {
+      enable = true;
+      gitlabUrl = gitlabExternalUrl;
+      clientId = "penpot";
+      clientSecret = "penpot-oidc-secret";
+    };
   };
 
   # Option definitions for RAVE configuration
@@ -922,11 +953,10 @@ PY
     package = pkgs.postgresql_15;
     
     # Pre-create ALL required databases and users
-    ensureDatabases = [ "gitlab" "grafana" "penpot" "mattermost" ];
+    ensureDatabases = [ "gitlab" "grafana" "mattermost" ];
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
       { name = "grafana"; ensureDBOwnership = true; }
-      { name = "penpot"; ensureDBOwnership = true; }
       { name = "mattermost"; ensureDBOwnership = true; }
       { name = "prometheus"; ensureDBOwnership = false; }
     ];
@@ -959,10 +989,6 @@ PY
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'grafana')
       \gexec
 
-      SELECT format('CREATE ROLE %I LOGIN', 'penpot')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'penpot')
-      \gexec
-
       SELECT format('CREATE ROLE %I LOGIN', 'mattermost')
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mattermost')
       \gexec
@@ -978,10 +1004,6 @@ PY
 
       SELECT format('CREATE DATABASE %I OWNER %I', 'grafana', 'grafana')
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'grafana')
-      \gexec
-
-      SELECT format('CREATE DATABASE %I OWNER %I', 'penpot', 'penpot')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'penpot')
       \gexec
 
       SELECT format('CREATE DATABASE %I OWNER %I', 'mattermost', 'mattermost')
@@ -1001,10 +1023,6 @@ PY
       GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO grafana;
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO grafana;
       ALTER USER grafana WITH PASSWORD 'grafana-production-password';
-
-      -- Penpot database setup  
-      GRANT ALL PRIVILEGES ON DATABASE penpot TO penpot;
-      ALTER USER penpot WITH PASSWORD 'penpot-production-password';
 
       -- Mattermost database setup
       DO $$
@@ -1613,7 +1631,7 @@ RUBY
                               <div class="service-url">https://localhost:${baseHttpsPort}/nats/</div>
                               <span class="status active">Active</span>
                           </a>
-${outlineCardHtml}${n8nCardHtml}
+${penpotCardHtml}${outlineCardHtml}${n8nCardHtml}
                       </div>
                   </div>
               </body>
@@ -2164,6 +2182,7 @@ EOF
         "prometheus.service"
         "nats.service"
       ]
+      ++ lib.optionals config.services.rave.penpot.enable [ "penpot-backend.service" "penpot-frontend.service" "penpot-exporter.service" ]
       ++ lib.optionals config.services.rave.outline.enable [ "outline.service" ]
       ++ lib.optionals config.services.rave.n8n.enable [ "n8n.service" ];
     nginx.requires = [ "generate-localhost-certs.service" ];
@@ -2187,7 +2206,7 @@ echo "  GitLab HTTPS : https://localhost:${baseHttpsPort}/gitlab/"
 echo "  Mattermost   : ${mattermostPublicUrl}/"
 echo "  Grafana      : https://localhost:${baseHttpsPort}/grafana/"
 echo "  Prometheus   : http://localhost:19090/"
-${outlineWelcomePrimary}${n8nWelcomePrimary}
+${penpotWelcomePrimary}${outlineWelcomePrimary}${n8nWelcomePrimary}
 echo ""
 WELCOME
       chmod 0755 /root/welcome.sh
@@ -2217,7 +2236,7 @@ echo "   📊 Grafana:     https://localhost:${baseHttpsPort}/grafana/"
 echo "   💬 Mattermost:  https://localhost:${baseHttpsPort}/mattermost/"
 echo "   🔍 Prometheus:  https://localhost:${baseHttpsPort}/prometheus/"
 echo "   ⚡ NATS:        https://localhost:${baseHttpsPort}/nats/"
-${outlineWelcomeFancy}${n8nWelcomeFancy}
+${penpotWelcomeFancy}${outlineWelcomeFancy}${n8nWelcomeFancy}
 echo ""
 echo "🔑 Default Credentials:"
 echo "   GitLab root:    admin123456"

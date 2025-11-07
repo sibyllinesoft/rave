@@ -65,3 +65,8 @@
 - Dashboard + welcome scripts now query `services.rave.*.enable` so Outline/n8n cards disappear automatically in the dev profile.
 - Added `rave vm list-profiles` so automation can discover available flake outputs without hardcoding names; README/how-to reference the command.
 - `rave vm launch-local` accepts `--profile` and defaults image/service messaging to match the selected build (dev profile now hides Outline/n8n URLs).
+
+## Pass 11: Penpot Module
+- Reworked `nixos/modules/services/penpot` to append Postgres/Redis/nginx settings instead of overwriting them, and added options for public URLs, images, and secret/password inputs.
+- `nixos/configs/complete-production.nix` now configures Penpot via `services.rave.penpot` and stops hardcoding its database/Redis wiring; the dashboard/welcome scripts use optional snippets just like Outline/n8n.
+- The dev-minimal profile disables Penpot, and the CLI (launch/build commands) reflects that when printing service URLs.

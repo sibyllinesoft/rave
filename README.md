@@ -162,11 +162,11 @@ additional hostnames (e.g. `--domain app.dev.vm`).
 | Profile | Build Command | Notes |
 | --- | --- | --- |
 | `rave-qcow2` (default) | `nix build .#rave-qcow2` | Full production stack with Outline + n8n and higher resource defaults (12 GB RAM, 40 GB disk). |
-| `rave-qcow2-dev` | `nix build .#rave-qcow2-dev` | Lightweight dev image with Outline/n8n disabled and smaller VM footprint (≈8 GB RAM, 30 GB disk). |
+| `rave-qcow2-dev` | `nix build .#rave-qcow2-dev` | Lightweight dev image with Penpot/Outline/n8n disabled and smaller VM footprint (≈8 GB RAM, 30 GB disk). |
 
 Run `rave vm list-profiles` to print this matrix (and any future custom profiles) from the CLI.
 
-From the CLI, run `rave vm build-image --profile dev` for the lightweight variant (default `production`), or pass `--attr` if you need a custom flake output. `rave vm launch-local --profile dev` now picks the matching qcow2 and hides services that profile disables.
+From the CLI, run `rave vm build-image --profile dev` for the lightweight variant (default `production`), or pass `--attr` if you need a custom flake output. `rave vm launch-local --profile dev` now picks the matching qcow2 and hides Penpot/Outline/n8n because that profile disables them.
 
 Use `nix build .#rave-qcow2-dev` when you need a faster local iteration loop, and swap back to the full profile before publishing artifacts.
 The landing dashboard and welcome script automatically hide Outline/n8n (or any future optional services) when those modules are disabled.

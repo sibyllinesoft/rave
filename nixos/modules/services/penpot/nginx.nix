@@ -11,7 +11,7 @@ with lib;
         {
           # Penpot main application - frontend at /penpot/
           "/penpot/" = {
-            proxyPass = "http://127.0.0.1:3449/";
+            proxyPass = "http://127.0.0.1:${toString config.services.rave.penpot.frontendPort}/";
             extraConfig = ''
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
@@ -57,7 +57,7 @@ with lib;
           
           # Penpot API endpoints - backend at /api/
           "~ ^/penpot/api/" = {
-            proxyPass = "http://127.0.0.1:6060";
+            proxyPass = "http://127.0.0.1:${toString config.services.rave.penpot.backendPort}";
             extraConfig = ''
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
@@ -87,7 +87,7 @@ with lib;
           
           # Penpot export service endpoints
           "~ ^/penpot/export/" = {
-            proxyPass = "http://127.0.0.1:6061";
+            proxyPass = "http://127.0.0.1:${toString config.services.rave.penpot.exporterPort}";
             extraConfig = ''
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
@@ -116,7 +116,7 @@ with lib;
           
           # Penpot assets and media files
           "~ ^/penpot/assets/" = {
-            proxyPass = "http://127.0.0.1:6060";
+            proxyPass = "http://127.0.0.1:${toString config.services.rave.penpot.backendPort}";
             extraConfig = ''
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
@@ -143,7 +143,7 @@ with lib;
           
           # Penpot WebSocket connections for real-time collaboration
           "~ ^/penpot/ws" = {
-            proxyPass = "http://127.0.0.1:6060";
+            proxyPass = "http://127.0.0.1:${toString config.services.rave.penpot.backendPort}";
             extraConfig = ''
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
@@ -168,7 +168,7 @@ with lib;
           
           # Health check endpoint for Penpot
           "/health/penpot" = {
-            proxyPass = "http://127.0.0.1:6060/api/rpc/command/get-profile";
+            proxyPass = "http://127.0.0.1:${toString config.services.rave.penpot.backendPort}/api/rpc/command/get-profile";
             extraConfig = ''
               access_log off;
               proxy_set_header Host $host;

@@ -43,9 +43,9 @@ PROFILE_METADATA: Dict[str, Dict[str, Any]] = {
     },
     "dev": {
         "attr": "rave-qcow2-dev",
-        "description": "Slimmer build (Outline + n8n disabled, lower RAM/disk)",
+        "description": "Slimmer build (Penpot/Outline/n8n disabled, lower RAM/disk)",
         "default_image": "rave-dev-localhost.qcow2",
-        "features": {"penpot": True, "outline": False, "n8n": False},
+        "features": {"penpot": False, "outline": False, "n8n": False},
     },
 }
 

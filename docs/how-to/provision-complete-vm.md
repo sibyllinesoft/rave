@@ -75,7 +75,7 @@ This wraps the same flake output and drops the qcow2 under `run/`.
      --image artifacts/rave-complete-YYYYMMDD.qcow2 \
      --https-port 18221 --ssh-port 2224
    ```
-   For the lightweight image, use `--profile dev` (and the matching qcow2 path).
+   For the lightweight image, use `--profile dev` (and the matching qcow2 path). This profile omits Penpot, Outline, and n8n to keep resource usage low.
 2. Wait for GitLab to finish first-boot migrations (≈5–7 minutes). Watch logs with:
    ```bash
    rave vm logs localhost gitlab --follow
