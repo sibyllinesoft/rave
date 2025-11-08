@@ -282,6 +282,7 @@ in
     ../modules/services/monitoring/default.nix
     ../modules/services/nats/default.nix
     ../modules/services/coturn/default.nix
+    ../modules/services/postgresql/default.nix
     ../modules/services/mattermost/default.nix
     ../modules/services/outline/default.nix
     ../modules/services/n8n/default.nix
@@ -616,12 +617,9 @@ sops = lib.mkIf false {
 
   # ===== CORE SERVICES =====
 
-  # PostgreSQL with ALL required databases pre-configured
-  services.postgresql = {
-    enable = lib.mkForce true;
-    package = pkgs.postgresql_15;
-    
-    # Pre-create ALL required databases and users
+  services.rave.postgresql = {
+    enable = true;
+    listenAddresses = "localhost,172.17.0.1";
     ensureDatabases = [ "gitlab" "grafana" "mattermost" ];
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
@@ -629,10 +627,7 @@ sops = lib.mkIf false {
       { name = "mattermost"; ensureDBOwnership = true; }
       { name = "prometheus"; ensureDBOwnership = false; }
     ];
-    
-    # Optimized settings for VM environment (merged with listen_addresses)
     settings = {
-      listen_addresses = lib.mkForce "localhost,172.17.0.1";
       max_connections = 200;
       shared_buffers = "512MB";
       effective_cache_size = "2GB";
@@ -646,9 +641,7 @@ sops = lib.mkIf false {
       max_wal_size = "1GB";
       min_wal_size = "80MB";
     };
-    
-    # Initialize all databases with proper permissions
-    initialScript = pkgs.writeText "postgres-init.sql" ''
+    initialSql = ''
       -- Ensure required roles exist
       SELECT format('CREATE ROLE %I LOGIN', 'gitlab')
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gitlab')
