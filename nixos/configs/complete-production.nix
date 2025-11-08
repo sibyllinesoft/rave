@@ -159,6 +159,21 @@ in
     };
   };
 
+  services.rave.nats = {
+    enable = true;
+    serverName = "rave-nats";
+    port = 4222;
+    httpPort = 8222;
+    jetstream = {
+      maxMemory = "512MB";
+      maxFileStore = "2GB";
+    };
+    limits = {
+      maxConnections = 1000;
+      maxPayload = 2 * 1024 * 1024;
+    };
+  };
+
   services.rave.monitoring = {
     enable = true;
     retentionTime = "3d";
@@ -248,6 +263,7 @@ in
     # Service modules
     ../modules/services/gitlab/default.nix
     ../modules/services/monitoring/default.nix
+    ../modules/services/nats/default.nix
     ../modules/services/mattermost/default.nix
     ../modules/services/outline/default.nix
     ../modules/services/n8n/default.nix
@@ -705,34 +721,6 @@ sops = lib.mkIf false {
   };
 
   # ===== MESSAGING & MONITORING =====
-
-  # NATS with JetStream
-  services.nats = {
-    enable = true;
-    serverName = "rave-nats";
-    port = 4222;
-    
-    settings = {
-      # JetStream configuration
-      jetstream = {
-        store_dir = "/var/lib/nats/jetstream";
-        max_memory_store = 512 * 1024 * 1024;  # 512MB
-        max_file_store = 2 * 1024 * 1024 * 1024;  # 2GB
-      };
-      
-      # Connection limits
-      max_connections = 1000;
-      max_payload = 2 * 1024 * 1024;  # 2MB
-      
-      # Monitoring
-      http_port = 8222;
-      
-      # Cluster configuration disabled for single-node VM deployment
-    };
-  };
-
-  # ===== GITLAB SERVICE =====
-
 
   # ===== COTURN STUN/TURN SERVER =====
   
