@@ -191,6 +191,12 @@ in
     databases = 16;
   };
 
+  security.rave.localCerts = {
+    enable = true;
+    certDir = "/var/lib/acme/localhost";
+    commonName = "localhost";
+  };
+
   services.rave.monitoring = {
     enable = true;
     retentionTime = "3d";
@@ -291,6 +297,7 @@ in
     # Security modules
     # ../modules/security/certificates.nix  # DISABLED: Using inline certificate generation instead
     ../modules/security/hardening.nix
+    ../modules/security/local-certs/default.nix
   ];
 
 # SOPS configuration - DISABLE built-in activation to prevent conflicts
@@ -1130,90 +1137,6 @@ ${penpotCardHtml}${outlineCardHtml}${n8nCardHtml}
       Restart = "on-failure";
       RestartSec = 30;
     };
-  };
-
-  # ===== SSL CERTIFICATE CONFIGURATION =====
-
-  # Generate self-signed certificates for localhost
-  systemd.services.generate-localhost-certs = {
-    description = "Generate self-signed SSL certificates for localhost";
-    after = [ "network.target" ];
-    wantedBy = [ "multi-user.target" ];
-    
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      User = "root";
-    };
-    
-    script = ''
-      set -e
-      
-      CERT_DIR="/var/lib/acme/localhost"
-      
-      # Create certificate directory
-      mkdir -p "$CERT_DIR"
-      
-      # Only generate if certificates don't exist
-      if [[ ! -f "$CERT_DIR/cert.pem" ]]; then
-        echo "Generating SSL certificates for localhost..."
-        
-        # Generate CA private key
-        ${pkgs.openssl}/bin/openssl genrsa -out "$CERT_DIR/ca-key.pem" 4096
-        
-        # Generate CA certificate
-        ${pkgs.openssl}/bin/openssl req -new -x509 -days 365 -key "$CERT_DIR/ca-key.pem" -out "$CERT_DIR/ca.pem" -subj "/C=US/ST=CA/L=SF/O=RAVE/OU=Dev/CN=RAVE-CA"
-        
-        # Generate server private key  
-        ${pkgs.openssl}/bin/openssl genrsa -out "$CERT_DIR/key.pem" 4096
-        
-        # Generate certificate signing request
-        ${pkgs.openssl}/bin/openssl req -new -key "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.csr" -subj "/C=US/ST=CA/L=SF/O=RAVE/OU=Dev/CN=localhost"
-        
-        # Create certificate with SAN for localhost
-        cat > "$CERT_DIR/cert.conf" << EOF
-[req]
-distinguished_name = req_distinguished_name
-req_extensions = v3_req
-prompt = no
-
-[req_distinguished_name]
-C = US
-ST = CA
-L = SF
-O = RAVE
-OU = Dev
-CN = localhost
-
-[v3_req]
-keyUsage = critical, digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
-subjectAltName = @alt_names
-
-[alt_names]
-DNS.1 = localhost
-DNS.2 = rave.local
-DNS.3 = chat.localtest.me
-IP.1 = 127.0.0.1
-IP.2 = ::1
-EOF
-        
-        # Generate final certificate
-        ${pkgs.openssl}/bin/openssl x509 -req -in "$CERT_DIR/cert.csr" -CA "$CERT_DIR/ca.pem" -CAkey "$CERT_DIR/ca-key.pem" -CAcreateserial -out "$CERT_DIR/cert.pem" -days 365 -extensions v3_req -extfile "$CERT_DIR/cert.conf"
-        
-        # Set proper permissions
-        chmod 755 "$CERT_DIR"
-        chmod 644 "$CERT_DIR"/{cert.pem,ca.pem}
-        chmod 640 "$CERT_DIR/key.pem"
-        
-        # Set nginx group ownership for key access
-        chgrp nginx "$CERT_DIR"/{cert.pem,key.pem} || true
-        
-        echo "SSL certificates generated successfully!"
-      else
-        echo "SSL certificates already exist, skipping generation."
-      fi
-    '';
   };
 
   # ===== SYSTEM CONFIGURATION =====
