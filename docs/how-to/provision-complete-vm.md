@@ -40,6 +40,11 @@ This how-to combines the old "COMPLETE-BUILD" and "PRODUCTION-SECRETS-GUIDE" pla
      sops config/secrets.yaml
    ```
 4. Keep the private key out of Git and store it in your secret manager. The repo already ignores `*.age`/`*.agekey`.
+5. Run the refactor lint guard so `.sops.yaml` and `config/secrets.yaml` stay in sync:
+   ```bash
+   python scripts/secrets/lint.py
+   ```
+   See [Manage Encrypted Secrets with SOPS](manage-secrets.md) for the full rotation playbook.
 
 ## Step 3 – Build the Image
 You can use either the raw Nix build or the CLI wrapper.

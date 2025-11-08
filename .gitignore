@@ -10,6 +10,7 @@
 !.env.example
 *.secret
 secrets/
+!scripts/secrets/
 config/*.key
 config/*.cert
 config/*.pem
