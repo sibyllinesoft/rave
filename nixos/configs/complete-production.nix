@@ -181,6 +181,16 @@ in
     listeningIps = [ "0.0.0.0" ];
   };
 
+  services.rave.redis = {
+    enable = true;
+    bind = "0.0.0.0";
+    port = 6379;
+    maxMemory = "1GB";
+    maxMemoryPolicy = "allkeys-lru";
+    save = [ "900 1" "300 10" "60 10000" ];
+    databases = 16;
+  };
+
   services.rave.monitoring = {
     enable = true;
     retentionTime = "3d";
@@ -275,6 +285,7 @@ in
     ../modules/services/mattermost/default.nix
     ../modules/services/outline/default.nix
     ../modules/services/n8n/default.nix
+    ../modules/services/redis/default.nix
 
     # Security modules
     # ../modules/security/certificates.nix  # DISABLED: Using inline certificate generation instead
@@ -712,23 +723,6 @@ sops = lib.mkIf false {
       GRANT pg_monitor TO prometheus;
     '';
   };
-
-  # Single Redis instance (simplified - no clustering)
-  services.redis.servers.main = {
-    enable = true;
-    port = 6379;
-    settings = {
-      # Listen on all interfaces to allow Docker container access
-      bind = lib.mkForce "0.0.0.0";
-      maxmemory = "1GB";
-      maxmemory-policy = "allkeys-lru";
-      save = [ "900 1" "300 10" "60 10000" ];
-      # Allow multiple databases
-      databases = 16;
-    };
-  };
-
-  # ===== MESSAGING & MONITORING =====
 
   services.rave.gitlab = {
     enable = true;
