@@ -1,151 +1,384 @@
-# nixos/modules/services/monitoring/default.nix
-# Monitoring stack coordination module - extracted from P2 production config
 { config, pkgs, lib, ... }:
 
 with lib;
 
-{
-  imports = [
-    ./prometheus.nix
-    ./grafana.nix
-  ];
+let
+  cfg = config.services.rave.monitoring;
+  baseHttpsPort = toString config.services.rave.ports.https;
 
-  options = {
-    services.rave.monitoring = {
-      enable = mkEnableOption "Prometheus + Grafana monitoring stack";
-      
-      safeMode = mkOption {
+  ensureLeadingSlash = path:
+    if hasPrefix "/" path then path else "/${path}";
+
+  ensureTrailingSlash = path:
+    if hasSuffix "/" path then path else "${path}/";
+
+  normalizePath = path: ensureTrailingSlash (ensureLeadingSlash path);
+
+  pathFromUrl = url:
+    let
+      matchResult = builtins.match "https?://[^/]+(.*)" url;
+      tail = if matchResult == null || matchResult == [] then "/" else builtins.head matchResult;
+      cleaned = if tail == "" then "/" else tail;
+    in normalizePath cleaned;
+
+  grafanaDomain = cfg.grafana.domain;
+  grafanaPublicUrl =
+    if cfg.grafana.publicUrl != null then cfg.grafana.publicUrl
+    else "https://${grafanaDomain}:${baseHttpsPort}/grafana/";
+
+  grafanaLocation = pathFromUrl grafanaPublicUrl;
+  grafanaListenPort = cfg.grafana.httpPort;
+
+  promLocation = normalizePath cfg.prometheus.publicPath;
+  promPortStr = toString cfg.prometheus.port;
+
+  targetStr = port: "localhost:${toString port}";
+
+  defaultScrapes =
+    [
+      {
+        job_name = "prometheus";
+        static_configs = [{ targets = [ targetStr cfg.prometheus.port ]; }];
+      }
+      {
+        job_name = "node";
+        static_configs = [{ targets = [ targetStr cfg.exporters.node.port ]; }];
+      }
+    ]
+    ++ optionals cfg.exporters.nginx.enable [
+      {
+        job_name = "nginx";
+        static_configs = [{ targets = [ targetStr cfg.exporters.nginx.port ]; }];
+      }
+    ]
+    ++ optionals cfg.exporters.postgres.enable [
+      {
+        job_name = "postgres";
+        static_configs = [{ targets = [ targetStr cfg.exporters.postgres.port ]; }];
+      }
+    ]
+    ++ optionals cfg.exporters.redis.enable [
+      {
+        job_name = "redis";
+        static_configs = [{ targets = [ targetStr cfg.exporters.redis.port ]; }];
+      }
+    ]
+    ++ optionals cfg.nats.enable [
+      {
+        job_name = "nats";
+        static_configs = [{ targets = [ targetStr cfg.nats.metricsPort ]; }];
+      }
+    ];
+
+  grafanaHost = cfg.nginx.host;
+  monitoringProxyEnabled = cfg.nginx.addProxyLocations;
+
+  grafanaLocationAttr = grafanaLocation;
+  promLocationAttr = promLocation;
+
+in
+{
+  options.services.rave.monitoring = {
+    enable = mkEnableOption "Prometheus + Grafana monitoring stack";
+
+    scrapeInterval = mkOption {
+      type = types.str;
+      default = "30s";
+      description = "Default scrape/evaluation interval for Prometheus.";
+    };
+
+    retentionTime = mkOption {
+      type = types.str;
+      default = "3d";
+      description = "How long Prometheus should keep samples.";
+    };
+
+    grafana = {
+      domain = mkOption {
+        type = types.str;
+        default = "localhost";
+        description = "Hostname Grafana should consider canonical (used in links).";
+      };
+
+      publicUrl = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "External URL for Grafana. When null it is derived from domain + HTTPS port.";
+      };
+
+      httpPort = mkOption {
+        type = types.int;
+        default = 3000;
+        description = "Local port Grafana listens on.";
+      };
+
+      adminUser = mkOption {
+        type = types.str;
+        default = "admin";
+        description = "Default Grafana admin username.";
+      };
+
+      adminPassword = mkOption {
+        type = types.str;
+        default = "admin";
+        description = "Default Grafana admin password (override in production).";
+      };
+
+      secretKey = mkOption {
+        type = types.str;
+        default = "grafana-secret-key";
+        description = "Grafana secret key for signing cookies.";
+      };
+
+      database = {
+        type = mkOption {
+          type = types.str;
+          default = "postgres";
+          description = "Grafana database backend.";
+        };
+
+        host = mkOption {
+          type = types.str;
+          default = "localhost:5432";
+          description = "Database host:port Grafana should use.";
+        };
+
+        name = mkOption {
+          type = types.str;
+          default = "grafana";
+          description = "Database name for Grafana.";
+        };
+
+        user = mkOption {
+          type = types.str;
+          default = "grafana";
+          description = "Database user Grafana authenticates as.";
+        };
+
+        password = mkOption {
+          type = types.str;
+          default = "grafana-password";
+          description = "Database password Grafana uses (store via sops-nix).";
+        };
+      };
+    };
+
+    prometheus = {
+      port = mkOption {
+        type = types.int;
+        default = 9090;
+        description = "Prometheus listening port.";
+      };
+
+      publicPath = mkOption {
+        type = types.str;
+        default = "/prometheus/";
+        description = "Path Grafana/Prometheus are exposed under in nginx.";
+      };
+
+      extraScrapeConfigs = mkOption {
+        type = types.listOf types.attrs;
+        default = [];
+        description = "Additional scrape_configs to append to the defaults.";
+      };
+    };
+
+    exporters = {
+      node = {
+        enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Enable node exporter.";
+        };
+        port = mkOption {
+          type = types.int;
+          default = 9100;
+          description = "Node exporter port.";
+        };
+        collectors = mkOption {
+          type = types.listOf types.str;
+          default = [ "systemd" "processes" "cpu" "meminfo" "diskstats" "filesystem" ];
+          description = "Collectors to enable for node exporter.";
+        };
+      };
+
+      nginx = {
+        enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Enable nginx exporter scrape target.";
+        };
+        port = mkOption {
+          type = types.int;
+          default = 9113;
+          description = "Nginx exporter port.";
+        };
+      };
+
+      postgres = {
+        enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Enable postgres exporter scrape target.";
+        };
+        port = mkOption {
+          type = types.int;
+          default = 9187;
+          description = "Postgres exporter port.";
+        };
+        dataSourceName = mkOption {
+          type = types.str;
+          default = "postgresql://prometheus:prometheus_pass@localhost:5432/postgres?sslmode=disable";
+          description = "DSN for the postgres exporter.";
+        };
+      };
+
+      redis = {
+        enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Enable Redis exporter scrape target.";
+        };
+        port = mkOption {
+          type = types.int;
+          default = 9121;
+          description = "Redis exporter port.";
+        };
+      };
+    };
+
+    nats = {
+      enable = mkOption {
         type = types.bool;
         default = true;
-        description = "Enable SAFE mode with memory-disciplined configuration";
+        description = "Scrape the built-in NATS/JetStream monitoring endpoint.";
       };
-      
-      retention = {
-        time = mkOption {
-          type = types.str;
-          default = "3d";
-          description = "Prometheus data retention time";
-        };
-        
-        size = mkOption {
-          type = types.str;
-          default = "512MB";
-          description = "Prometheus data retention size";
-        };
+      metricsPort = mkOption {
+        type = types.int;
+        default = 7777;
+        description = "Port for the NATS monitoring endpoint.";
       };
-      
-      scrapeInterval = mkOption {
+    };
+
+    nginx = {
+      host = mkOption {
         type = types.str;
-        default = "30s";
-        description = "Default scrape interval";
+        default = "localhost";
+        description = "Virtual host key to augment with /grafana and /prometheus locations.";
+      };
+      addProxyLocations = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Whether to inject nginx proxy locations for Grafana and Prometheus.";
       };
     };
   };
-  
-  config = mkIf config.services.rave.monitoring.enable {
-    # P2: Observability and Monitoring Stack
-    # This module coordinates the monitoring services and ensures they work together
 
-    # Common monitoring configuration
-    environment.systemPackages = with pkgs; [
-      prometheus
-      grafana
-    ];
-
-    # Create monitoring user for shared access
-    users.users.monitoring = {
-      isSystemUser = true;
-      group = "monitoring";
-      home = "/var/lib/monitoring";
-      createHome = true;
-    };
-
-    users.groups.monitoring = {};
-    
-    # Enhanced monitoring system users
-    users.users.prometheus.extraGroups = [ "monitoring" ];
-    users.users.grafana.extraGroups = [ "monitoring" ];
-
-    # Firewall configuration for monitoring services
-    networking.firewall.allowedTCPPorts = [
-      3000  # Grafana
-      9090  # Prometheus (internal only in production)
-      9100  # Node Exporter
-    ];
-
-    # Log rotation for monitoring logs
-    services.logrotate.settings = {
-      prometheus = {
-        files = "/var/log/prometheus/*.log";
-        frequency = "daily";
-        rotate = if config.services.rave.monitoring.safeMode then 7 else 30;
-        compress = true;
-        delaycompress = true;
-        missingok = true;
-        notifempty = true;
-        create = "644 prometheus prometheus";
-      };
-      
-      grafana = {
-        files = "/var/log/grafana/*.log";
-        frequency = "daily";
-        rotate = if config.services.rave.monitoring.safeMode then 7 else 30;
-        compress = true;
-        delaycompress = true;
-        missingok = true;
-        notifempty = true;
-        create = "644 grafana grafana";
+  config = mkIf cfg.enable {
+    services.prometheus = {
+      enable = true;
+      port = cfg.prometheus.port;
+      retentionTime = cfg.retentionTime;
+      scrapeConfigs = defaultScrapes ++ cfg.prometheus.extraScrapeConfigs;
+      globalConfig = {
+        scrape_interval = cfg.scrapeInterval;
+        evaluation_interval = cfg.scrapeInterval;
       };
     };
 
-    # Nginx configuration for monitoring services - from P2 config
-    services.nginx.virtualHosts."rave.local".locations = mkMerge [
-      {
-        # Grafana dashboard
-        "/grafana/" = {
-          proxyPass = "http://127.0.0.1:3000/";
-          proxyWebsockets = true;
-          extraConfig = ''
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            
-            # Handle WebSocket connections for live updates
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-          '';
-        };
-        
-        # Prometheus (internal access only) - from P2
-        "/prometheus/" = {
-          proxyPass = "http://127.0.0.1:9090/";
-          extraConfig = ''
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            
-            # Restrict access to internal monitoring
-            allow 127.0.0.1;
-            allow ::1;
-            deny all;
-          '';
-        };
-      }
-    ];
-    
-    # Resource limits for monitoring services - SAFE mode from P2
-    systemd.services.prometheus.serviceConfig = mkIf config.services.rave.monitoring.safeMode {
-      MemoryMax = "256M";
-      CPUQuota = "25%";
-      OOMScoreAdjust = "100";  # Prefer killing Prometheus over critical services
+    services.prometheus.exporters.node = mkIf cfg.exporters.node.enable {
+      enable = true;
+      port = cfg.exporters.node.port;
+      enabledCollectors = cfg.exporters.node.collectors;
     };
-    
-    systemd.services.grafana.serviceConfig = mkIf config.services.rave.monitoring.safeMode {
-      MemoryMax = "128M";
-      CPUQuota = "15%";
-      OOMScoreAdjust = "50";   # Less likely to be killed than Prometheus
+
+    services.prometheus.exporters.nginx = mkIf cfg.exporters.nginx.enable {
+      enable = true;
+      port = cfg.exporters.nginx.port;
     };
+
+    services.prometheus.exporters.postgres = mkIf cfg.exporters.postgres.enable {
+      enable = true;
+      port = cfg.exporters.postgres.port;
+      dataSourceName = cfg.exporters.postgres.dataSourceName;
+    };
+
+    services.prometheus.exporters.redis = mkIf cfg.exporters.redis.enable {
+      enable = true;
+      port = cfg.exporters.redis.port;
+    };
+
+    services.grafana = {
+      enable = true;
+      settings = {
+        server = {
+          http_port = grafanaListenPort;
+          domain = grafanaDomain;
+          root_url = grafanaPublicUrl;
+          serve_from_sub_path = true;
+        };
+        database = {
+          inherit (cfg.grafana.database) type host name user password;
+        };
+        security = {
+          admin_user = cfg.grafana.adminUser;
+          admin_password = cfg.grafana.adminPassword;
+          secret_key = cfg.grafana.secretKey;
+          cookie_secure = true;
+          cookie_samesite = "strict";
+        };
+        analytics = {
+          reporting_enabled = false;
+          check_for_updates = false;
+        };
+      };
+      provision = {
+        enable = true;
+        datasources.settings.datasources = [
+          {
+            name = "Prometheus";
+            type = "prometheus";
+            access = "proxy";
+            url = "http://localhost:${promPortStr}";
+            isDefault = true;
+          }
+          {
+            name = "PostgreSQL";
+            type = "postgres";
+            access = "proxy";
+            url = cfg.grafana.database.host;
+            database = cfg.grafana.database.name;
+            user = cfg.grafana.database.user;
+            password = cfg.grafana.database.password;
+          }
+        ];
+      };
+    };
+
+    systemd.services.grafana.after = mkAfter [ "postgresql.service" "generate-localhost-certs.service" ];
+    systemd.services.grafana.requires = mkAfter [ "postgresql.service" ];
+
+    services.nginx.virtualHosts."${grafanaHost}".locations."${grafanaLocationAttr}" =
+      mkIf monitoringProxyEnabled {
+        proxyPass = "http://127.0.0.1:${toString grafanaListenPort}/";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_set_header Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        '';
+      };
+
+    services.nginx.virtualHosts."${grafanaHost}".locations."${promLocationAttr}" =
+      mkIf monitoringProxyEnabled {
+        proxyPass = "http://127.0.0.1:${promPortStr}/";
+        extraConfig = ''
+          proxy_set_header Host "$host:$rave_forwarded_port";
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        '';
+      };
   };
 }

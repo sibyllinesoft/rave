@@ -159,6 +159,25 @@ in
     };
   };
 
+  services.rave.monitoring = {
+    enable = true;
+    retentionTime = "3d";
+    grafana = {
+      domain = "localhost";
+      publicUrl = "https://localhost:${baseHttpsPort}/grafana/";
+      adminUser = "admin";
+      adminPassword = "admin123";
+      secretKey = "grafana-production-secret-key";
+      database = {
+        host = "localhost:5432";
+        name = "grafana";
+        user = "grafana";
+        password = "grafana-production-password";
+      };
+    };
+    exporters.postgres.dataSourceName = "postgresql://prometheus:prometheus_pass@localhost:5432/postgres?sslmode=disable";
+  };
+
   services.rave.mattermost = {
     enable = true;
     siteName = "RAVE Mattermost";
@@ -228,6 +247,7 @@ in
 
     # Service modules
     ../modules/services/gitlab/default.nix
+    ../modules/services/monitoring/default.nix
     ../modules/services/mattermost/default.nix
     ../modules/services/outline/default.nix
     ../modules/services/n8n/default.nix
@@ -711,125 +731,8 @@ sops = lib.mkIf false {
     };
   };
 
-  # Prometheus monitoring
-  services.prometheus = {
-    enable = true;
-    port = 9090;
-    retentionTime = "3d";
-    
-    scrapeConfigs = [
-      {
-        job_name = "prometheus";
-        static_configs = [{ targets = [ "localhost:9090" ]; }];
-      }
-      {
-        job_name = "node";
-        static_configs = [{ targets = [ "localhost:9100" ]; }];
-      }
-      {
-        job_name = "nginx";
-        static_configs = [{ targets = [ "localhost:9113" ]; }];
-      }
-      {
-        job_name = "postgres";
-        static_configs = [{ targets = [ "localhost:9187" ]; }];
-      }
-      {
-        job_name = "redis";
-        static_configs = [{ targets = [ "localhost:9121" ]; }];
-      }
-      {
-        job_name = "nats";
-        static_configs = [{ targets = [ "localhost:7777" ]; }];
-      }
-    ];
-  };
-
-  # Prometheus exporters
-  services.prometheus.exporters = {
-    node = {
-      enable = true;
-      port = 9100;
-      enabledCollectors = [ "systemd" "processes" "cpu" "meminfo" "diskstats" "filesystem" ];
-    };
-    
-    nginx = {
-      enable = true;
-      port = 9113;
-    };
-    
-    postgres = {
-      enable = true;
-      port = 9187;
-      dataSourceName = "postgresql://prometheus:prometheus_pass@localhost:5432/postgres?sslmode=disable";
-    };
-    
-    redis = {
-      enable = true;
-      port = 9121;
-    };
-  };
-
   # ===== GITLAB SERVICE =====
 
-
-  # ===== GRAFANA SERVICE =====
-
-  services.grafana = {
-    enable = true;
-    settings = {
-      server = {
-        http_port = 3000;
-        domain = "localhost";  # Changed from rave.local to localhost  
-        root_url = "https://localhost:${baseHttpsPort}/grafana/";
-        serve_from_sub_path = true;
-      };
-
-      database = {
-        type = "postgres";
-        host = "localhost:5432";
-        name = "grafana";
-        user = "grafana";
-        password = "grafana-production-password";
-      };
-
-      security = {
-        admin_user = "admin";
-        admin_password = "admin123";
-        secret_key = "grafana-production-secret-key";
-        cookie_secure = true;
-        cookie_samesite = "strict";
-      };
-
-      analytics = {
-        reporting_enabled = false;
-        check_for_updates = false;
-      };
-    };
-
-    # Pre-configured datasources
-    provision = {
-      enable = true;
-      datasources.settings.datasources = [
-        {
-          name = "Prometheus";
-          type = "prometheus";
-          access = "proxy";
-          url = "http://localhost:9090";
-          isDefault = true;
-        }
-        {
-          name = "PostgreSQL";
-          type = "postgres";
-          access = "proxy";
-          url = "localhost:5432";
-          database = "postgres";
-          user = "grafana";
-          password = "grafana-production-password";
-        }
-      ];
-    };
-  };
 
   # ===== COTURN STUN/TURN SERVER =====
   
@@ -1021,27 +924,6 @@ ${penpotCardHtml}${outlineCardHtml}${n8nCardHtml}
             return = "302 ${mattermostPublicUrl}/";
           };
 
-
-          "/grafana/" = {
-            proxyPass = "http://127.0.0.1:3000/";
-            proxyWebsockets = true;
-            extraConfig = ''
-              proxy_set_header Host "$host:$rave_forwarded_port";
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-            '';
-          };
-
-          "/prometheus/" = {
-            proxyPass = "http://127.0.0.1:9090/";
-            extraConfig = ''
-              proxy_set_header Host "$host:$rave_forwarded_port";
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-            '';
-          };
 
           "/nats/" = {
             proxyPass = "http://127.0.0.1:8222/";
