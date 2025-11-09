@@ -57,6 +57,15 @@ export interface ServiceBreakdownItem {
   warnings: string[];
 }
 
+export type ServiceBucket = 'application' | 'data';
+
+export interface VmBucketPlan {
+  id: ServiceBucket;
+  label: string;
+  serviceIds: string[];
+  estimate: VMEstimate;
+}
+
 export interface ProvisioningSnapshot {
   breakdown: ServiceBreakdownItem[];
   totals: ResourceFootprint & { cost: number };
@@ -65,4 +74,5 @@ export interface ProvisioningSnapshot {
   savingsTips: string[];
   warnings: string[];
   estimate: VMEstimate;
+  bucketPlans: VmBucketPlan[];
 }

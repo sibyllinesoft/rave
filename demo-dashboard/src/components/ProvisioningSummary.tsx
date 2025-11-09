@@ -39,6 +39,12 @@ export const ProvisioningSummary = ({
     cost: useDeltaPulse(totals.cost),
   };
 
+  const activeBuckets = snapshot.bucketPlans.filter(plan => plan.serviceIds.length > 0 && plan.estimate.estimatedCost > 0);
+  const vmLabel = activeBuckets.length ? `${activeBuckets.length} VM${activeBuckets.length > 1 ? 's' : ''}` : 'No VMs';
+  const vmSubtitle = activeBuckets.length
+    ? activeBuckets.map(plan => plan.label).join(' · ')
+    : 'Add services to generate dedicated plans.';
+
   const containerClasses =
     layout === 'panel'
       ? 'rounded-[var(--radius-card)] border border-[color:var(--color-stroke)]/40 bg-[color:var(--color-bg-1)] shadow-elevated'
@@ -53,7 +59,8 @@ export const ProvisioningSummary = ({
           </p>
           <h3 className="text-[20px] font-semibold text-[color:var(--color-text-1)]">Always-on totals</h3>
           <p className="text-xs text-[color:var(--color-muted)] mt-1">
-            Hetzner quote: ${snapshot.estimate.estimatedCost.toFixed(0)}/mo · {snapshot.estimate.recommendedInstanceType}
+            Hetzner quote: ${snapshot.estimate.estimatedCost.toFixed(0)}/mo · {vmLabel}
+            <span className="block text-[color:var(--color-text-2)]/80">{vmSubtitle}</span>
           </p>
         </div>
         <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
@@ -84,6 +91,35 @@ export const ProvisioningSummary = ({
             delta={deltas[metric.key]}
           />
         ))}
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-xs text-[color:var(--color-muted)]">
+          <span>Dedicated VMs by tier</span>
+          <span>Total: ${snapshot.estimate.estimatedCost.toFixed(0)}/mo</span>
+        </div>
+        <div className="space-y-2">
+          {snapshot.bucketPlans.map(plan => (
+            <div
+              key={plan.id}
+              className="rounded-[var(--radius-control)] border border-[color:var(--color-stroke)]/30 bg-[color:var(--color-bg-2)]/60 p-4"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--color-muted)]">{plan.label}</p>
+                  <p className="text-sm text-[color:var(--color-text-1)]">{plan.estimate.recommendedInstanceType}</p>
+                  <p className="text-xs text-[color:var(--color-muted)]">
+                    {plan.serviceIds.length ? `${plan.serviceIds.length} service${plan.serviceIds.length > 1 ? 's' : ''}` : 'No services assigned'}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-lg font-semibold text-[color:var(--color-text-1)]">${plan.estimate.estimatedCost.toFixed(0)}/mo</p>
+                  <p className="text-xs text-[color:var(--color-muted)]">{plan.estimate.totalCpu} vCPU · {plan.estimate.totalMemory} GB</p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="space-y-3">
@@ -119,17 +155,6 @@ export const ProvisioningSummary = ({
           </div>
         )}
       </div>
-
-      {snapshot.warnings.length > 0 && (
-        <div className="rounded-[var(--radius-control)] border border-[color:var(--color-danger)]/40 bg-[color:var(--color-danger)]/10 p-3 text-sm text-[color:var(--color-danger)]" role="alert">
-          <p className="font-semibold">Warnings</p>
-          <ul className="mt-1 list-disc pl-4">
-            {snapshot.warnings.map(warning => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       <div className={`flex flex-col gap-3 ${layout === 'drawer' ? 'md:flex-row md:items-center md:justify-between' : 'md:flex-row md:items-center md:justify-between'}`}>
         <div className="text-xs text-[color:var(--color-muted)]">

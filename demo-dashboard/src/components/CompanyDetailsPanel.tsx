@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { CompanyDetails } from '../types';
 import * as Icons from 'lucide-react';
 
@@ -19,8 +20,25 @@ const cicdOptions = [
 ] as const;
 
 export const CompanyDetailsPanel = ({ details, onUpdate }: CompanyDetailsPanelProps) => {
+  const [draftDetails, setDraftDetails] = useState(details);
+  const lastCommittedRef = useRef(details);
+
+  useEffect(() => {
+    setDraftDetails(details);
+    lastCommittedRef.current = details;
+  }, [details]);
+
   const updateField = <K extends keyof CompanyDetails>(field: K, value: CompanyDetails[K]) => {
-    onUpdate({ ...details, [field]: value });
+    setDraftDetails(prev => ({ ...prev, [field]: value }));
+  };
+
+  const commitDraft = (override?: CompanyDetails) => {
+    const payload = override ?? draftDetails;
+    if (lastCommittedRef.current === payload) {
+      return;
+    }
+    lastCommittedRef.current = payload;
+    onUpdate(payload);
   };
 
   return (
@@ -34,92 +52,78 @@ export const CompanyDetailsPanel = ({ details, onUpdate }: CompanyDetailsPanelPr
       </header>
 
       <div className="space-y-6 px-6 py-6">
-        <TextField
-          label="Company name"
-          placeholder="Acme DevLab"
-          value={details.name}
-          onChange={value => updateField('name', value)}
-        />
-
         <div className="grid gap-4 md:grid-cols-2">
           <NumberField
-            label="Team size"
-            subtitle="People committing code"
-            value={details.teamSize}
+            label="Developers"
+            value={draftDetails.teamSize}
             min={1}
             max={500}
             onChange={value => updateField('teamSize', value)}
+            onCommit={commitDraft}
           />
           <NumberField
-            label="Concurrent users"
-            subtitle="Seats signed in at once"
-            value={details.concurrentUsers}
+            label="Total users"
+            value={draftDetails.concurrentUsers}
             min={1}
             max={1000}
             onChange={value => updateField('concurrentUsers', value)}
+            onCommit={commitDraft}
           />
         </div>
 
         <SegmentGroup
           label="Development activity"
-          value={details.developmentIntensity}
+          value={draftDetails.developmentIntensity}
           options={devIntensityOptions}
-          onChange={value => updateField('developmentIntensity', value as CompanyDetails['developmentIntensity'])}
+          onChange={value => {
+            const nextValue = value as CompanyDetails['developmentIntensity'];
+            const nextDetails = { ...draftDetails, developmentIntensity: nextValue };
+            setDraftDetails(nextDetails);
+            commitDraft(nextDetails);
+          }}
         />
 
         <SegmentGroup
           label="CI/CD usage"
-          value={details.cicdUsage}
+          value={draftDetails.cicdUsage}
           options={cicdOptions}
-          onChange={value => updateField('cicdUsage', value as CompanyDetails['cicdUsage'])}
+          onChange={value => {
+            const nextValue = value as CompanyDetails['cicdUsage'];
+            const nextDetails = { ...draftDetails, cicdUsage: nextValue };
+            setDraftDetails(nextDetails);
+            commitDraft(nextDetails);
+          }}
         />
       </div>
     </section>
   );
 };
 
-interface TextFieldProps {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-  type?: string;
-}
-
-const TextField = ({ label, value, onChange, placeholder, type = 'text' }: TextFieldProps) => (
-  <div>
-    <label className="text-sm font-medium text-[color:var(--color-text-2)]">{label}</label>
-    <input
-      type={type}
-      value={value}
-      onChange={event => onChange(event.target.value)}
-      placeholder={placeholder}
-      className="mt-1 w-full rounded-[var(--radius-control)] border border-[color:var(--color-stroke)]/40 bg-[color:var(--color-bg-2)] px-3 py-2 text-[color:var(--color-text-1)] placeholder:text-[color:var(--color-muted)] focus:border-[color:var(--color-accent)]"
-    />
-  </div>
-);
-
 interface NumberFieldProps {
   label: string;
-  subtitle?: string;
   value: number;
   min: number;
   max: number;
   onChange: (value: number) => void;
+  onCommit: () => void;
 }
 
-const NumberField = ({ label, subtitle, value, min, max, onChange }: NumberFieldProps) => (
+const NumberField = ({ label, value, min, max, onChange, onCommit }: NumberFieldProps) => (
   <div>
-    <label className="flex items-center justify-between text-sm font-medium text-[color:var(--color-text-2)]">
-      {label}
-      {subtitle && <span className="text-xs text-[color:var(--color-muted)]">{subtitle}</span>}
-    </label>
+    <label className="text-sm font-medium text-[color:var(--color-text-2)]">{label}</label>
     <input
       type="number"
       min={min}
       max={max}
       value={value}
       onChange={event => onChange(Math.min(max, Math.max(min, Number(event.target.value) || min)))}
+      onBlur={onCommit}
+      onKeyDown={event => {
+        if (event.key === 'Enter') {
+          onCommit();
+          event.currentTarget.blur();
+        }
+      }}
       className="mt-1 w-full rounded-[var(--radius-control)] border border-[color:var(--color-stroke)]/40 bg-[color:var(--color-bg-2)] px-3 py-2 text-[color:var(--color-text-1)] focus:border-[color:var(--color-accent)]"
     />
   </div>

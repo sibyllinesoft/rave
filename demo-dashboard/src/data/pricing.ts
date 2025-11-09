@@ -69,6 +69,19 @@ export const hetznerInstances: HetznerInstance[] = [
     description: "Shared CPU for demanding workloads"
   },
 
+  // High-clock shared CPU instance to bridge the 8→16 vCPU jump
+  {
+    name: "CPX51",
+    type: "shared",
+    vcpu: 16,
+    memory: 32,
+    storage: 360,
+    monthlyPrice: 64.9,
+    hourlyPrice: 0.098,
+    network: "10 Gbps",
+    description: "16 vCPU high-clock shared CPU before moving to dedicated"
+  },
+
   // Dedicated CPU instances
   {
     name: "CCX12",
