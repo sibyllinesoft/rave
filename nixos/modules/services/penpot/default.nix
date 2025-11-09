@@ -5,6 +5,12 @@ with lib;
 
 let
   cfg = config.services.rave.penpot;
+  redisPlatform = config.services.rave.redis.platform or {};
+  sharedAllocations = redisPlatform.allocations or {};
+  sharedRedisUnit = redisPlatform.unit or "redis-main.service";
+  sharedRedisHost = redisPlatform.dockerHost or "172.17.0.1";
+  sharedRedisPort = redisPlatform.port or 6379;
+  sharedRedisDb = sharedAllocations.penpot or 10;
 
   dbPasswordExpr = if cfg.database.passwordFile != null
     then "$(cat ${cfg.database.passwordFile})"
@@ -14,13 +20,20 @@ let
     then "$(cat ${cfg.oidc.clientSecretFile})"
     else cfg.oidc.clientSecret;
 
-  redisUri = "redis://${cfg.redis.host}:${toString cfg.redis.port}/${toString cfg.redis.database}";
+  redisHost = if cfg.redis.host != null then cfg.redis.host else sharedRedisHost;
+  defaultRedisPort = if cfg.managedRedis then 6380 else sharedRedisPort;
+  redisPort = if cfg.redis.port != null then cfg.redis.port else defaultRedisPort;
+  redisDatabase = if cfg.redis.database != null then cfg.redis.database else sharedRedisDb;
+  redisUri = "redis://${redisHost}:${toString redisPort}/${toString redisDatabase}";
+  redisDependencyUnits =
+    if cfg.managedRedis
+    then [ "redis-penpot.service" ]
+    else [ sharedRedisUnit ];
+
   backendPortStr = toString cfg.backendPort;
   exporterPortStr = toString cfg.exporterPort;
   frontendPortStr = toString cfg.frontendPort;
   publicUrl = cfg.publicUrl;
-
-  mkEnableList = servers: map (name: "redis-${name}.service") servers;
 in {
   options.services.rave.penpot = {
     enable = mkEnableOption "Penpot design tool with PostgreSQL and Redis backends";
@@ -113,22 +126,28 @@ in {
 
     redis = {
       host = mkOption {
-        type = types.str;
-        default = "127.0.0.1";
-        description = "Redis host for Penpot";
+        type = types.nullOr types.str;
+        default = null;
+        description = ''Override for the Redis host Penpot should reach (defaults to the shared platform Redis host).'';
       };
 
       port = mkOption {
-        type = types.int;
-        default = 6380;
-        description = "Redis port for Penpot";
+        type = types.nullOr types.int;
+        default = null;
+        description = "Override for the Redis port Penpot should reach (defaults to the shared platform Redis port).";
       };
 
       database = mkOption {
-        type = types.int;
-        default = 0;
-        description = "Redis database index";
+        type = types.nullOr types.int;
+        default = null;
+        description = "Redis database index (defaults to services.rave.redis.allocations.penpot).";
       };
+    };
+
+    managedRedis = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Provision a dedicated redis-penpot.service instead of using the shared platform Redis.";
     };
 
     oidc = {
@@ -169,27 +188,15 @@ in {
     services.postgresql.ensureUsers = mkAfter [
       { name = cfg.database.username; ensureDBOwnership = true; }
     ];
-    services.postgresql.initialScript = mkAfter ''
-      SELECT format('CREATE ROLE %I LOGIN', '${cfg.database.username}')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${cfg.database.username}')
-      \gexec
-
-      SELECT format('CREATE DATABASE %I OWNER %I', '${cfg.database.name}', '${cfg.database.username}')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${cfg.database.name}')
-      \gexec
-
-      GRANT ALL PRIVILEGES ON DATABASE ${cfg.database.name} TO ${cfg.database.username};
-      ALTER USER ${cfg.database.username} WITH PASSWORD '${dbPasswordExpr}';
-    '';
     systemd.services.postgresql.postStart = mkAfter ''
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER ${cfg.database.username} PASSWORD '${dbPasswordExpr}';" || true
     '';
 
-    services.redis.servers.penpot = {
+    services.redis.servers.penpot = mkIf cfg.managedRedis {
       enable = true;
-      port = cfg.redis.port;
-      bind = "127.0.0.1";
-      databases = cfg.redis.database + 1;
+      port = redisPort;
+      bind = "0.0.0.0";
+      databases = redisDatabase + 1;
       settings = {
         maxmemory = "256MB";
         maxmemory-policy = "allkeys-lru";
@@ -202,8 +209,8 @@ in {
     systemd.services.penpot-backend = {
       description = "Penpot Backend";
       wantedBy = [ "multi-user.target" ];
-      after = [ "docker.service" "postgresql.service" "redis-penpot.service" ];
-      requires = [ "docker.service" "postgresql.service" "redis-penpot.service" ];
+      after = [ "docker.service" "postgresql.service" ] ++ redisDependencyUnits;
+      requires = [ "docker.service" "postgresql.service" ] ++ redisDependencyUnits;
 
       environment = {
         PENPOT_FLAGS = "enable-registration enable-login-with-oidc disable-email-verification enable-prepl-server";

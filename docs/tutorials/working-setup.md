@@ -55,10 +55,10 @@ rave vm build-image
 ### Configuration
 - `flake.nix` - Main Nix build configuration
 - `nixos/configs/complete-production.nix` - VM service configuration
-- `rave-complete-localhost.qcow2` - Working VM image
+- `artifacts/legacy-qcow/rave-complete-localhost.qcow2` - Legacy working image (used as emergency fallback; prefer flake builds).
 
 ### Backups
-- `rave-complete-localhost.qcow2.backup` - Original image backup
+- `artifacts/legacy-qcow/rave-complete-localhost.qcow2.backup` - Original image backup (kept outside the repo root).
 
 ## 🛠️ CLI Tools
 

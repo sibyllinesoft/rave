@@ -1,7 +1,7 @@
 { lib, ... }:
 {
   imports = [
-    ./complete-production.nix
+    ./production.nix
   ];
 
   config = {

@@ -25,8 +25,8 @@ export PATH="$PATH:/home/nathan/Projects/rave/cli"
 ## Quick Start
 
 ```bash
-# Create a company development environment
-rave vm create acme-corp --keypair ~/.ssh/id_ed25519
+# Create a company development environment (development profile by default)
+rave vm create acme-corp --profile development --keypair ~/.ssh/id_ed25519
 
 # Start the VM
 rave vm start acme-corp
@@ -50,7 +50,7 @@ rave user list --company acme-corp
 ## Commands
 
 ### VM Management
-- `rave vm create <company> --keypair <path>` - Create company VM
+- `rave vm create <company> [--profile <name>] --keypair <path>` - Create company VM
 - `rave vm start <company>` - Start VM
 - `rave vm stop <company>` - Stop VM  
 - `rave vm status [company] [--all]` - Show VM status

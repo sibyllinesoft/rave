@@ -43,6 +43,21 @@ if (( pattern_hits == 0 )); then
   info "No tracked VM/container artifacts detected"
 fi
 
+info "Scanning working tree for QCOW images outside artifacts/"
+qcow_hits=0
+while IFS= read -r -d '' qcow; do
+  warn "QCOW image outside artifacts/: ${qcow#./}"
+  qcow_hits=1
+done < <(find . \
+    -path "./.git" -prune -o \
+    -path "./artifacts" -prune -o \
+    -name '*.qcow2' -print0)
+if (( qcow_hits == 0 )); then
+  info "No QCOW images detected outside artifacts/"
+else
+  warn "Move the files above under artifacts/ (see artifacts/README.md)."
+fi
+
 info "Listing untracked directories not covered by .gitignore"
 untracked=$(git ls-files --others --directory --exclude-standard)
 if [[ -n "$untracked" ]]; then

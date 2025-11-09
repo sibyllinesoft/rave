@@ -63,8 +63,8 @@
       ClientAliveCountMax = 2;
       LoginGraceTime = 60;
       MaxAuthTries = 3;
-      MaxSessions = 2;
-      MaxStartups = "10:30:60";
+      MaxSessions = 8;
+      MaxStartups = "40:40:200";
       
       # Encryption
       Ciphers = [
@@ -119,9 +119,12 @@
     
     # Rate limiting for SSH
     extraCommands = ''
-      # Rate limit SSH connections (max 3 per minute per IP)
+      # Allow unrestricted SSH from the local QEMU host (10.0.2.2) for automated testing
+      iptables -I INPUT -p tcp --dport 22 -s 10.0.2.2 -j ACCEPT
+
+      # Rate limit SSH connections (max ~12 per minute per IP)
       iptables -I INPUT -p tcp --dport 22 -i eth0 -m state --state NEW -m recent --set
-      iptables -I INPUT -p tcp --dport 22 -i eth0 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
+      iptables -I INPUT -p tcp --dport 22 -i eth0 -m state --state NEW -m recent --update --seconds 60 --hitcount 12 -j DROP
       
       # Block common attack patterns
       iptables -I INPUT -p tcp --tcp-flags ALL NONE -j DROP

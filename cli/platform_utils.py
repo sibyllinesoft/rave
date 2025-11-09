@@ -49,7 +49,7 @@ class PlatformManager:
     
     def get_nix_build_command(self) -> List[str]:
         """Get Nix build command with platform-specific flags."""
-        base_cmd = ["nix", "build"]
+        base_cmd = ["nix", "build", "--impure"]
         
         if self.is_apple_silicon():
             # Apple Silicon may need Rosetta 2 for x86_64 builds

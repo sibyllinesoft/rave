@@ -35,9 +35,10 @@
   outputs = { self, nixpkgs, nixos-generators, sops-nix, ... }:
     let
       system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
       
       # Build-time port configuration (can be overridden)
-      makeVmModules = { httpsPort ? 8443, configModule ? ./nixos/configs/complete-production.nix }: [
+      makeVmModules = { httpsPort ? 8443, configModule ? ./nixos/configs/production.nix }: [
         configModule
         sops-nix.nixosModules.sops
         "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
@@ -70,68 +71,139 @@
         })
       ];
       
-      vmModules = makeVmModules {}; # Default port 8443
-      devVmModules = makeVmModules { configModule = ./nixos/configs/dev-minimal.nix; };
+      vmModules = makeVmModules {}; # Default prod profile, port 8443
+      devVmModules = makeVmModules { configModule = ./nixos/configs/development.nix; };
+      demoVmModules = makeVmModules { configModule = ./nixos/configs/demo.nix; };
     in {
-    # P2.2: NixOS VM test infrastructure
-    tests.x86_64-linux = {
-        rave-vm = import ./tests/rave-vm.nix { pkgs = nixpkgs.legacyPackages.x86_64-linux; };
-    };
+      nixosTests = {
+        minimal-vm = import ./tests/minimal-vm.nix {
+          inherit pkgs;
+          sopsModule = sops-nix.nixosModules.sops;
+        };
+        full-stack = import ./tests/full-stack.nix {
+          inherit pkgs;
+          sopsModule = sops-nix.nixosModules.sops;
+        };
+      };
 
-    # VM image packages - Production only
+      checks.${system} = {
+        minimal-test = self.nixosTests.minimal-vm;
+        full-stack = self.nixosTests.full-stack;
+      };
+
+    # VM image packages exposed via meaningful profile names
     packages.${system} = rec {
-      # Complete production image - ALL services pre-configured and ready (default port 8443)
-      rave-qcow2 = nixos-generators.nixosGenerate {
+      production = nixos-generators.nixosGenerate {
         inherit system;
         format = "qcow";
         customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
         modules = vmModules;
       };
 
-      # Custom port build function - usage: nix build --override-input httpsPort 9443
-      rave-qcow2-custom-port = httpsPort: nixos-generators.nixosGenerate {
-        inherit system;
-        format = "qcow";
-        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
-        modules = makeVmModules { inherit httpsPort; };
-      };
-
-      # Common port variants
-      rave-qcow2-port-7443 = nixos-generators.nixosGenerate {
+      productionPort7443 = nixos-generators.nixosGenerate {
         inherit system;
         format = "qcow";
         customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
         modules = makeVmModules { httpsPort = 7443; };
       };
 
-      rave-qcow2-port-9443 = nixos-generators.nixosGenerate {
+      productionPort9443 = nixos-generators.nixosGenerate {
         inherit system;
         format = "qcow";
         customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
         modules = makeVmModules { httpsPort = 9443; };
       };
 
-      # Lightweight dev image (Outline/n8n disabled, reduced resources)
-      rave-qcow2-dev = nixos-generators.nixosGenerate {
+      productionWithPort =
+        let
+          mkImage = { httpsPort ? 8443 }:
+            nixos-generators.nixosGenerate {
+              inherit system;
+              format = "qcow";
+              customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
+              modules = makeVmModules { inherit httpsPort; };
+            };
+
+          makeOverridableImage = args:
+            let
+              result = mkImage args;
+            in
+              result // {
+                override = moreArgs: makeOverridableImage (args // moreArgs);
+              };
+        in
+          makeOverridableImage {};
+
+      development = nixos-generators.nixosGenerate {
         inherit system;
         format = "qcow";
         customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
         modules = devVmModules;
       };
 
-      default = rave-qcow2;
+      demo = nixos-generators.nixosGenerate {
+        inherit system;
+        format = "qcow";
+        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
+        modules = demoVmModules;
+      };
+
+      default = production;
+
+      # Legacy aliases (to be removed once CLI migrates)
+      rave-qcow2 = production;
+      rave-qcow2-port-7443 = productionPort7443;
+      rave-qcow2-port-9443 = productionPort9443;
+      rave-qcow2-custom-port = productionWithPort;
+      rave-qcow2-dev = development;
 
       # RAVE CLI - Main management interface
-      rave-cli = nixpkgs.legacyPackages.${system}.writeShellScriptBin "rave" ''
-        export PATH="${nixpkgs.legacyPackages.${system}.python3.withPackages (ps: [ ps.click ])}/bin:$PATH"
+      rave-cli = pkgs.writeShellScriptBin "rave" ''
+        export PATH="${pkgs.python3.withPackages (ps: [ ps.click ])}/bin:$PATH"
         cd ${./.}
         exec python3 cli/rave "$@"
       '';
     };
+
+    profileMetadata = {
+      production = {
+        attr = "production";
+        description = "Full stack (GitLab, Mattermost, Penpot, Outline, n8n, observability)";
+        defaultImage = "rave-production-localhost.qcow2";
+        features = {
+          penpot = true;
+          outline = true;
+          n8n = true;
+          monitoring = true;
+        };
+      };
+      development = {
+        attr = "development";
+        description = "Slimmer build (Penpot/Outline/n8n disabled, lower RAM/disk)";
+        defaultImage = "rave-development-localhost.qcow2";
+        features = {
+          penpot = false;
+          outline = false;
+          n8n = false;
+          monitoring = true;
+        };
+      };
+      demo = {
+        attr = "demo";
+        description = "Demo-friendly stack (observability + optional apps disabled)";
+        defaultImage = "rave-demo-localhost.qcow2";
+        features = {
+          penpot = false;
+          outline = false;
+          n8n = false;
+          monitoring = false;
+        };
+      };
+    };
     
     # Development shell with CLI
-    devShells.${system}.default = nixpkgs.legacyPackages.${system}.mkShell {
-      buildInputs = with nixpkgs.legacyPackages.${system}; [
+    devShells.${system}.default = pkgs.mkShell {
+      buildInputs = with pkgs; [
         python3
         python3Packages.click
         qemu

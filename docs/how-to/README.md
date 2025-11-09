@@ -6,6 +6,7 @@ Audience: operators who already know the basics and need concise steps.
 - [Repo Hygiene Checklist](repo-hygiene.md)
 - [Provision a Complete RAVE VM](provision-complete-vm.md)
 - [Manage Encrypted Secrets with SOPS](manage-secrets.md)
+- [Understand the GitLab ↔ Mattermost Integration](gitlab-mattermost-integration.md)
 
 ## Backlog
 - Provision a new tenant VM with secrets synced via the CLI

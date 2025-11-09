@@ -206,12 +206,12 @@ class VMManager:
                 return port
         raise RuntimeError(f"Could not find available port in range {start_port}-{start_port + max_attempts}")
     
-    def _build_vm_image(self, company_name: str = None, ssh_public_key: str = None) -> Dict[str, any]:
-        """Build VM image using Nix."""
+    def _build_vm_image(self, profile_attr: str) -> Dict[str, any]:
+        """Build VM image using Nix for the requested profile."""
         try:
             # For now, custom company builds reuse the shared qcow2 artifact.
             nix_cmd = self.platform.get_nix_build_command()
-            nix_cmd.extend(["--show-trace", ".#rave-qcow2"])
+            nix_cmd.extend(["--show-trace", f".#{profile_attr}"])
 
             result = subprocess.run(
                 nix_cmd,
@@ -224,7 +224,7 @@ class VMManager:
 
             if result.returncode != 0:
                 warning = (
-                    "nix build .#rave-qcow2 failed; falling back to default build"
+                    f"nix build .#{profile_attr} failed; falling back to default build"
                 )
                 fallback_cmd = self.platform.get_nix_build_command()
                 fallback_cmd.extend(["--show-trace"])
@@ -565,11 +565,19 @@ exit
             remote_cmd
         ]
 
-        for attempt in range(12):
+        max_attempts = 30
+        delay_seconds = 6
+
+        for attempt in range(1, max_attempts + 1):
             result = subprocess.run(ssh_cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 return True
-            time.sleep(5)
+
+            print(
+                f"⏳ Waiting for VM SSH to accept key injection "
+                f"({attempt}/{max_attempts})..."
+            )
+            time.sleep(delay_seconds)
 
         print("⚠️  Unable to inject SSH key automatically; password login may be required")
         return False
@@ -578,10 +586,15 @@ exit
         self,
         company_name: str,
         keypair_path: str,
+        profile: str,
+        profile_attr: str,
+        default_image_path: Path,
         age_key_path: Optional[Path] = None,
         custom_ports: Optional[Dict[str, int]] = None,
+        *,
+        skip_build: bool = False,
     ) -> Dict[str, any]:
-        """Create a new company VM."""
+        """Create a new company VM for the requested profile."""
         if self._load_vm_config(company_name):
             return {"success": False, "error": f"VM '{company_name}' already exists"}
 
@@ -603,23 +616,34 @@ exit
         except Exception as exc:
             return {"success": False, "error": f"Failed to read public key: {exc}"}
 
-        build_result = self._build_vm_image(company_name, ssh_public_key)
-        if not build_result["success"]:
-            print(f"⚠️  Build failed: {build_result['error']}")
-            print("🔄 Will attempt to use existing working image...")
-            image_source: Optional[Path] = None
+        image_source: Optional[Path] = None
+        if skip_build:
+            build_result = {"success": False, "error": "build skipped"}
         else:
+            build_result = self._build_vm_image(profile_attr)
+
+        if build_result.get("success"):
             built_image = build_result.get("image")
             image_source = Path(built_image) if built_image else None
             if image_source and not image_source.exists():
                 print("⚠️  Built image path not found; falling back to cached image")
                 image_source = None
+        else:
+            if not skip_build:
+                print(f"⚠️  Build failed: {build_result.get('error', 'unknown error')}")
+                print("🔄 Will attempt to use existing working image...")
 
         http_port, https_port, ssh_port, test_port = self._get_port_range(custom_ports)
+
+        repo_root = default_image_path.parent if default_image_path else Path.cwd()
+        image_filename = f"{company_name}-{profile}.qcow2"
+        target_image_path = repo_root / image_filename
 
         config: Dict[str, any] = {
             "name": company_name,
             "keypair": str(keypair_path),
+            "profile": profile,
+            "profile_attr": profile_attr,
             "ssh_public_key": ssh_public_key,
             "ports": {
                 "http": http_port,
@@ -629,25 +653,42 @@ exit
             },
             "status": "stopped",
             "created_at": time.time(),
-            "image_path": f"/home/nathan/Projects/rave/{company_name}-dev.qcow2",
+            "image_path": str(target_image_path),
         }
 
         try:
-            repo_root = Path.cwd()
             if image_source and image_source.exists():
-                shutil.copy2(image_source, config["image_path"])
-            elif (repo_root / "rave-complete-localhost.qcow2").exists():
-                print(f"Using existing working image for {company_name}")
-                shutil.copy2(
-                    repo_root / "rave-complete-localhost.qcow2", config["image_path"]
-                )
+                shutil.copy2(image_source, target_image_path)
+            elif default_image_path and default_image_path.exists():
+                print(f"Using existing {profile} profile image at {default_image_path}")
+                shutil.copy2(default_image_path, target_image_path)
             else:
-                return {"success": False, "error": "No VM image available"}
+                legacy_candidates = [
+                    repo_root / "rave-complete-localhost.qcow2",
+                    repo_root / "artifacts" / "legacy-qcow" / "rave-complete-localhost.qcow2",
+                ]
+                legacy_image = next((path for path in legacy_candidates if path.exists()), None)
+                if legacy_image:
+                    warning = (
+                        "Legacy rave-complete-localhost.qcow2 image reused; "
+                        f"build the '{profile}' profile with 'rave vm build-image --profile {profile}' for deterministic results."
+                    )
+                    print(warning)
+                    warnings.append(warning)
+                    shutil.copy2(legacy_image, target_image_path)
+                else:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"No VM image available for profile '{profile}'. "
+                            f"Run 'rave vm build-image --profile {profile}' before creating tenants."
+                        ),
+                    }
 
-            Path(config["image_path"]).chmod(0o644)
+            target_image_path.chmod(0o644)
 
             injection_result = self._inject_ssh_key(
-                config["image_path"], ssh_public_key
+                str(target_image_path), ssh_public_key
             )
             if not injection_result["success"]:
                 print(
@@ -660,17 +701,27 @@ exit
                     config["image_path"],
                     age_key_path,
                 )
-                if not age_result.get("success"):
-                    error_msg = age_result.get(
-                        "error",
-                        "Failed to embed Age key into VM image",
-                    )
-                    return {"success": False, "error": error_msg}
 
-                config["secrets"] = {
+                secrets_meta: Dict[str, any] = {
                     "age_key_path": str(age_key_path),
-                    "age_key_installed": True,
+                    "age_key_installed": age_result.get("success", False),
                 }
+
+                if age_result.get("success"):
+                    config["secrets"] = secrets_meta
+                else:
+                    error_msg = age_result.get(
+                        "error", "Failed to embed Age key into VM image"
+                    )
+                    warning = (
+                        "Age key could not be embedded via guestfish; secrets will "
+                        "be installed during the first boot. "
+                        f"Details: {error_msg}"
+                    )
+                    warnings.append(warning)
+                    secrets_meta["age_key_installed"] = False
+                    secrets_meta["age_key_embed_error"] = error_msg
+                    config["secrets"] = secrets_meta
 
         except subprocess.CalledProcessError as exc:
             return {"success": False, "error": f"Failed to copy VM image: {exc}"}
@@ -899,16 +950,29 @@ exit
         keypair_path = config.get("keypair")
         
         # Try SSH with multiple authentication methods
+        known_host_flags = [
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=10",
+        ]
+
         if keypair_path and Path(keypair_path).exists():
             # First try key-based authentication
             ssh_cmd = [
                 "ssh",
-                "-i", keypair_path,
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "PasswordAuthentication=no",
-                "-o", "ConnectTimeout=10",
-                "-p", str(ports["ssh"]),
-                "root@localhost"
+                "-i",
+                keypair_path,
+                *known_host_flags,
+                "-o",
+                "PasswordAuthentication=no",
+                "-p",
+                str(ports["ssh"]),
+                "root@localhost",
             ]
             
             # Test SSH connection first
@@ -925,13 +989,16 @@ exit
                 
         # Fallback to password authentication
         ssh_cmd = [
-            "sshpass", "-p", "debug123",
+            "sshpass",
+            "-p",
+            "debug123",
             "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "ConnectTimeout=10",
-            "-o", "PreferredAuthentications=password",
-            "-p", str(ports["ssh"]),
-            "root@localhost"
+            *known_host_flags,
+            "-o",
+            "PreferredAuthentications=password",
+            "-p",
+            str(ports["ssh"]),
+            "root@localhost",
         ]
         
         # Test password authentication
@@ -961,17 +1028,38 @@ exit
         ports = config["ports"]
         keypair_path = config.get("keypair")
         
+        known_host_flags = [
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=10",
+        ]
+
         if keypair_path and Path(keypair_path).exists():
             ssh_base = [
-                "ssh", "-i", keypair_path, "-o", "StrictHostKeyChecking=no",
-                "-p", str(ports["ssh"]), "root@localhost"
+                "ssh",
+                "-i",
+                keypair_path,
+                *known_host_flags,
+                "-p",
+                str(ports["ssh"]),
+                "root@localhost",
             ]
             program = "ssh"
         else:
             ssh_base = [
-                "sshpass", "-p", "debug123",
-                "ssh", "-o", "StrictHostKeyChecking=no",
-                "-p", str(ports["ssh"]), "root@localhost"
+                "sshpass",
+                "-p",
+                "debug123",
+                "ssh",
+                *known_host_flags,
+                "-p",
+                str(ports["ssh"]),
+                "root@localhost",
             ]
             program = "sshpass"
         
@@ -1209,6 +1297,154 @@ exit
             remote_script,
             timeout=60,
             description="refreshing GitLab database password",
+        )
+
+        if not run_result.get("success"):
+            return {
+                "success": False,
+                "error": run_result.get("error", "database command failed"),
+            }
+
+        return {"success": True}
+
+    def ensure_grafana_database_password(self, company_name: str, password: str) -> Dict[str, any]:
+        """Ensure the Grafana PostgreSQL role password matches the provided secret."""
+
+        config = self._load_vm_config(company_name)
+        if not config:
+            return {"success": False, "error": f"VM '{company_name}' not found"}
+
+        if not self._is_vm_running(company_name):
+            return {"success": False, "error": f"VM '{company_name}' is not running"}
+
+        password_sql = password.replace("'", "''")
+        remote_script = "\n".join(
+            [
+                "set -euo pipefail",
+                "sudo -u postgres psql postgres <<'SQL'",
+                f"ALTER ROLE grafana WITH LOGIN PASSWORD '{password_sql}';",
+                "SQL",
+            ]
+        ) + "\n"
+
+        run_result = self._run_remote_script(
+            config,
+            remote_script,
+            timeout=60,
+            description="refreshing Grafana database password",
+        )
+
+        if not run_result.get("success"):
+            return {
+                "success": False,
+                "error": run_result.get("error", "database command failed"),
+            }
+
+        return {"success": True}
+
+    def ensure_penpot_database_password(self, company_name: str, password: str) -> Dict[str, any]:
+        """Ensure the Penpot PostgreSQL role password matches the provided secret."""
+
+        config = self._load_vm_config(company_name)
+        if not config:
+            return {"success": False, "error": f"VM '{company_name}' not found"}
+
+        if not self._is_vm_running(company_name):
+            return {"success": False, "error": f"VM '{company_name}' is not running"}
+
+        password_sql = password.replace("'", "''")
+        remote_script = "\n".join(
+            [
+                "set -euo pipefail",
+                "sudo -u postgres psql postgres <<'SQL'",
+                f"ALTER ROLE penpot WITH LOGIN PASSWORD '{password_sql}';",
+                "SQL",
+            ]
+        ) + "\n"
+
+        run_result = self._run_remote_script(
+            config,
+            remote_script,
+            timeout=60,
+            description="refreshing Penpot database password",
+        )
+
+        if not run_result.get("success"):
+            return {
+                "success": False,
+                "error": run_result.get("error", "database command failed"),
+            }
+
+        return {"success": True}
+
+    def ensure_n8n_database_password(self, company_name: str, password: str) -> Dict[str, any]:
+        """Ensure the n8n PostgreSQL role password matches the provided secret."""
+
+        config = self._load_vm_config(company_name)
+        if not config:
+            return {"success": False, "error": f"VM '{company_name}' not found"}
+
+        if not self._is_vm_running(company_name):
+            return {"success": False, "error": f"VM '{company_name}' is not running"}
+
+        password_sql = password.replace("'", "''")
+        remote_script = "\n".join(
+            [
+                "set -euo pipefail",
+                "sudo -u postgres psql postgres <<'SQL'",
+                f"ALTER ROLE n8n WITH LOGIN PASSWORD '{password_sql}';",
+                "SQL",
+            ]
+        ) + "\n"
+
+        run_result = self._run_remote_script(
+            config,
+            remote_script,
+            timeout=60,
+            description="refreshing n8n database password",
+        )
+
+        if not run_result.get("success"):
+            return {
+                "success": False,
+                "error": run_result.get("error", "database command failed"),
+            }
+
+        return {"success": True}
+
+    def ensure_prometheus_database_password(self, company_name: str, password: str) -> Dict[str, any]:
+        """Ensure the Prometheus exporter PostgreSQL role password matches the provided secret and refresh the DSN env."""
+
+        config = self._load_vm_config(company_name)
+        if not config:
+            return {"success": False, "error": f"VM '{company_name}' not found"}
+
+        if not self._is_vm_running(company_name):
+            return {"success": False, "error": f"VM '{company_name}' is not running"}
+
+        password_sql = password.replace("'", "''")
+        password_arg = shlex.quote(password)
+
+        remote_script = "\n".join(
+            [
+                "set -euo pipefail",
+                f"PASSWORD={password_arg}",
+                "sudo -u postgres psql postgres <<'SQL'",
+                f"ALTER ROLE prometheus WITH LOGIN PASSWORD '{password_sql}';",
+                "SQL",
+                "DSN_FILE=/run/secrets/database/prometheus-dsn.env",
+                "mkdir -p /run/secrets/database",
+                "printf 'DATA_SOURCE_NAME=postgresql://prometheus:%s@localhost:5432/postgres?sslmode=disable\\n' \"$PASSWORD\" > \"$DSN_FILE\"",
+                "chown prometheus-postgres-exporter:prometheus-postgres-exporter \"$DSN_FILE\"",
+                "chmod 0400 \"$DSN_FILE\"",
+            ]
+        ) + "\n"
+
+        run_result = self._run_remote_script(
+            config,
+            remote_script,
+            timeout=60,
+            description="refreshing Prometheus exporter database password",
         )
 
         if not run_result.get("success"):

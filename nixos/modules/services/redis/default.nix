@@ -5,6 +5,7 @@ with lib;
 let
   cfg = config.services.rave.redis;
   instanceName = cfg.instanceName;
+  redisUnit = "redis-${instanceName}.service";
 
 in
 {
@@ -29,10 +30,33 @@ in
       description = "Bind address for Redis.";
     };
 
+    clientHost = mkOption {
+      type = types.str;
+      default = "127.0.0.1";
+      description = "Hostname or IP local services should use to reach Redis.";
+    };
+
+    dockerHost = mkOption {
+      type = types.str;
+      default = "172.17.0.1";
+      description = "Host IP that Docker containers should use when connecting to Redis.";
+    };
+
     databases = mkOption {
       type = types.int;
       default = 16;
       description = "Number of logical Redis databases.";
+    };
+
+    allocations = mkOption {
+      type = types.attrsOf types.int;
+      default = {
+        gitlab = 0;
+        outline = 5;
+        penpot = 10;
+      };
+      description = ''Map of service identifiers to reserved Redis database indexes (used by Penpot, Outline, GitLab, etc.).'';
+      example = { gitlab = 0; penpot = 10; outline = 20; };
     };
 
     maxMemory = mkOption {
@@ -60,13 +84,21 @@ in
     };
   };
 
-  config = mkIf cfg.enable {
+  config = {
+    services.rave.redis.platform = {
+      unit = redisUnit;
+      port = cfg.port;
+      host = cfg.clientHost;
+      dockerHost = cfg.dockerHost;
+      allocations = cfg.allocations;
+    };
+  } // mkIf cfg.enable {
     services.redis.servers = {
       "${instanceName}" = {
         enable = true;
         port = cfg.port;
         settings = {
-          bind = cfg.bind;
+          bind = mkForce cfg.bind;
           maxmemory = cfg.maxMemory;
           maxmemory-policy = cfg.maxMemoryPolicy;
           save = cfg.save;

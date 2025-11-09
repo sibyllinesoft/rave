@@ -7,6 +7,10 @@ with lib;
 let
   cfg = config.services.rave.gitlab;
   oauthCfg = cfg.oauth;
+  redisPlatform = config.services.rave.redis.platform or {};
+  redisHostLocal = redisPlatform.host or "127.0.0.1";
+  redisPort = redisPlatform.port or 6379;
+  redisUnit = redisPlatform.unit or "redis-main.service";
 
   providerMeta = {
     google = {
@@ -33,11 +37,35 @@ let
     };
   };
 
+  useSecrets = cfg.useSecrets;
+
+  secretPath = name: fallback:
+    if useSecrets then
+      config.sops.secrets."gitlab/${name}".path or "/run/secrets/gitlab/${name}"
+    else fallback;
+
+  rootPasswordFile = secretPath "root-password"
+    (pkgs.writeText "gitlab-root-password" "development-password");
+
+  dbPasswordFile = secretPath "db-password"
+    (pkgs.writeText "gitlab-db-password-dummy" "dummy");
+
+  secretKeyBaseFile = secretPath "secret-key-base"
+    (pkgs.writeText "gitlab-secret-key-base" "development-secret-key-base-dummy");
+
+  dbKeyBaseFile = secretPath "db-key-base"
+    (pkgs.writeText "gitlab-db-key-base" "development-db-key-base-dummy");
+
+  otpKeyBaseFile = secretPath "otp-key-base"
+    (pkgs.writeText "gitlab-otp-key-base" "development-otp-key-base-dummy");
+
+  jwsKeyBaseFile = secretPath "jws-key-base"
+    (pkgs.writeText "jwt-signing-key" "development-jwt-signing-key-dummy");
+
+  systemctl = lib.getExe' pkgs.systemd "systemctl";
+
 in
 {
-  imports = [
-    ./nginx.nix
-  ];
 
   options = {
     services.rave.gitlab = {
@@ -53,6 +81,18 @@ in
         type = types.bool;
         default = true;
         description = "Use sops-nix secrets instead of plain text (disable for development)";
+      };
+
+      publicUrl = mkOption {
+        type = types.str;
+        default = "https://localhost:8443/gitlab";
+        description = "Externally reachable GitLab URL (used for Omniauth redirects).";
+      };
+
+      externalPort = mkOption {
+        type = types.int;
+        default = 8443;
+        description = "Port advertised to clients for GitLab HTTPS.";
       };
       
       runner = {
@@ -115,7 +155,7 @@ in
     };
   };
   
-  config = mkIf config.services.rave.gitlab.enable {
+  config = mkIf cfg.enable ({
     assertions = lib.optionals (cfg.oauth.enable) [
       {
         assertion = cfg.oauth.clientId != null;
@@ -139,32 +179,15 @@ in
       databaseUsername = "gitlab";
       
       # Secrets configuration - use sops-nix in production
-      initialRootPasswordFile = if config.services.rave.gitlab.useSecrets
-        then config.sops.secrets."gitlab/root-password".path or "/run/secrets/gitlab/root-password"
-        else pkgs.writeText "gitlab-root-password" "development-password";
-        
-      # Use SOPS secret for database password
-      databasePasswordFile = if config.services.rave.gitlab.useSecrets
-        then config.sops.secrets."gitlab/db-password".path or "/run/secrets/gitlab/db-password"
-        else pkgs.writeText "gitlab-db-password-dummy" "dummy";
+      initialRootPasswordFile = rootPasswordFile;
+      databasePasswordFile = dbPasswordFile;
         
       # All required secrets for GitLab
       secrets = {
-        secretFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/secret-key-base".path or "/run/secrets/gitlab/secret-key-base"
-          else pkgs.writeText "gitlab-secret-key-base" "development-secret-key-base-dummy";
-          
-        otpFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/otp-key-base".path or "/run/secrets/gitlab/otp-key-base"
-          else pkgs.writeText "gitlab-otp-key-base" "development-otp-key-base-dummy";
-          
-        dbFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/db-key-base".path or "/run/secrets/gitlab/db-key-base"
-          else pkgs.writeText "gitlab-db-key-base" "development-db-key-base-dummy";
-          
-        jwsFile = if config.services.rave.gitlab.useSecrets
-          then config.sops.secrets."gitlab/jws-key-base".path or "/run/secrets/gitlab/jws-key-base"
-          else pkgs.writeText "jwt-signing-key" "development-jwt-signing-key-dummy";
+        secretFile = secretKeyBaseFile;
+        otpFile = otpKeyBaseFile;
+        dbFile = dbKeyBaseFile;
+        jwsFile = jwsKeyBaseFile;
         
         # Add missing Active Record secrets to prevent build warnings
         # Note: activeRecord secrets options removed in NixOS 24.11
@@ -200,53 +223,50 @@ in
               }
             else
               {};
-        in {
-        gitlab = {
-          host = config.services.rave.gitlab.host;
-          port = 443;
-          https = true;
-          
-          # Enable relative URL root for subdirectory routing
-          relative_url_root = "/gitlab";
-          
-          # Large file handling
-          max_request_size = "10G";
-          
-          # Memory optimization
-          workhorse = {
-            memory_limit = "8G";
-            cpu_limit = "50%";
-          };
-        };
-        
-        # Enable container registry
-        registry = {
-          enable = true;
-          host = "registry.${config.services.rave.gitlab.host}";
-          port = 5000;
-        };
-        
-        # Artifact configuration
-        artifacts = {
-          enabled = true;
-          path = "/var/lib/gitlab/artifacts";
-          max_size = "10G";
-          };
-          
-          # LFS configuration
-          lfs = {
-            enabled = true;
-            storage_path = "/var/lib/gitlab/lfs";
-          };
+          baseConfig = {
+            gitlab = {
+              host = cfg.host;
+              port = cfg.externalPort;
+              https = true;
+              relative_url_root = "/gitlab";
+              max_request_size = "10G";
+              workhorse = {
+                memory_limit = "8G";
+                cpu_limit = "50%";
+              };
+            };
 
-          redis = {
-            host = "127.0.0.1";
-            port = 6380;
+            omniauth = {
+              full_host = cfg.publicUrl;
+            };
+
+            registry = {
+              enable = true;
+              host = "registry.${cfg.host}";
+              port = 5000;
+            };
+
+            artifacts = {
+              enabled = true;
+              path = "/var/lib/gitlab/artifacts";
+              max_size = "10G";
+            };
+
+            lfs = {
+              enabled = true;
+              storage_path = "/var/lib/gitlab/lfs";
+            };
+
+            redis = {
+              host = redisHostLocal;
+              port = redisPort;
+            };
+
+            nginx = {
+              enable = false;
+            };
           };
-          
-          # Prevent nginx conflicts - we handle nginx separately
-          nginx.enable = false;
-      } // oauthSettings;
+        in lib.recursiveUpdate baseConfig oauthSettings;
     };
 
     # P3: GitLab Runner configuration with Docker + KVM support
@@ -315,17 +335,6 @@ in
         default_statistics_target = mkDefault 100;
         random_page_cost = mkDefault 1.1;
         effective_io_concurrency = mkDefault 200;
-      };
-    };
-
-    services.redis.servers.gitlab = {
-      enable = true;
-      port = 6380;
-      
-      # Memory configuration
-      settings = {
-        maxmemory = "512MB";
-        maxmemory-policy = "allkeys-lru";
       };
     };
 
@@ -413,21 +422,128 @@ in
     ];
     
     # Service resource limits from P3
-    systemd.services.gitlab.serviceConfig = {
-      MemoryMax = "8G";
-      CPUQuota = "50%";
-      OOMScoreAdjust = "50";
-    };
-    
-    # Enable Rails relative URL root for subdirectory routing
-    systemd.services.gitlab.environment = {
-      RAILS_RELATIVE_URL_ROOT = "/gitlab";
-    };
+    systemd.services.gitlab = lib.mkMerge [
+      {
+        serviceConfig = {
+          MemoryMax = "8G";
+          CPUQuota = "50%";
+          OOMScoreAdjust = "50";
+        };
+        environment = {
+          RAILS_RELATIVE_URL_ROOT = "/gitlab";
+          GITLAB_OMNIAUTH_FULL_HOST = cfg.publicUrl;
+        };
+        after = mkAfter [ "postgresql.service" redisUnit "generate-localhost-certs.service" ];
+        requires = mkAfter [ "postgresql.service" redisUnit ];
+      }
+      (mkIf cfg.useSecrets {
+        after = mkAfter [ "gitlab-password-setup.service" ];
+        requires = mkAfter [ "gitlab-password-setup.service" ];
+      })
+    ];
     
     systemd.services.gitlab-runner.serviceConfig = mkIf config.services.rave.gitlab.runner.enable {
       MemoryMax = "4G";
       CPUQuota = "25%";
       OOMScoreAdjust = "100";
     };
-  };
+
+    systemd.services."gitlab-db-config".unitConfig = mkMerge [
+      { OnSuccess = [ "gitlab-autostart.service" ]; }
+      (mkIf cfg.useSecrets {
+        ConditionPathExists = dbPasswordFile;
+      })
+    ];
+
+    systemd.services."gitlab-autostart" = {
+      description = "Ensure GitLab starts after database configuration";
+      wantedBy = [ "multi-user.target" ];
+      after = [
+        "postgresql.service"
+        redisUnit
+        "gitlab-config.service"
+        "gitlab-db-config.service"
+      ];
+      wants = [ "gitlab-db-config.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = pkgs.writeShellScript "gitlab-autostart.sh" ''
+          set -euo pipefail
+
+          systemctl_bin='${systemctl}'
+          attempts=0
+          max_attempts=12
+
+          while ! "$systemctl_bin" is-active --quiet gitlab-db-config.service; do
+            if (( attempts >= max_attempts )); then
+              echo "gitlab-db-config.service did not become active" >&2
+              exit 1
+            fi
+
+            if "$systemctl_bin" is-failed --quiet gitlab-db-config.service; then
+              "$systemctl_bin" reset-failed gitlab-db-config.service || true
+              "$systemctl_bin" start gitlab-db-config.service || true
+            fi
+
+            attempts=$(( attempts + 1 ))
+            sleep $(( 5 * attempts ))
+          done
+
+          "$systemctl_bin" reset-failed gitlab.service || true
+          "$systemctl_bin" start gitlab.service
+        '';
+        Restart = "on-failure";
+        RestartSec = 30;
+      };
+    };
+
+    systemd.services.gitlab-password-setup = mkIf cfg.useSecrets {
+      description = "Set GitLab database password from SOPS secret";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "postgresql.service" "sops-init.service" ];
+      requires = [ "postgresql.service" "sops-init.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = "root";
+      };
+      environment.PATH = lib.mkForce "${pkgs.postgresql_15}/bin:${pkgs.sudo}/bin:${pkgs.coreutils}/bin";
+      script = ''
+        while ! ${pkgs.postgresql_15}/bin/pg_isready -d postgres > /dev/null 2>&1; do
+          echo "Waiting for PostgreSQL to be ready..."
+          sleep 2
+        done
+
+        if [ ! -s ${dbPasswordFile} ]; then
+          echo "GitLab DB password file missing: ${dbPasswordFile}"
+          exit 1
+        fi
+
+        GITLAB_PASSWORD=$(cat ${dbPasswordFile})
+
+        sudo -u postgres ${pkgs.postgresql_15}/bin/psql -d postgres -c \
+          "DO \$\$ BEGIN
+             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gitlab') THEN
+               CREATE ROLE gitlab WITH LOGIN CREATEDB;
+             END IF;
+           END \$\$;" || {
+          echo "Failed to create GitLab role"
+          exit 1
+        }
+
+        echo "ALTER ROLE gitlab WITH PASSWORD '$GITLAB_PASSWORD';" | \
+          sudo -u postgres ${pkgs.postgresql_15}/bin/psql -d postgres || {
+          echo "Failed to set GitLab password"
+          exit 1
+        }
+        echo "GitLab database password successfully updated"
+      '';
+    };
+
+    systemd.services.postgresql = {
+      after = mkAfter [ "postgres-gitlab-group-fix.service" ];
+      wants = mkAfter [ "postgres-gitlab-group-fix.service" ];
+    };
+  });
 }

@@ -64,21 +64,37 @@ in
       default = "";
       description = "SQL script executed at initial cluster creation.";
     };
+
+    postStartSql = mkOption {
+      type = types.listOf types.str;
+      default = [];
+      description = ''SQL statements executed after PostgreSQL starts (each entry is passed to `psql -U postgres -c`).'';
+    };
   };
 
   config = mkIf cfg.enable {
     services.postgresql =
       {
-        enable = true;
+        enable = mkForce true;
         package = cfg.package;
         ensureDatabases = cfg.ensureDatabases;
         ensureUsers = cfg.ensureUsers;
         settings = cfg.settings // {
-          listen_addresses = cfg.listenAddresses;
+          listen_addresses = mkForce cfg.listenAddresses;
         };
       }
       // optionalAttrs (initialScriptFile != null) {
         initialScript = initialScriptFile;
       };
+
+    systemd.services.postgresql.postStart = mkIf (cfg.postStartSql != []) ''
+      while ! ${cfg.package}/bin/pg_isready -d postgres > /dev/null 2>&1; do
+        sleep 1
+      done
+
+      ${concatMapStrings (stmt: ''
+        ${cfg.package}/bin/psql -U postgres -c ${lib.escapeShellArg stmt} || true
+      '') cfg.postStartSql}
+    '';
   };
 }

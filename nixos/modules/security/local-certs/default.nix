@@ -113,8 +113,8 @@ IP.2 = ::1
         Type = "oneshot";
         RemainAfterExit = true;
         User = "root";
+        ExecStart = certScript;
       };
-      script = certScript;
     };
   };
 }

@@ -96,7 +96,7 @@ rave vm build-image
 
 ```bash
 # Start VM with P3 configuration
-rave vm launch-local --image rave-complete-localhost.qcow2
+rave vm launch-local --image artifacts/legacy-qcow/rave-complete-localhost.qcow2
 
 ```
 

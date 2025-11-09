@@ -16,8 +16,11 @@ export PATH="$PATH:$(pwd)"
 
 ### Create Your First Company Environment
 ```bash
-# Create company development environment
-rave vm create acme-corp --keypair ~/.ssh/id_ed25519
+# Create company development environment (development profile is default)
+rave vm create acme-corp --profile development --keypair ~/.ssh/id_ed25519
+
+# Skip the nix build step and reuse the cached profile image
+rave vm create acme-corp --profile development --keypair ~/.ssh/id_ed25519 --skip-build
 
 # Start the VM
 rave vm start acme-corp
@@ -34,6 +37,7 @@ rave vm logs acme-corp nginx --follow
 - Keep the Age private key (`~/.config/sops/age/keys.txt`) backed up securely—without it the encrypted secrets cannot be recovered.
 - `rave vm create` offers to bootstrap secrets when they are missing and embeds the Age key into the VM automatically when available.
 - Use `rave secrets install <company>` if you rotate credentials or need to refresh the Age key/secrets on an existing VM.
+- Run `rave secrets diff --secrets-file config/secrets.yaml` for a dry-run list of every secret file that would be written before touching a VM.
 - Before invoking `nix build` (or any command that reads the encrypted secrets), export `SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt` in your shell.
 - When enabling external OAuth for GitLab, add `gitlab/oauth-provider-client-secret` (and its client ID) to `config/secrets.yaml` so the CLI can sync them into the VM.
 - End-to-end OIDC setup (Google/GitHub) is documented in `docs/oidc-setup.md`; the CLI now prints required redirect URIs and can apply provider credentials live.
@@ -113,7 +117,7 @@ Each company VM includes:
 
 ### VM Management
 ```bash
-rave vm create <company> --keypair <path>    # Create company VM
+rave vm create <company> [--profile name] --keypair <path>  # Create company VM
 rave vm start <company>                      # Start VM
 rave vm stop <company>                       # Stop VM
 rave vm status [--all]                       # Show VM status
@@ -157,18 +161,27 @@ After issuing the certificate, hit the dashboard at `https://localhost:18221/` a
 `https://chat.localtest.me:18221/` for green locks. Add `--domain` flags if you expose the VM on
 additional hostnames (e.g. `--domain app.dev.vm`).
 
+### End-to-End Smoke Test
+```bash
+scripts/test-e2e.sh --profile development    # runs unit + integration suite
+python3 test_vm_integration.py --profile development
+```
+Use `--profile production` for the full stack or `--keep-vm` to leave the VM running for debugging.
+
 ## 🧱 VM Profiles
 
 | Profile | Build Command | Notes |
 | --- | --- | --- |
-| `rave-qcow2` (default) | `nix build .#rave-qcow2` | Full production stack with Outline + n8n and higher resource defaults (12 GB RAM, 40 GB disk). |
-| `rave-qcow2-dev` | `nix build .#rave-qcow2-dev` | Lightweight dev image with Penpot/Outline/n8n disabled and smaller VM footprint (≈8 GB RAM, 30 GB disk). |
+| `production` | `nix build .#production` | Full production stack with Outline + n8n and higher resource defaults (≈12 GB RAM, 40 GB disk). |
+| `development` | `nix build .#development` | Lightweight dev image with Penpot/Outline/n8n disabled and smaller VM footprint (≈8 GB RAM, 30 GB disk). |
+| `demo` | `nix build .#demo` | Demo-friendly build with observability/optional apps disabled for faster boots (≈6 GB RAM). |
 
 Run `rave vm list-profiles` to print this matrix (and any future custom profiles) from the CLI.
 
-From the CLI, run `rave vm build-image --profile dev` for the lightweight variant (default `production`), or pass `--attr` if you need a custom flake output. `rave vm launch-local --profile dev` now picks the matching qcow2 and hides Penpot/Outline/n8n because that profile disables them.
+From the CLI, run `rave vm build-image --profile development` for the lightweight variant (default `production`), or pass `--attr` if you need a custom flake output. `rave vm launch-local --profile development` picks the matching qcow2 and hides Penpot/Outline/n8n because that profile disables them.
 
-Use `nix build .#rave-qcow2-dev` when you need a faster local iteration loop, and swap back to the full profile before publishing artifacts.
+Use `nix build .#development` when you need a faster local iteration loop, and swap back to the full profile before publishing artifacts.
+Generated QCOWs, logs, and snapshots should live under `artifacts/` (ignored by Git); the CLI stores images there automatically when you pass `--output artifacts/qcow`. See `artifacts/README.md` for the recommended layout.
 The landing dashboard and welcome script automatically hide Outline/n8n (or any future optional services) when those modules are disabled.
 
 ## 🔧 Development
@@ -183,7 +196,7 @@ nix build .#demo          # Demo VM
 ### Testing
 ```bash
 # Run VM tests
-nix build .#tests.x86_64-linux.rave-vm
+nix build .#checks.x86_64-linux.minimal-test
 
 # Health checks
 scripts/health_checks/

@@ -7,6 +7,25 @@
 - Enforce secrets-as-code practices so builds never fall back to embedded sample passwords.
 - Add automated verification (formatting + NixOS VM tests) before publishing new QCOW images.
 
+## Status — 2025-11-08
+
+### Completed
+- **Service modularization:** GitLab, Mattermost, Penpot, n8n, monitoring, nginx, Redis, PostgreSQL, etc. all live in dedicated modules with shared password-setter scaffolding; `services.rave.*` options are now consumed by the production/development/demo profiles.
+- **Secrets as code:** Every Postgres role (Grafana, Mattermost, Penpot, n8n, Prometheus exporter) reads from `/run/secrets/**`, and the CLI’s `rave secrets install` refreshes the roles via SSH helpers. Grafana/Mattermost docs describe the new flows.
+- **Docs migration:** README + how-to content points to Divio sections; legacy Markdown files are stubs; repo hygiene/how-to now reflects the artifact staging workflow.
+- **Flake outputs:** Production/development/demo images, `profileMetadata`, and the new `checks.x86_64-linux.minimal-test` smoke test run via `nix flake check`.
+- **CLI alignment:** `rave vm build/create/launch/list-profiles` read flake metadata, `rave secrets install` warns on missing secrets, and `artifacts/README.md` explains where QCOW/logs belong.
+- **Automated NixOS tests:** `tests/minimal-vm.nix` (GitLab + PostgreSQL smoke) and `tests/full-stack.nix` (Mattermost + CI bridge) now ship via `nixosTests` and `checks.x86_64-linux.{minimal-test,full-stack}` so `nix build .#checks.x86_64-linux.full-stack` exercises the full stack locally.
+- **CLI/unit coverage:** Python unit suites (`tests/python/test_vm_manager.py`, `tests/python/test_platform_utils.py`, `tests/python/test_secrets_flow.py`, `tests/python/test_cli_secrets.py`) cover VM helpers, PlatformManager, `_sync_vm_secrets`, and the `rave secrets install` command; run `python3 -m unittest tests.python.*` after touching CLI helpers.
+- **Repo hygiene:** All legacy QCOW snapshots moved under `artifacts/legacy-qcow/`, CLI fallback updated, and docs now point at the artifacts directory so the repo root stays source-only.
+
+### Ready for Handoff
+- **Command services:** `generate`, `spec-import`, and `sync` already use the service-backed architecture; `integrate` is mid-migration (shared context helper landed, but GitHub template helpers still inline).
+- **Remaining to do:**
+  1. Finish the integrate service extraction (including the GitHub template helpers) and ensure every command invokes the shared context helper.
+  2. Split `services/generate` into submodules (compose parser, template runner, hook executor) with focused unit tests.
+  3. Add service-level tests for spec import, sync, and integrate, then update contributor docs once the new architecture is locked in.
+
 ## 2. Guiding Principles
 1. **Source vs. artifact separation** – Keep the Git history lean by storing large QCOW images, logs, and volume snapshots in release storage or Git LFS, referencing Atlassian’s “CI-friendly Git” guidance.
 2. **Modular Nix everywhere** – Follow the NixOS module system pattern (imports/options/config) so each service, agent, and environment tier is its own module that can be composed per target.
@@ -26,9 +45,9 @@
 ### B. Layered Nix Architecture
 | Goal | Deliverables | Definition of Done |
 | --- | --- | --- |
-| Split monolithic config | - Create `infra/nixos/profiles/base.nix`, `services.nix`, `observability.nix`, `chat.nix`, etc. <br>- Compose new profiles: `dev-minimal`, `demo`, `production`. | `nix build .#vm-dev` and `.#vm-prod` both succeed without editing shared modules. |
+| Split monolithic config | - Create `infra/nixos/profiles/base.nix`, `services.nix`, `observability.nix`, `chat.nix`, etc. <br>- Compose new profiles: `development`, `demo`, `production`. | `nix build .#vm-dev` and `.#vm-prod` both succeed without editing shared modules. |
 | Parameterize secrets & ports | - Replace inline passwords in `complete-production.nix` with option defaults that assert `config.services.rave.secretsRequired = true`. <br>- Provide environment overlays for port blocks per tenant. | Builds fail fast when secrets are missing; CLI prompts to sync via `rave secrets install`. |
-| Align CLI with Nix outputs | - Update `cli/vm_manager.py` to read flake outputs instead of hardcoded filenames, enabling `rave vm build --profile dev`. | CLI help lists available profiles derived from flake metadata. |
+| Align CLI with Nix outputs | - Update `cli/vm_manager.py` to read flake outputs instead of hardcoded filenames, enabling `rave vm build --profile development`. | CLI help lists available profiles derived from flake metadata. |
 
 ### C. Secrets & Compliance
 | Goal | Deliverables | Definition of Done |
@@ -47,8 +66,8 @@
 ### E. Testing & Automation
 | Goal | Deliverables | Definition of Done |
 | --- | --- | --- |
-| Add NixOS VM tests | - Define `tests/minimal-vm.nix` (GitLab, PostgreSQL) and `tests/full-stack.nix` (Mattermost, chat bridge). <br>- Wire into CI via `nix build .#nixosTests.full-stack`. | Pull requests run tests automatically; builds block on failure. |
-| CLI/unit coverage | - Introduce `pytest` suite for `cli/` modules (at least VM + secrets commands). <br>- Add formatting (`ruff`, `black`) and type checking (`pyright`). | `make test` (or `nix develop --command pytest`) passes locally and in CI. |
+| Add NixOS VM tests | ✅ `tests/minimal-vm.nix` (GitLab, PostgreSQL) and `tests/full-stack.nix` (Mattermost + CI bridge) now live; run them locally via `nix build .#checks.x86_64-linux.{minimal-test,full-stack}`. | Next: hook these checks into CI so pull requests block on failures once runner capacity is confirmed. |
+| CLI/unit coverage | - `tests/python/test_vm_manager.py`, `tests/python/test_platform_utils.py`, `tests/python/test_secrets_flow.py`, and `tests/python/test_cli_secrets.py` cover VM manager flows, PlatformManager, secrets syncing, and Click wiring; next step is to add pytest coverage for the remaining command services. <br>- Add formatting (`ruff`, `black`) and type checking (`pyright`). | `make test` (or `nix develop --command pytest`) passes locally and in CI. |
 | Observability sanity checks | - Optional integration test verifying Grafana/Prometheus endpoints respond after boot. | Known dashboards load in automated smoke test. |
 
 ### F. Migration & Cleanup
@@ -68,13 +87,13 @@
 
 ## 5. Risks & Mitigations
 - **Hidden consumers of legacy scripts** → survey commit history + open issues; provide shims that emit “deprecated” warnings before removal.
-- **Long build times for new profiles** → cut “dev-minimal” profile early so contributors can iterate while production build matures.
+- **Long build times for new profiles** → cut the “development” (formerly dev-minimal) profile early so contributors can iterate while production build matures.
 - **Secrets migration churn** → stage environment-specific secret bundles and run tabletop exercise before flipping `useSecrets = true` permanently.
 - **Documentation drift recurring** → tie doc build into CI so every change in CLI or Nix modules requires doc link updates (fail the pipeline otherwise).
 
 ## 6. Success Metrics
 - Repository clone size < 1 GB, with zero QCOW files tracked.
-- `rave vm build --profile dev` completes in < 20 minutes on 12 GB host; production profile < 45 minutes.
+- `rave vm build --profile development` completes in < 20 minutes on 12 GB host; production profile < 45 minutes.
 - Divio doc site has ≥1 tutorial, ≥3 how-to guides, ≥1 reference per subsystem, ≥2 explanation articles.
 - Secrets lint + NixOS tests run on every pull request with < 30 minute wall-clock.
 - Legacy directory shrinks by 50 % within two iterations, with remaining files referenced in documentation as historical artifacts.

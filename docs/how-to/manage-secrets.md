@@ -47,14 +47,41 @@ The script verifies:
 
 If any check fails, fix the reported section and rerun the linter before committing.
 
-## 6. Sync Secrets into the VM
+## 6. Preview Secret Syncs
+Before touching a running VM you can inspect exactly which `/run/secrets/**` files would be written:
+
+```bash
+rave secrets diff --secrets-file config/secrets.yaml
+```
+
+The command prints a table containing the target path, owner/group, permissions, payload size, and a SHA256 digest (first 12 hex characters) for every file. Use `--format json` if you want to feed the plan into other tooling.
+
+## 7. Sync Secrets into the VM
 Once linting passes, push the values into the VM or qcow build:
 ```bash
 rave secrets install --profile production
 ```
-This command decrypts `config/secrets.yaml`, writes the `/run/secrets/**` files expected by the NixOS modules, and restarts affected services. Use `--profile dev` for the lightweight image.
+This command decrypts `config/secrets.yaml`, writes the `/run/secrets/**` files expected by the NixOS modules, and restarts affected services. Use `--profile development` for the lightweight image.
 
-## 7. Rotate Keys Periodically
+### Reference: Grafana secrets
+
+| Selector in `config/secrets.yaml` | Purpose | Runtime path | Consumer |
+| --- | --- | --- | --- |
+| `grafana.secret-key` | Cookie/session signing key. | `/run/secrets/grafana/secret-key` | `services.grafana.settings.security.secret_key` |
+| `grafana.db-password` | Database password Grafana uses in its DSN. | `/run/secrets/grafana/db-password` | Grafana DSN + `postgres-set-grafana-password.service` |
+| `database.grafana-password` | Admin UI password (`admin` user). | `/run/secrets/grafana/admin-password` | Grafana security settings |
+| `database.mattermost-password` | Mattermost PostgreSQL role password. | `/run/secrets/database/mattermost-password` | `postgres-set-mattermost-password.service` + CLI refresh |
+| `database.penpot-password` | Penpot PostgreSQL role password. | `/run/secrets/database/penpot-password` | `postgres-set-penpot-password.service` + CLI refresh |
+| `database.n8n-password` | n8n PostgreSQL role password. | `/run/secrets/database/n8n-password` | `postgres-set-n8n-password.service` + CLI refresh |
+| `database.outline-password` | Outline PostgreSQL role password. | `/run/secrets/database/outline-password` | Outline module + `postgresql.postStart` hook |
+| `database.prometheus-password` | Prometheus exporter PostgreSQL role password. | `/run/secrets/database/prometheus-password` | `postgres-set-prometheus-password.service` + CLI refresh |
+| `outline.secret-key` | Outline SESSION/COOKIE key. | `/run/secrets/outline/secret-key` | Outline container `SECRET_KEY` |
+| `outline.utils-secret` | Outline UTILS secret for background jobs. | `/run/secrets/outline/utils-secret` | Outline container `UTILS_SECRET` |
+
+During boot, the `postgres-set-{grafana,mattermost,penpot,n8n,prometheus}-password` services read their respective secrets and update the Postgres roles before the applications start.
+Running `rave secrets install` copies these files and immediately refreshes each database password via SSH, so operators do not have to run manual `psql` statements after a rotation.
+
+## 8. Rotate Keys Periodically
 - Create a new Age key, add it to `.sops.yaml`, and rerun `sops updatekeys config/secrets.yaml`.
 - Remove the old key only after confirming all operators updated their private keys.
 - Re-run `python scripts/secrets/lint.py` and `rave secrets install` to propagate the change.

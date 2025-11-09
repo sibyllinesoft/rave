@@ -5,6 +5,7 @@ with lib;
 let
   cfg = config.services.rave.monitoring;
   baseHttpsPort = toString config.services.rave.ports.https;
+  pathOrString = types.either types.path types.str;
 
   ensureLeadingSlash = path:
     if hasPrefix "/" path then path else "/${path}";
@@ -38,43 +39,50 @@ let
     [
       {
         job_name = "prometheus";
-        static_configs = [{ targets = [ targetStr cfg.prometheus.port ]; }];
+        static_configs = [{ targets = [ (targetStr cfg.prometheus.port) ]; }];
       }
       {
         job_name = "node";
-        static_configs = [{ targets = [ targetStr cfg.exporters.node.port ]; }];
+        static_configs = [{ targets = [ (targetStr cfg.exporters.node.port) ]; }];
       }
     ]
     ++ optionals cfg.exporters.nginx.enable [
       {
         job_name = "nginx";
-        static_configs = [{ targets = [ targetStr cfg.exporters.nginx.port ]; }];
+        static_configs = [{ targets = [ (targetStr cfg.exporters.nginx.port) ]; }];
       }
     ]
     ++ optionals cfg.exporters.postgres.enable [
       {
         job_name = "postgres";
-        static_configs = [{ targets = [ targetStr cfg.exporters.postgres.port ]; }];
+        static_configs = [{ targets = [ (targetStr cfg.exporters.postgres.port) ]; }];
       }
     ]
     ++ optionals cfg.exporters.redis.enable [
       {
         job_name = "redis";
-        static_configs = [{ targets = [ targetStr cfg.exporters.redis.port ]; }];
+        static_configs = [{ targets = [ (targetStr cfg.exporters.redis.port) ]; }];
       }
     ]
     ++ optionals cfg.nats.enable [
       {
         job_name = "nats";
-        static_configs = [{ targets = [ targetStr cfg.nats.metricsPort ]; }];
+        static_configs = [{ targets = [ (targetStr cfg.nats.metricsPort) ]; }];
       }
     ];
 
   grafanaHost = cfg.nginx.host;
-  monitoringProxyEnabled = cfg.nginx.addProxyLocations;
+  nginxManagedByRave =
+    if config ? services && config.services ? rave && config.services.rave ? nginx && config.services.rave.nginx ? enable
+    then config.services.rave.nginx.enable
+    else false;
+  monitoringProxyEnabled = cfg.nginx.addProxyLocations && !nginxManagedByRave;
 
   grafanaLocationAttr = grafanaLocation;
   promLocationAttr = promLocation;
+
+  fileProviderValue = path: "$__file{${path}}";
+  postgresExporterNeedsSecret = cfg.exporters.postgres.enable && cfg.exporters.postgres.dsnEnvFile != null;
 
 in
 {
@@ -124,10 +132,22 @@ in
         description = "Default Grafana admin password (override in production).";
       };
 
+      adminPasswordFile = mkOption {
+        type = types.nullOr pathOrString;
+        default = null;
+        description = "Path to a file containing the Grafana admin password (preferred for production).";
+      };
+
       secretKey = mkOption {
         type = types.str;
         default = "grafana-secret-key";
         description = "Grafana secret key for signing cookies.";
+      };
+
+      secretKeyFile = mkOption {
+        type = types.nullOr pathOrString;
+        default = null;
+        description = "Path to a file containing the Grafana secret key.";
       };
 
       database = {
@@ -159,6 +179,12 @@ in
           type = types.str;
           default = "grafana-password";
           description = "Database password Grafana uses (store via sops-nix).";
+        };
+
+        passwordFile = mkOption {
+          type = types.nullOr pathOrString;
+          default = null;
+          description = "Path to a file containing the Grafana database password.";
         };
       };
     };
@@ -231,6 +257,11 @@ in
           default = "postgresql://prometheus:prometheus_pass@localhost:5432/postgres?sslmode=disable";
           description = "DSN for the postgres exporter.";
         };
+        dsnEnvFile = mkOption {
+          type = types.nullOr pathOrString;
+          default = null;
+          description = "Environment file that provides DATA_SOURCE_NAME (preferred for secrets).";
+        };
       };
 
       redis = {
@@ -297,16 +328,31 @@ in
       port = cfg.exporters.nginx.port;
     };
 
-    services.prometheus.exporters.postgres = mkIf cfg.exporters.postgres.enable {
-      enable = true;
-      port = cfg.exporters.postgres.port;
-      dataSourceName = cfg.exporters.postgres.dataSourceName;
-    };
+    services.prometheus.exporters.postgres = mkIf cfg.exporters.postgres.enable (
+      {
+        enable = true;
+        port = cfg.exporters.postgres.port;
+      }
+      // optionalAttrs (cfg.exporters.postgres.dsnEnvFile == null) {
+        dataSourceName = cfg.exporters.postgres.dataSourceName;
+      }
+    );
 
     services.prometheus.exporters.redis = mkIf cfg.exporters.redis.enable {
       enable = true;
       port = cfg.exporters.redis.port;
     };
+
+    systemd.services.prometheus-postgres-exporter = mkIf postgresExporterNeedsSecret {
+      serviceConfig.EnvironmentFile = [ cfg.exporters.postgres.dsnEnvFile ];
+    };
+
+    users.users.prometheus-postgres-exporter = mkIf postgresExporterNeedsSecret {
+      isSystemUser = true;
+      group = "prometheus-postgres-exporter";
+    };
+
+    users.groups.prometheus-postgres-exporter = mkIf postgresExporterNeedsSecret {};
 
     services.grafana = {
       enable = true;
@@ -317,16 +363,38 @@ in
           root_url = grafanaPublicUrl;
           serve_from_sub_path = true;
         };
-        database = {
-          inherit (cfg.grafana.database) type host name user password;
-        };
-        security = {
-          admin_user = cfg.grafana.adminUser;
-          admin_password = cfg.grafana.adminPassword;
-          secret_key = cfg.grafana.secretKey;
-          cookie_secure = true;
-          cookie_samesite = "strict";
-        };
+        database =
+          {
+            inherit (cfg.grafana.database) type host name user;
+          }
+          # Use $__file providers when passwordFile is set so the secret stays out of the Nix store.
+          # Development builds fall back to the literal password string.
+          // optionalAttrs (cfg.grafana.database.passwordFile == null) {
+            password = cfg.grafana.database.password;
+          }
+          // optionalAttrs (cfg.grafana.database.passwordFile != null) {
+            password = fileProviderValue cfg.grafana.database.passwordFile;
+          };
+        security =
+          {
+            admin_user = cfg.grafana.adminUser;
+            cookie_secure = true;
+            cookie_samesite = "strict";
+          }
+          # Literal values keep dev builds simple.
+          # Production builds should point at files so the secrets stay out of the Nix store.
+          // optionalAttrs (cfg.grafana.adminPasswordFile == null) {
+            admin_password = cfg.grafana.adminPassword;
+          }
+          // optionalAttrs (cfg.grafana.adminPasswordFile != null) {
+            admin_password = fileProviderValue cfg.grafana.adminPasswordFile;
+          }
+          // optionalAttrs (cfg.grafana.secretKeyFile == null) {
+            secret_key = cfg.grafana.secretKey;
+          }
+          // optionalAttrs (cfg.grafana.secretKeyFile != null) {
+            secret_key = fileProviderValue cfg.grafana.secretKeyFile;
+          };
         analytics = {
           reporting_enabled = false;
           check_for_updates = false;
@@ -349,7 +417,10 @@ in
             url = cfg.grafana.database.host;
             database = cfg.grafana.database.name;
             user = cfg.grafana.database.user;
-            password = cfg.grafana.database.password;
+            password =
+              if cfg.grafana.database.passwordFile != null
+              then fileProviderValue cfg.grafana.database.passwordFile
+              else cfg.grafana.database.password;
           }
         ];
       };
@@ -358,27 +429,5 @@ in
     systemd.services.grafana.after = mkAfter [ "postgresql.service" "generate-localhost-certs.service" ];
     systemd.services.grafana.requires = mkAfter [ "postgresql.service" ];
 
-    services.nginx.virtualHosts."${grafanaHost}".locations."${grafanaLocationAttr}" =
-      mkIf monitoringProxyEnabled {
-        proxyPass = "http://127.0.0.1:${toString grafanaListenPort}/";
-        proxyWebsockets = true;
-        extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-        '';
-      };
-
-    services.nginx.virtualHosts."${grafanaHost}".locations."${promLocationAttr}" =
-      mkIf monitoringProxyEnabled {
-        proxyPass = "http://127.0.0.1:${promPortStr}/";
-        extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-        '';
-      };
   };
 }

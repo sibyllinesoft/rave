@@ -29,6 +29,49 @@ This repository contains a **consolidated NixOS VM** for the RAVE project. There
 - **NEVER bypass the RAVE CLI for VM management**
 - **NEVER suggest manual `qemu-system-x86_64` commands**
 
+## 🔐 **RAVE CLI MANDATORY POLICY**
+
+**ALL VM operations MUST be performed through the RAVE CLI (`./cli/rave`)**
+
+### ✅ **Supported Operations:**
+- `./cli/rave vm create <name> --keypair <path>` - Create new VM
+- `./cli/rave vm start <name>` - Start VM
+- `./cli/rave vm stop <name>` - Stop VM  
+- `./cli/rave vm status <name>` - Check VM status
+- `./cli/rave vm status --all` - List all VMs
+- `./cli/rave vm ssh <name>` - SSH into VM
+- `./cli/rave vm logs <name>` - View VM logs
+- `./cli/rave vm reset <name>` - Reset VM to clean state
+
+### 🚫 **Forbidden Direct Operations:**
+- Manual `qemu-system-x86_64` commands
+- Direct VM image manipulation
+- Manual SSH with `sshpass` commands
+- Any VM operation bypassing the CLI
+
+### 📋 **If CLI Doesn't Support an Operation:**
+
+**Option 1: Update CLI (Preferred)**
+- If the operation is a legitimate VM management need, enhance the CLI to support it
+- Add new commands following the existing CLI patterns
+- Update this documentation to reflect new capabilities
+
+**Option 2: Document Special Circumstances (Rare)**
+- If the operation is for development/debugging purposes only
+- If the operation requires direct system access for legitimate reasons
+- **MUST** document why CLI bypass is necessary and when it's appropriate
+- **MUST** note security and consistency implications
+
+### 🎯 **CLI-First Philosophy:**
+The RAVE CLI provides a consistent, tested interface that:
+- Handles port configuration automatically
+- Manages VM lifecycle properly  
+- Provides proper error handling and feedback
+- Ensures consistent VM state management
+- Simplifies complex operations for end users
+
+**Users should never need to use manual shell commands for VM operations.**
+
 ## VM Architecture (Consolidated Complete Configuration)
 ```
 Host System (Ubuntu)
@@ -178,30 +221,45 @@ GITHUB_OAUTH_CLIENT_SECRET=your-github-oauth-client-secret
 
 ### Primary Build Process (ALWAYS USE THIS)
 ```bash
-# Build complete VM (default configuration)
+# Build complete VM (default port 8443)
 nix build
 
-# Copy and prepare for launch
-cp result/nixos.qcow2 rave-complete.qcow2 && chmod 644 rave-complete.qcow2
-
-# Launch complete VM with all services
-qemu-system-x86_64 \
-  -drive file=rave-complete.qcow2,format=qcow2 \
-  -m 8G \
-  -smp 4 \
-  -netdev user,id=net0,hostfwd=tcp::8081-:80,hostfwd=tcp::8889-:8080,hostfwd=tcp::2224-:22,hostfwd=tcp::8443-:443 \
-  -device virtio-net-pci,netdev=net0 \
-  -nographic
+# Launch VM using RAVE CLI (RECOMMENDED)
+./cli/rave vm create my-project --keypair ~/.ssh/your-key
+./cli/rave vm start my-project
 ```
 
-### Alternative Build Options (When Needed)
+### Custom Port Build Options
 ```bash
-# Minimal build (basic services only)
-nix build .#minimal
+# Build VM with custom port 7443
+nix build .#rave-qcow2-port-7443
 
-# Monitoring-only build (Grafana + Prometheus)  
-nix build .#monitoring
+# Build VM with custom port 9443  
+nix build .#rave-qcow2-port-9443
+
+# Default build (port 8443)
+nix build  # or nix build .#rave-qcow2
 ```
+
+**IMPORTANT**: Port configuration is now baked into the VM image at build time. All OAuth URLs, service configurations, and certificates use the configured port consistently.
+
+### ❌ **DEPRECATED: Manual QEMU Launch (DO NOT USE)**
+```bash
+# ❌ FORBIDDEN: Manual VM operations are NOT SUPPORTED
+# Use RAVE CLI instead: ./cli/rave vm create <name>
+
+# This section is kept for reference only - DO NOT USE THESE COMMANDS
+# cp result/nixos.qcow2 rave-complete.qcow2 && chmod 644 rave-complete.qcow2
+# qemu-system-x86_64 [manual commands...]
+```
+
+**⚠️ WARNING**: Manual QEMU commands bypass the CLI's port configuration, VM state management, and error handling. They may result in:
+- Inconsistent VM states
+- Port conflicts
+- Missing SOPS key mounting
+- Improper cleanup on failure
+
+**✅ ALWAYS USE**: `./cli/rave vm create` and `./cli/rave vm start` instead.
 
 ### 🚨 DEPRECATED BUILD COMMANDS (DO NOT USE)
 ❌ `nix build .#development` - Old scattered configuration

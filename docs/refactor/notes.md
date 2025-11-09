@@ -58,15 +58,41 @@
 - Mirrored the modularization approach for n8n (`nixos/modules/services/n8n/default.nix`), capturing its Docker unit, nginx routing, and Postgres bootstrap in one place.
 - `nixos/configs/complete-production.nix` now just sets `services.rave.n8n` options; removing n8n from the minimal profile is as simple as flipping `enable = false`.
 
-## Pass 10: Dev-Minimal Profile
-- Added `nixos/configs/dev-minimal.nix` which imports the full configuration but forces Outline/n8n off and shrinks VM resources (8 GB RAM, 30 GB disk).
-- Updated `flake.nix` so `nix build .#rave-qcow2-dev` spits out the lightweight image, and documented both profiles in `README.md` plus the provisioning how-to.
-- `rave vm build-image` now accepts `--profile {production,dev}` (with `production` default) so humans/agents can select the right flake output without remembering raw attribute names; `--attr` remains for custom builds.
-- Dashboard + welcome scripts now query `services.rave.*.enable` so Outline/n8n cards disappear automatically in the dev profile.
+## Pass 10: Development Profile (formerly dev-minimal)
+- Added `nixos/configs/development.nix` which imports the full configuration but forces Outline/n8n off and shrinks VM resources (8 GB RAM, 30 GB disk).
+- Updated `flake.nix` so `nix build .#development` (alias `.#rave-qcow2-dev`) spits out the lightweight image, and documented both profiles in `README.md` plus the provisioning how-to.
+- `rave vm build-image` now accepts `--profile {production,development}` (with `production` default) so humans/agents can select the right flake output without remembering raw attribute names; `--attr` remains for custom builds.
+- Dashboard + welcome scripts now query `services.rave.*.enable` so Outline/n8n cards disappear automatically in the development profile.
 - Added `rave vm list-profiles` so automation can discover available flake outputs without hardcoding names; README/how-to reference the command.
-- `rave vm launch-local` accepts `--profile` and defaults image/service messaging to match the selected build (dev profile now hides Outline/n8n URLs).
+- `rave vm launch-local` accepts `--profile` and defaults image/service messaging to match the selected build (development profile hides Outline/n8n URLs by default).
 
 ## Pass 11: Penpot Module
 - Reworked `nixos/modules/services/penpot` to append Postgres/Redis/nginx settings instead of overwriting them, and added options for public URLs, images, and secret/password inputs.
 - `nixos/configs/complete-production.nix` now configures Penpot via `services.rave.penpot` and stops hardcoding its database/Redis wiring; the dashboard/welcome scripts use optional snippets just like Outline/n8n.
 - The dev-minimal profile disables Penpot, and the CLI (launch/build commands) reflects that when printing service URLs.
+
+## Pass 12: Profile Metadata Export + CLI Autodiscovery
+- `flake.nix` now exposes `profileMetadata` so every profile’s flake attribute, description, feature flags, and default qcow name live alongside the actual build outputs (`production`, `development`, `demo`).
+- `rave vm build-image/list-profiles/launch-local` dynamically query that metadata via `nix eval --json .#profileMetadata`, falling back to a baked-in table if `nix` is unavailable. The CLI therefore stays in sync as new profiles land without additional code edits.
+- Updated the README + how-to docs to document the three supported profiles (including the new `demo` build) and the `productionWithPort` helper.
+
+## Pass 13: SOPS Bootstrap Polish + GitLab/Mattermost Docs
+- Fixed the new `security.rave.sopsBootstrap` helper script so it references shell variables correctly (`$selector` / `$dest`) and creates destination directories safely. This unblocks `nix flake check`, which previously failed while rendering the script.
+- Collapsed the legacy `GITLAB-MATTERMOST-INTEGRATION.md` file into a tiny pointer to the Divio how-to entry, reducing duplication.
+- Refreshed `docs/how-to/gitlab-mattermost-integration.md` with module-aware instructions (pointing operators at `services.rave.mattermost` / `services.rave.gitlab`) and updated the development workflow to use flake profiles plus the CLI.
+
+## Pass 14: Grafana & Friends Secret Hygiene
+- Added `adminPasswordFile`, `secretKeyFile`, and `database.passwordFile` options to the monitoring module so Grafana can read credentials via the `$__file{}` provider instead of embedding them in the Nix store.
+- Wired the production profile to `/run/secrets/grafana/{admin-password,secret-key,db-password}` and taught the SOPS bootstrapper to extract + chmod those secrets (plus create `/run/secrets/grafana` via tmpfiles).
+- Introduced `postgres-set-grafana-password.service`, `postgres-set-mattermost-password.service`, `postgres-set-penpot-password.service`, `postgres-set-n8n-password.service`, and `postgres-set-prometheus-password.service`, which read `/run/secrets/{grafana,database}/...` after `sops-init` and update the PostgreSQL roles instead of baking passwords inside `initialSql`. Grafana/Mattermost/Penpot/n8n + the Prometheus exporter wait for their respective units before starting.
+- `rave secrets install` now copies all of these DB secrets (including the Prometheus exporter) and triggers remote refreshes via the CLI helpers, keeping the VM in sync without manual `psql`.
+- With the new file-backed settings `nix flake check` no longer prints the Grafana plaintext warning, and Mattermost finally follows the same pattern.
+
+## Pass 15: Artifact Staging
+- Added `artifacts/README.md` (tracked) so contributors have a canonical place to stash QCOW images, logs, and data snapshots; updated the main README to remind folks to keep those files out of Git.
+- Updated the hygiene how-to and `scripts/repo/hygiene-check.sh` so the script now scans the working tree for `*.qcow2` outside `artifacts/` and warns with relocation instructions.
+- `docs/how-to/repo-hygiene.md` reflects the new check order, keeping the documentation aligned with the script’s output.
+
+## Pass 16: Minimal Flake Test
+- Replaced the outdated `tests/rave-vm.nix` (which depended on the old P2 configs) with `tests/minimal.nix`, a lightweight NixOS test that boots the production profile with optional services disabled and verifies nginx/PostgreSQL/basic HTTPS are alive.
+- `flake.nix` now exposes the test via `checks.x86_64-linux.minimal-test`, so `nix flake check` runs it automatically and `nix build .#checks.x86_64-linux.minimal-test` provides a reproducible smoke test before shipping new images.

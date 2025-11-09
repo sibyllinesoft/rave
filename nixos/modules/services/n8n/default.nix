@@ -1,14 +1,22 @@
 { config, lib, pkgs, ... }:
 
+with lib;
+
 let
   cfg = config.services.rave.n8n;
+  nginxVhost = config.services.rave.nginx.host;
   basePath = cfg.basePath;
-  normalizedPath = if lib.hasSuffix "/" basePath then basePath else "${basePath}/";
-  redirectPath = lib.removeSuffix "/" normalizedPath;
+  normalizedPath = if hasSuffix "/" basePath then basePath else "${basePath}/";
+  redirectPath = removeSuffix "/" normalizedPath;
   publicUrl = cfg.publicUrl;
+  pathOrString = types.either types.path types.str;
+  dbPasswordExpr =
+    if cfg.dbPasswordFile != null
+    then "$(cat ${cfg.dbPasswordFile})"
+    else cfg.dbPassword;
 in {
   options.services.rave.n8n = {
-    enable = lib.mkEnableOption "n8n automation service";
+    enable = mkEnableOption "n8n automation service";
 
     publicUrl = lib.mkOption {
       type = lib.types.str;
@@ -34,6 +42,12 @@ in {
       description = "PostgreSQL password used by n8n";
     };
 
+    dbPasswordFile = lib.mkOption {
+      type = lib.types.nullOr pathOrString;
+      default = null;
+      description = "Optional file containing the n8n database password.";
+    };
+
     encryptionKey = lib.mkOption {
       type = lib.types.str;
       default = "n8n-encryption-key";
@@ -53,24 +67,10 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    services.postgresql.ensureDatabases = lib.mkAfter [ "n8n" ];
-    services.postgresql.ensureUsers = lib.mkAfter [ { name = "n8n"; ensureDBOwnership = true; } ];
-    services.postgresql.initialScript = lib.mkAfter ''
-      SELECT format('CREATE ROLE %I LOGIN', 'n8n')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'n8n')
-      \gexec
-
-      SELECT format('CREATE DATABASE %I OWNER %I', 'n8n', 'n8n')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'n8n')
-      \gexec
-
-      GRANT ALL PRIVILEGES ON DATABASE n8n TO n8n;
-      ALTER USER n8n WITH PASSWORD '${cfg.dbPassword}';
-    '';
-    systemd.services.postgresql.postStart = lib.mkAfter ''
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER n8n PASSWORD '${cfg.dbPassword}';" || true
-    '';
+  config = lib.mkMerge [
+    lib.mkIf cfg.enable {
+    services.postgresql.ensureDatabases = mkAfter [ "n8n" ];
+    services.postgresql.ensureUsers = mkAfter [ { name = "n8n"; ensureDBOwnership = true; } ];
 
     systemd.services.n8n = {
       description = "n8n automation (Docker)";
@@ -97,7 +97,7 @@ in {
             -e DB_POSTGRESDB_PORT=5432 \
             -e DB_POSTGRESDB_DATABASE=n8n \
             -e DB_POSTGRESDB_USER=n8n \
-            -e DB_POSTGRESDB_PASSWORD=${cfg.dbPassword} \
+            -e DB_POSTGRESDB_PASSWORD=${dbPasswordExpr} \
             -e N8N_ENCRYPTION_KEY=${cfg.encryptionKey} \
             -e WEBHOOK_URL=${cfg.publicUrl} \
             -e N8N_HOST=localhost \
@@ -117,7 +117,7 @@ in {
       };
     };
 
-    services.nginx.virtualHosts."localhost".locations.${normalizedPath} = {
+    services.nginx.virtualHosts."${nginxVhost}".locations.${normalizedPath} = {
       proxyPass = "http://127.0.0.1:${toString cfg.hostPort}";
       proxyWebsockets = true;
       extraConfig = ''
@@ -135,9 +135,11 @@ in {
         proxy_redirect off;
       '';
     };
-
-    services.nginx.virtualHosts."localhost".locations.${redirectPath} = {
-      return = "302 ${normalizedPath}";
-    };
-  };
+  }
+    lib.mkIf (cfg.enable && normalizedPath != redirectPath) {
+      services.nginx.virtualHosts."${nginxVhost}".locations.${redirectPath} = {
+        return = "302 ${normalizedPath}";
+      };
+    }
+  ];
 }

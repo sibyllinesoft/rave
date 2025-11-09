@@ -76,8 +76,12 @@ ${builtins.readFile ./ensure-gitlab-mattermost-ci.py}
 
   updateMattermostScript = pkgs.writeText "update-mattermost-config.py"
     (lib.replaceStrings
-      [ "@SITE_URL@" "@BRAND_TEXT@" "@GITLAB_SETTINGS@" ]
-      [ (builtins.toJSON cfg.publicUrl) (builtins.toJSON brandHtmlValue) gitlabSettingsJSON ]
+      [ "@SITE_URL@" "@BRAND_TEXT@" "@GITLAB_SETTINGS@" "@GITLAB_SECRET_FALLBACK@" ]
+      [ (builtins.toJSON cfg.publicUrl)
+        (builtins.toJSON brandHtmlValue)
+        gitlabSettingsJSON
+        (builtins.toJSON cfg.gitlab.clientSecretFallback)
+      ]
       (builtins.readFile ./update-mattermost-config.py));
 
 in
@@ -426,74 +430,19 @@ in
         fi
       '')
       (lib.mkAfter ''
-        SITE_URL=${lib.escapeShellArg cfg.publicUrl} \
-        GITLAB_AUTH_BASE=${lib.escapeShellArg cfg.gitlab.baseUrl} \
-        GITLAB_API_BASE=${lib.escapeShellArg cfg.gitlab.internalUrl} \
-        GITLAB_CLIENT_ID=${lib.escapeShellArg cfg.gitlab.clientId} \
-        BRAND_HTML=${lib.escapeShellArg brandHtmlValue} \
+        export SITE_URL=${lib.escapeShellArg cfg.publicUrl}
+        export BRAND_HTML=${lib.escapeShellArg brandHtmlValue}
+        export GITLAB_AUTH_BASE=${lib.escapeShellArg cfg.gitlab.baseUrl}
+        export GITLAB_API_BASE=${lib.escapeShellArg cfg.gitlab.internalUrl}
+        export GITLAB_CLIENT_ID=${lib.escapeShellArg cfg.gitlab.clientId}
+        export GITLAB_SCOPE=${lib.escapeShellArg cfg.gitlab.oauthScopes}
+        export GITLAB_REDIRECT=${lib.escapeShellArg gitlabRedirectUri}
         ${optionalString hasGitlabSecretFile ''
-        GITLAB_SECRET_FILE=${lib.escapeShellArg gitlabSecretFile} \
+        export GITLAB_SECRET_FILE=${lib.escapeShellArg gitlabSecretFile}
         ''}${optionalString (!hasGitlabSecretFile) ''
-        GITLAB_SECRET=${lib.escapeShellArg cfg.gitlab.clientSecretFallback} \
-        ''}GITLAB_REDIRECT=${lib.escapeShellArg gitlabRedirectUri} \
-        ${pkgs.python3}/bin/python3 <<'PY'
-import json
-import os
-from pathlib import Path
-from urllib.parse import urlparse
-
-config_path = Path('/var/lib/mattermost/config/config.json')
-if not config_path.exists():
-    raise SystemExit(0)
-
-site_url = os.environ.get('SITE_URL', 'https://localhost:8443/mattermost').rstrip('/')
-login_url = f"{site_url}/oauth/gitlab/login"
-login_path = urlparse(login_url).path or "/oauth/gitlab/login"
-gitlab_auth_base = os.environ.get('GITLAB_AUTH_BASE', site_url).rstrip('/')
-gitlab_api_base = os.environ.get('GITLAB_API_BASE', site_url).rstrip('/')
-gitlab_client_id = os.environ.get('GITLAB_CLIENT_ID', '')
-secret_path = os.environ.get('GITLAB_SECRET_FILE', '')
-gitlab_secret = os.environ.get('GITLAB_SECRET', '')
-if secret_path:
-    secret_file = Path(secret_path)
-    if secret_file.is_file():
-        gitlab_secret = secret_file.read_text(encoding='utf-8').strip()
-gitlab_redirect = os.environ.get('GITLAB_REDIRECT', '')
-brand_html = os.environ.get('BRAND_HTML')
-if not brand_html:
-    brand_html = "Use the GitLab button below to sign in. If it does not appear, open {path} manually.".format(
-        path=login_path
-    )
-
-gitlab_scope = os.environ.get('GITLAB_SCOPE', 'read_user')
-config = json.loads(config_path.read_text())
-
-service = config.setdefault('ServiceSettings', {})
-service['SiteURL'] = site_url
-
-team = config.setdefault('TeamSettings', {})
-team['EnableCustomBrand'] = True
-team['CustomDescriptionText'] = ''
-team['CustomBrandText'] = brand_html
-
-gitlab = config.setdefault('GitLabSettings', {})
-gitlab['Enable'] = True
-gitlab['Id'] = gitlab_client_id
-gitlab['Secret'] = gitlab_secret
-gitlab['Scope'] = gitlab_scope
-gitlab['AuthEndpoint'] = f"{gitlab_auth_base}/oauth/authorize"
-gitlab['TokenEndpoint'] = f"{gitlab_api_base}/oauth/token"
-gitlab['UserAPIEndpoint'] = f"{gitlab_api_base}/api/v4/user"
-gitlab['SkipTLSVerification'] = True
-gitlab['DiscoveryEndpoint'] = ''
-gitlab['EnableAuth'] = True
-gitlab['EnableSync'] = True
-gitlab['AutoLogin'] = False
-gitlab['RedirectUri'] = gitlab_redirect
-config.pop('GoogleSettings', None)
-
-config_path.write_text(json.dumps(config, indent=2) + '\n')
-PY
+        export GITLAB_SECRET=${lib.escapeShellArg cfg.gitlab.clientSecretFallback}
+        ''}
+        ${pkgs.python3}/bin/python3 ${updateMattermostScript}
         ${pkgs.coreutils}/bin/mkdir -p /var/lib/mattermost
         ${pkgs.coreutils}/bin/rm -rf /var/lib/mattermost/.client-tmp
         ${pkgs.coreutils}/bin/cp -R ${cfg.package}/client /var/lib/mattermost/.client-tmp

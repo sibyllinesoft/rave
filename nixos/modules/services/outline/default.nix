@@ -1,7 +1,18 @@
 { config, lib, pkgs, ... }:
 
+with lib;
+
 let
   cfg = config.services.rave.outline;
+  nginxVhost = config.services.rave.nginx.host;
+  redisPlatform = config.services.rave.redis.platform or {};
+  sharedAllocations = redisPlatform.allocations or {};
+  sharedRedisHost = redisPlatform.dockerHost or "172.17.0.1";
+  sharedRedisPort = redisPlatform.port or 6379;
+  sharedRedisUnit = redisPlatform.unit or "redis-main.service";
+  redisDatabase = if cfg.redisDb != null then cfg.redisDb else sharedAllocations.outline or 5;
+  redisUrl = "redis://${sharedRedisHost}:${toString sharedRedisPort}/${toString redisDatabase}";
+  trimNewline = "${pkgs.coreutils}/bin/tr -d '\\n'";
 
   outlineBasePath =
     let
@@ -45,10 +56,22 @@ in
       description = "Database password for the Outline PostgreSQL user.";
     };
 
+    dbPasswordFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Path to a file containing the Outline database password.";
+    };
+
     secretKey = lib.mkOption {
       type = lib.types.str;
       default = "outline-secret-key";
       description = "Outline SECRET_KEY value.";
+    };
+
+    secretKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Path to a file containing Outline's SECRET_KEY.";
     };
 
     utilsSecret = lib.mkOption {
@@ -57,10 +80,16 @@ in
       description = "Outline UTILS_SECRET value.";
     };
 
+    utilsSecretFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Path to a file containing Outline's UTILS_SECRET.";
+    };
+
     redisDb = lib.mkOption {
-      type = lib.types.int;
-      default = 5;
-      description = "Redis database number used by Outline.";
+      type = lib.types.nullOr lib.types.int;
+      default = null;
+      description = "Redis database number used by Outline (defaults to services.rave.redis.allocations.outline).";
     };
   };
 
@@ -69,27 +98,14 @@ in
     services.postgresql.ensureUsers = lib.mkAfter [
       { name = "outline"; ensureDBOwnership = true; }
     ];
-    services.postgresql.initialScript = lib.mkAfter ''
-      SELECT format('CREATE ROLE %I LOGIN', 'outline')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'outline')
-      \gexec
-
-      SELECT format('CREATE DATABASE %I OWNER %I', 'outline', 'outline')
-      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'outline')
-      \gexec
-
-      -- Outline wiki database setup
-      GRANT ALL PRIVILEGES ON DATABASE outline TO outline;
-      ALTER USER outline WITH PASSWORD '${cfg.dbPassword}';
-    '';
     systemd.services.postgresql.postStart = lib.mkAfter ''
       ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER outline PASSWORD '${cfg.dbPassword}';" || true
     '';
 
     systemd.services.outline = {
       description = "Outline wiki (Docker)";
-      after = [ "docker.service" "postgresql.service" "redis-main.service" ];
-      requires = [ "docker.service" "postgresql.service" ];
+      after = [ "docker.service" "postgresql.service" sharedRedisUnit ];
+      requires = [ "docker.service" "postgresql.service" sharedRedisUnit ];
       wantedBy = [ "multi-user.target" ];
 
       serviceConfig = {
@@ -102,6 +118,35 @@ in
           "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker volume create outline-data || true'"
         ];
         ExecStart = pkgs.writeShellScript "outline-start" ''
+          set -euo pipefail
+${optionalString (cfg.dbPasswordFile != null) ''
+          if [ -s ${cfg.dbPasswordFile} ]; then
+            DB_PASSWORD="$(${pkgs.coreutils}/bin/cat ${cfg.dbPasswordFile} | ${trimNewline})"
+          else
+            DB_PASSWORD=${lib.escapeShellArg cfg.dbPassword}
+          fi
+''}${optionalString (cfg.dbPasswordFile == null) ''
+          DB_PASSWORD=${lib.escapeShellArg cfg.dbPassword}
+''}
+${optionalString (cfg.secretKeyFile != null) ''
+          if [ -s ${cfg.secretKeyFile} ]; then
+            SECRET_KEY="$(${pkgs.coreutils}/bin/cat ${cfg.secretKeyFile} | ${trimNewline})"
+          else
+            SECRET_KEY=${lib.escapeShellArg cfg.secretKey}
+          fi
+''}${optionalString (cfg.secretKeyFile == null) ''
+          SECRET_KEY=${lib.escapeShellArg cfg.secretKey}
+''}
+${optionalString (cfg.utilsSecretFile != null) ''
+          if [ -s ${cfg.utilsSecretFile} ]; then
+            UTILS_SECRET="$(${pkgs.coreutils}/bin/cat ${cfg.utilsSecretFile} | ${trimNewline})"
+          else
+            UTILS_SECRET=${lib.escapeShellArg cfg.utilsSecret}
+          fi
+''}${optionalString (cfg.utilsSecretFile == null) ''
+          UTILS_SECRET=${lib.escapeShellArg cfg.utilsSecret}
+''}
+
           exec ${pkgs.docker}/bin/docker run \
             --rm \
             --name outline \
@@ -109,11 +154,11 @@ in
             -v outline-data:/var/lib/outline/data \
             -e URL=${cfg.publicUrl} \
             -e PORT=3000 \
-            -e SECRET_KEY=${cfg.secretKey} \
-            -e UTILS_SECRET=${cfg.utilsSecret} \
-            -e DATABASE_URL=postgresql://outline:${cfg.dbPassword}@172.17.0.1:5432/outline \
+            -e SECRET_KEY="$SECRET_KEY" \
+            -e UTILS_SECRET="$UTILS_SECRET" \
+            -e DATABASE_URL="postgresql://outline:''${DB_PASSWORD}@172.17.0.1:5432/outline" \
             -e PGSSLMODE=disable \
-            -e REDIS_URL=redis://172.17.0.1:6379/${toString cfg.redisDb} \
+            -e REDIS_URL=${redisUrl} \
             -e FILE_STORAGE=local \
             -e FILE_STORAGE_LOCAL_ROOT_DIR=/var/lib/outline/data \
             -e FILE_STORAGE_LOCAL_SERVER_ROOT=${cfg.publicUrl}/uploads \
@@ -123,7 +168,7 @@ in
       };
     };
 
-    services.nginx.virtualHosts."localhost".locations = {
+    services.nginx.virtualHosts."${nginxVhost}".locations = {
       "${basePathWithSlash}" = {
         proxyPass = "http://127.0.0.1:${toString cfg.hostPort}/";
         extraConfig = ''

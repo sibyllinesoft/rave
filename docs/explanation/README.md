@@ -6,5 +6,6 @@ Short-term migration targets:
 - `docs/security/SECURITY_MODEL.md`
 - `docs/adr/*`
 - `docs/NATS-IMPLEMENTATION-SUMMARY.md`
+- [GitLab ↔ Mattermost Integration Status](integration-status.md)
 
 Each entry should explain "why" decisions were made and link to tutorials/how-tos for concrete execution.

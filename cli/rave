@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 # Add the cli directory to Python path for imports
 CLI_DIR = Path(__file__).parent
+REPO_ROOT = CLI_DIR.parent
 sys.path.insert(0, str(CLI_DIR))
 
 from vm_manager import VMManager
@@ -34,20 +35,69 @@ from platform_utils import PlatformManager
 DEFAULT_AGE_KEY_PATH = Path.home() / ".config" / "sops" / "age" / "keys.txt"
 DEFAULT_SECRETS_FILE = Path("config/secrets.yaml")
 
-PROFILE_METADATA: Dict[str, Dict[str, Any]] = {
+_DEFAULT_PROFILE_METADATA: Dict[str, Dict[str, Any]] = {
     "production": {
-        "attr": "rave-qcow2",
+        "attr": "production",
         "description": "Full stack (GitLab, Mattermost, Penpot, Outline, n8n, observability)",
-        "default_image": "rave-complete-localhost.qcow2",
-        "features": {"penpot": True, "outline": True, "n8n": True},
+        "default_image": "rave-production-localhost.qcow2",
+        "features": {"penpot": True, "outline": True, "n8n": True, "monitoring": True},
     },
-    "dev": {
-        "attr": "rave-qcow2-dev",
+    "development": {
+        "attr": "development",
         "description": "Slimmer build (Penpot/Outline/n8n disabled, lower RAM/disk)",
-        "default_image": "rave-dev-localhost.qcow2",
-        "features": {"penpot": False, "outline": False, "n8n": False},
+        "default_image": "rave-development-localhost.qcow2",
+        "features": {"penpot": False, "outline": False, "n8n": False, "monitoring": True},
+    },
+    "demo": {
+        "attr": "demo",
+        "description": "Demo-friendly stack (observability + optional apps disabled, smaller footprint)",
+        "default_image": "rave-demo-localhost.qcow2",
+        "features": {"penpot": False, "outline": False, "n8n": False, "monitoring": False},
     },
 }
+
+
+def _load_profile_metadata_from_flake() -> Optional[Dict[str, Dict[str, Any]]]:
+    nix_path = shutil.which("nix")
+    if not nix_path:
+        return None
+
+    repo_root = REPO_ROOT
+    try:
+        result = subprocess.run(
+            [nix_path, "eval", "--json", ".#profileMetadata"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    normalized = {}
+    for name, meta in data.items():
+        if not isinstance(meta, dict):
+            continue
+        normalized[name] = {
+            "attr": meta.get("attr", name),
+            "description": meta.get("description", ""),
+            "default_image": meta.get(
+                "defaultImage", f"rave-{name}-localhost.qcow2"
+            ),
+            "features": meta.get("features", {}),
+        }
+    return normalized or None
+
+
+PROFILE_METADATA = _load_profile_metadata_from_flake() or _DEFAULT_PROFILE_METADATA
 
 PROFILE_ATTRS = {name: meta["attr"] for name, meta in PROFILE_METADATA.items()}
 
@@ -734,6 +784,135 @@ def _load_decrypted_secrets(secrets_path: Path, age_key_path: Path) -> Optional[
     return None
 
 
+def _prepare_secret_entries(
+    secrets_data: Dict[str, Any],
+    secrets_path: Path,
+) -> Dict[str, Any]:
+    """Normalize decrypted secrets into installable entries and warnings."""
+
+    warnings: List[str] = []
+
+    mattermost_raw = secrets_data.get("mattermost", {}) or {}
+    gitlab = secrets_data.get("gitlab", {}) or {}
+    oidc = secrets_data.get("oidc", {}) or {}
+    grafana = secrets_data.get("grafana", {}) or {}
+    database_creds = secrets_data.get("database", {}) or {}
+
+    mm_env_content = mattermost_raw.get("env") or ""
+    env_lines = mm_env_content.splitlines() if mm_env_content else []
+    datasource_value = ""
+    datasource_password = ""
+    for line in env_lines:
+        if line.startswith("MM_SQLSETTINGS_DATASOURCE="):
+            datasource_value = line.split("=", 1)[1].strip()
+            parsed = urlparse(datasource_value)
+            datasource_password = parsed.password or ""
+            break
+
+    if not datasource_value:
+        fallback_password = database_creds.get("mattermost-password") or "mmpgsecret"
+        datasource_password = fallback_password
+        datasource_value = (
+            "postgres://mattermost:" + fallback_password +
+            "@localhost:5432/mattermost?sslmode=disable&connect_timeout=10"
+        )
+        env_lines.append("MM_SERVICESETTINGS_ENABLELOCALMODE=false")
+        env_lines.append("MM_SQLSETTINGS_DRIVERNAME=postgres")
+        env_lines.append(f"MM_SQLSETTINGS_DATASOURCE={datasource_value}")
+        env_lines.append("MM_BLEVESETTINGS_INDEXDIR=/var/lib/mattermost/bleve-indexes")
+        mm_env_content = "\n".join(env_lines)
+
+    mattermost = dict(mattermost_raw)
+    if mm_env_content:
+        mattermost["env"] = mm_env_content
+
+    def _derive_hex(base_value: Optional[str], label: str) -> str:
+        seed = (base_value or label).encode("utf-8")
+        return hashlib.sha256(seed).hexdigest()
+
+    gitlab_secret_key_base = gitlab.get("secret-key-base")
+    gitlab_db_key_base = gitlab.get("db-key-base") or _derive_hex(
+        gitlab_secret_key_base or gitlab.get("db-password"),
+        "gitlab-db",
+    )
+    gitlab_otp_key_base = gitlab.get("otp-key-base") or _derive_hex(
+        gitlab.get("root-password") or gitlab_secret_key_base,
+        "gitlab-otp",
+    )
+    gitlab_jws_key_base = (
+        gitlab.get("jws-key-base")
+        or gitlab.get("jwt-signing-key")
+        or _derive_hex(gitlab_secret_key_base, "gitlab-jws")
+    )
+
+    def _warn_missing(secret_key: str, description: str, value: Optional[str]):
+        if not value:
+            warnings.append(
+                f"Secret '{secret_key}' missing in {secrets_path}; {description} will not be installed."
+            )
+
+    required_db_secrets = [
+        ("grafana/db-password", "Grafana DB password", grafana.get("db-password")),
+        ("database/grafana-password", "Grafana admin password", database_creds.get("grafana-password")),
+        ("grafana/secret-key", "Grafana session secret", grafana.get("secret-key")),
+        ("database/mattermost-password", "Mattermost DB password", database_creds.get("mattermost-password")),
+        ("database/penpot-password", "Penpot DB password", database_creds.get("penpot-password")),
+        ("database/n8n-password", "n8n DB password", database_creds.get("n8n-password")),
+        ("database/prometheus-password", "Prometheus exporter DB password", database_creds.get("prometheus-password")),
+    ]
+    for key, description, value in required_db_secrets:
+        _warn_missing(key, description, value)
+
+    secret_items = [
+        ("mattermost/admin-username", mattermost.get("admin-username"), "root", "root", "0400", None),
+        ("mattermost/admin-email", mattermost.get("admin-email"), "root", "root", "0400", None),
+        ("mattermost/admin-password", mattermost.get("admin-password"), "root", "root", "0400", None),
+        ("mattermost/env", mattermost.get("env"), "mattermost", "mattermost", "0600", None),
+        ("oidc/chat-control-client-secret", oidc.get("chat-control-client-secret"), "root", "root", "0400", None),
+        ("gitlab/api-token", gitlab.get("api-token"), "gitlab", "gitlab", "0400", None),
+        ("gitlab/oauth-provider-client-secret", gitlab.get("oauth-provider-client-secret"), "gitlab", "gitlab", "0400", None),
+        ("gitlab/root-password", gitlab.get("root-password"), "gitlab", "gitlab", "0400", None),
+        ("gitlab/db-password", gitlab.get("db-password"), "postgres", "gitlab", "0440", None),
+        ("gitlab/secret-key-base", gitlab_secret_key_base, "gitlab", "gitlab", "0400", None),
+        ("gitlab/db-key-base", gitlab_db_key_base, "gitlab", "gitlab", "0400", None),
+        ("gitlab/otp-key-base", gitlab_otp_key_base, "gitlab", "gitlab", "0400", None),
+        ("gitlab/jws-key-base", gitlab_jws_key_base, "gitlab", "gitlab", "0400", None),
+        ("database/mattermost-password", database_creds.get("mattermost-password"), "root", "postgres", "0440", None),
+        ("database/penpot-password", database_creds.get("penpot-password"), "root", "postgres", "0440", None),
+        ("database/n8n-password", database_creds.get("n8n-password"), "root", "postgres", "0440", None),
+        ("database/prometheus-password", database_creds.get("prometheus-password"), "root", "postgres", "0440", None),
+        ("grafana/secret-key", grafana.get("secret-key"), "grafana", "grafana", "0400", None),
+        ("grafana/db-password", grafana.get("db-password"), "grafana", "grafana", "0400", None),
+        ("grafana/admin-password", database_creds.get("grafana-password"), "grafana", "grafana", "0400", None),
+    ]
+
+    entries: List[Dict[str, str]] = []
+    for name, content, owner, group, mode, remote_path in secret_items:
+        if not content:
+            continue
+        target_path = remote_path or f"/run/secrets/{name}"
+        entries.append(
+            {
+                "name": name,
+                "remote_path": target_path,
+                "content": content,
+                "owner": owner,
+                "group": group,
+                "mode": mode,
+            }
+        )
+
+    return {
+        "entries": entries,
+        "warnings": warnings,
+        "mattermost": mattermost,
+        "gitlab": gitlab,
+        "grafana": grafana,
+        "database": database_creds,
+        "datasource_password": datasource_password,
+    }
+
+
 def _sync_vm_secrets(
     vm_manager: VMManager,
     company_name: str,
@@ -777,94 +956,18 @@ def _sync_vm_secrets(
             f"Secrets file not found at {secrets_path}; skipped secret sync"
         )
 
+    plan: Optional[Dict[str, Any]] = None
+
     if secrets_data:
-        mattermost_raw = secrets_data.get("mattermost", {})
-        gitlab = secrets_data.get("gitlab", {})
-        oidc = secrets_data.get("oidc", {})
-        database_creds = secrets_data.get("database", {})
-
-        mm_env_content = mattermost_raw.get("env") or ""
-        env_lines = mm_env_content.splitlines()
-        datasource_value = ""
-        datasource_password = ""
-        for line in env_lines:
-            if line.startswith("MM_SQLSETTINGS_DATASOURCE="):
-                datasource_value = line.split("=", 1)[1].strip()
-                parsed = urlparse(datasource_value)
-                datasource_password = parsed.password or ""
-                break
-
-        if not datasource_value:
-            fallback_password = (
-                database_creds.get("mattermost-password")
-                or "mmpgsecret"
-            )
-            datasource_password = fallback_password
-            datasource_value = (
-                "postgres://mattermost:" + fallback_password +
-                "@localhost:5432/mattermost?sslmode=disable&connect_timeout=10"
-            )
-            env_lines.append("MM_SERVICESETTINGS_ENABLELOCALMODE=false")
-            env_lines.append("MM_SQLSETTINGS_DRIVERNAME=postgres")
-            env_lines.append(f"MM_SQLSETTINGS_DATASOURCE={datasource_value}")
-            env_lines.append("MM_BLEVESETTINGS_INDEXDIR=/var/lib/mattermost/bleve-indexes")
-            mm_env_content = "\n".join(env_lines)
-
-        mattermost = dict(mattermost_raw)
-        if mm_env_content:
-            mattermost["env"] = mm_env_content
-
-        def _derive_hex(base_value: Optional[str], label: str) -> str:
-            seed = (base_value or label).encode("utf-8")
-            return hashlib.sha256(seed).hexdigest()
-
-        gitlab_secret_key_base = gitlab.get("secret-key-base")
-        gitlab_db_key_base = gitlab.get("db-key-base") or _derive_hex(
-            gitlab_secret_key_base or gitlab.get("db-password"),
-            "gitlab-db",
-        )
-        gitlab_otp_key_base = gitlab.get("otp-key-base") or _derive_hex(
-            gitlab.get("root-password") or gitlab_secret_key_base,
-            "gitlab-otp",
-        )
-        gitlab_jws_key_base = (
-            gitlab.get("jws-key-base")
-            or gitlab.get("jwt-signing-key")
-            or _derive_hex(gitlab_secret_key_base, "gitlab-jws")
-        )
-
-        secret_items = [
-            ("mattermost/admin-username", mattermost.get("admin-username"), "root", "root", "0400", None),
-            ("mattermost/admin-email", mattermost.get("admin-email"), "root", "root", "0400", None),
-            ("mattermost/admin-password", mattermost.get("admin-password"), "root", "root", "0400", None),
-            ("mattermost/env", mattermost.get("env"), "mattermost", "mattermost", "0600", None),
-            ("oidc/chat-control-client-secret", oidc.get("chat-control-client-secret"), "root", "root", "0400", None),
-            ("gitlab/api-token", gitlab.get("api-token"), "gitlab", "gitlab", "0400", None),
-            ("gitlab/oauth-provider-client-secret", gitlab.get("oauth-provider-client-secret"), "gitlab", "gitlab", "0400", None),
-            ("gitlab/root-password", gitlab.get("root-password"), "gitlab", "gitlab", "0400", None),
-            ("gitlab/db-password", gitlab.get("db-password"), "postgres", "gitlab", "0440", None),
-            ("gitlab/secret-key-base", gitlab_secret_key_base, "gitlab", "gitlab", "0400", None),
-            ("gitlab/db-key-base", gitlab_db_key_base, "gitlab", "gitlab", "0400", None),
-            ("gitlab/otp-key-base", gitlab_otp_key_base, "gitlab", "gitlab", "0400", None),
-            ("gitlab/jws-key-base", gitlab_jws_key_base, "gitlab", "gitlab", "0400", None),
-        ]
-
-        entries = []
-        for name, content, owner, group, mode, remote_path in secret_items:
-            if not content:
-                continue
-            target_path = remote_path or f"/run/secrets/{name}"
-            entries.append(
-                {
-                    "name": name,
-                    "remote_path": target_path,
-                    "content": content,
-                    "owner": owner,
-                    "group": group,
-                    "mode": mode,
-                }
-            )
-
+        plan = _prepare_secret_entries(secrets_data, secrets_path)
+        warnings.extend(plan["warnings"])
+        entries = plan["entries"]
+        mattermost = plan["mattermost"]
+        gitlab = plan["gitlab"]
+        grafana = plan["grafana"]
+        database_creds = plan["database"]
+        datasource_password = plan["datasource_password"]
+    
         if entries:
             secret_result = vm_manager.install_secret_files(company_name, entries)
             if not secret_result.get("success"):
@@ -876,7 +979,7 @@ def _sync_vm_secrets(
 
             installed_secrets = [entry["name"] for entry in entries]
 
-        if restart_db:
+        if restart_db and plan:
             db_password = database_creds.get("mattermost-password") or datasource_password
             if db_password:
                 db_result = vm_manager.ensure_mattermost_database(
@@ -898,6 +1001,54 @@ def _sync_vm_secrets(
                 else:
                     warnings.append(
                         f"GitLab database password refresh failed: {gitlab_db_result.get('error')}"
+                    )
+
+            grafana_db_password = grafana.get("db-password")
+            if grafana_db_password:
+                grafana_db_result = vm_manager.ensure_grafana_database_password(
+                    company_name, grafana_db_password
+                )
+                if grafana_db_result.get("success"):
+                    messages.append("Grafana database password refreshed")
+                else:
+                    warnings.append(
+                        f"Grafana database password refresh failed: {grafana_db_result.get('error')}"
+                    )
+
+            penpot_db_password = database_creds.get("penpot-password")
+            if penpot_db_password:
+                penpot_db_result = vm_manager.ensure_penpot_database_password(
+                    company_name, penpot_db_password
+                )
+                if penpot_db_result.get("success"):
+                    messages.append("Penpot database password refreshed")
+                else:
+                    warnings.append(
+                        f"Penpot database password refresh failed: {penpot_db_result.get('error')}"
+                    )
+
+            n8n_db_password = database_creds.get("n8n-password")
+            if n8n_db_password:
+                n8n_db_result = vm_manager.ensure_n8n_database_password(
+                    company_name, n8n_db_password
+                )
+                if n8n_db_result.get("success"):
+                    messages.append("n8n database password refreshed")
+                else:
+                    warnings.append(
+                        f"n8n database password refresh failed: {n8n_db_result.get('error')}"
+                    )
+
+            prometheus_db_password = database_creds.get("prometheus-password")
+            if prometheus_db_password:
+                prometheus_db_result = vm_manager.ensure_prometheus_database_password(
+                    company_name, prometheus_db_password
+                )
+                if prometheus_db_result.get("success"):
+                    messages.append("Prometheus exporter database password refreshed")
+                else:
+                    warnings.append(
+                        f"Prometheus database password refresh failed: {prometheus_db_result.get('error')}"
                     )
 
     return {
@@ -959,6 +1110,97 @@ def install_key(ctx, company_name: str, key_file: str, remote_path: str, secrets
 
     for warning in sync_result.get("warnings", []):
         click.echo(f"⚠️ {warning}")
+
+
+@secrets.command(name="diff")
+@click.option(
+    "--key-file",
+    default=str(DEFAULT_AGE_KEY_PATH),
+    show_default=True,
+    help="Age private key used to decrypt secrets",
+)
+@click.option(
+    "--secrets-file",
+    default=str(DEFAULT_SECRETS_FILE),
+    show_default=True,
+    help="Path to the encrypted secrets file",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    show_default=True,
+    help="Output format for the dry-run report",
+)
+def secrets_diff(key_file: str, secrets_file: str, output_format: str) -> None:
+    """Show which secret files would be installed without touching a VM."""
+
+    secrets_path = Path(secrets_file)
+    if not secrets_path.exists():
+        click.echo(f"❌ Secrets file not found at {secrets_path}")
+        sys.exit(1)
+
+    key_path = Path(key_file).expanduser()
+    secrets_data = _load_decrypted_secrets(secrets_path, key_path)
+    if not secrets_data:
+        click.echo("❌ Unable to load secrets; aborting diff")
+        sys.exit(1)
+
+    plan = _prepare_secret_entries(secrets_data, secrets_path)
+    entries = plan["entries"]
+    if plan["warnings"]:
+        for warning in plan["warnings"]:
+            click.echo(f"⚠️ {warning}")
+
+    if not entries:
+        click.echo("ℹ️  No secrets entries would be installed based on the current payload.")
+        return
+
+    def _entry_snapshot(entry: Dict[str, str]) -> Dict[str, Any]:
+        return {
+            "name": entry["name"],
+            "remote_path": entry["remote_path"],
+            "owner": entry["owner"],
+            "group": entry["group"],
+            "mode": entry["mode"],
+            "sha256": hashlib.sha256(entry["content"].encode()).hexdigest(),
+            "size": len(entry["content"]),
+        }
+
+    snapshots = [_entry_snapshot(entry) for entry in entries]
+
+    if output_format == "json":
+        click.echo(json.dumps(snapshots, indent=2))
+        return
+
+    columns = ["Secret", "Remote Path", "Owner", "Mode", "Bytes", "SHA256"]
+    rows = [
+        (
+            snap["name"],
+            snap["remote_path"],
+            f"{snap['owner']}:{snap['group']}",
+            snap["mode"],
+            str(snap["size"]),
+            snap["sha256"][:12],
+        )
+        for snap in snapshots
+    ]
+
+    widths = [len(col) for col in columns]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(cell))
+
+    def _format_row(items: Tuple[str, ...]) -> str:
+        return "  ".join(cell.ljust(widths[idx]) for idx, cell in enumerate(items))
+
+    click.echo("Planned secret file writes:")
+    click.echo(_format_row(tuple(columns)))
+    click.echo(_format_row(tuple("-" * w for w in widths)))
+    for row in rows:
+        click.echo(_format_row(row))
+    click.echo("\n🔍 Dry run only – run 'rave secrets install <company>' to apply these changes.")
 
 # System Commands
 @cli.command()
@@ -1323,19 +1565,40 @@ def launch_local(
 
 @vm.command()
 @click.argument('company_name')
+@click.option(
+    '--profile',
+    type=click.Choice(sorted(PROFILE_METADATA.keys())),
+    default='development',
+    show_default=True,
+    help='VM profile to build (matches flake outputs)',
+)
 @click.option('--keypair', required=True, help='Path to SSH keypair for VM access')
 @click.option('--http-port', type=int, help='HTTP port (default: 8081)')
 @click.option('--https-port', type=int, help='HTTPS port (default: 8443)')
 @click.option('--ssh-port', type=int, help='SSH port (default: 2224)')
 @click.option('--test-port', type=int, help='Test page port (default: 8889)')
+@click.option(
+    '--skip-build',
+    is_flag=True,
+    help='Skip the nix build step and reuse the existing profile image',
+)
 @click.pass_context
-def create(ctx, company_name: str, keypair: str, http_port: Optional[int], https_port: Optional[int], 
-           ssh_port: Optional[int], test_port: Optional[int]):
+def create(ctx, company_name: str, profile: str, keypair: str, http_port: Optional[int], https_port: Optional[int], 
+           ssh_port: Optional[int], test_port: Optional[int], skip_build: bool):
     """Create a new company development environment VM."""
     vm_manager = ctx.obj['vm_manager']
+    repo_root = REPO_ROOT
+    profile_attr = PROFILE_ATTRS[profile]
+    default_image_name = PROFILE_METADATA[profile]["default_image"]
+    default_image_path = (
+        Path(default_image_name)
+        if Path(default_image_name).is_absolute()
+        else repo_root / default_image_name
+    )
 
     click.echo(f"🚀 Creating development environment for {company_name}...")
     click.echo(f"🔑 Using SSH keypair: {keypair}")
+    click.echo(f"🧩 Profile: {profile} ({profile_attr})")
 
     age_key_path = DEFAULT_AGE_KEY_PATH
     secrets_path = DEFAULT_SECRETS_FILE
@@ -1391,7 +1654,16 @@ def create(ctx, company_name: str, keypair: str, http_port: Optional[int], https
 
     try:
         age_key_for_install = age_key_path if age_key_ready else None
-        result = vm_manager.create_vm(company_name, keypair, age_key_for_install, custom_ports if custom_ports else None)
+        result = vm_manager.create_vm(
+            company_name=company_name,
+            keypair_path=keypair,
+            profile=profile,
+            profile_attr=profile_attr,
+            default_image_path=default_image_path,
+            age_key_path=age_key_for_install,
+            custom_ports=custom_ports if custom_ports else None,
+            skip_build=skip_build,
+        )
         if result['success']:
             click.echo(f"✅ VM '{company_name}' created successfully!")
             warnings = result.get('warnings', [])

@@ -814,7 +814,7 @@ class VMManager:
         try:
             # For now, custom company builds reuse the shared qcow2 artifact.
             nix_cmd &#x3D; self.platform.get_nix_build_command()
-            nix_cmd.extend([&amp;quot;--show-trace&amp;quot;, &amp;quot;.#rave-qcow2&amp;quot;])
+            nix_cmd.extend([&amp;quot;--show-trace&amp;quot;, &amp;quot;.#production&amp;quot;])
 
             result &#x3D; subprocess.run(
                 nix_cmd,
@@ -827,7 +827,7 @@ class VMManager:
 
             if result.returncode !&#x3D; 0:
                 warning &#x3D; (
-                    &amp;quot;nix build .#rave-qcow2 failed; falling back to default build&amp;quot;
+                    &amp;quot;nix build .#production failed; falling back to default build&amp;quot;
                 )
                 fallback_cmd &#x3D; self.platform.get_nix_build_command()
                 fallback_cmd.extend([&amp;quot;--show-trace&amp;quot;])

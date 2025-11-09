@@ -54,17 +54,20 @@ Pick the profile that matches your use case:
 
 | Profile | Command | When to use |
 | --- | --- | --- |
-| Production | `nix build .#rave-qcow2` | Full stack, all services enabled, larger resource footprint. |
-| Dev-minimal | `nix build .#rave-qcow2-dev` | Faster local iteration (Outline + n8n disabled, smaller VM). |
-| Custom port | `nix build .#rave-qcow2-port-9443` | Same as production but with a baked-in HTTPS port override. |
+| Production | `nix build .#production` | Full stack, all services enabled, larger resource footprint. |
+| Development | `nix build .#development` | Faster local iteration (Outline + n8n disabled, smaller VM). |
+| Demo | `nix build .#demo` | Lightweight showcase build (observability/productivity extras disabled). |
+| Production (custom port) | `nix build '.#productionWithPort.override { httpsPort = 9443; }'` or legacy `.#rave-qcow2-port-9443` | Same as production but with a baked-in HTTPS port override. |
 
 Each build drops a qcow2 under `result/`. Copy it to `artifacts/` (gitignored) with a meaningful name:
 ```bash
 cp result/nixos.qcow2 artifacts/rave-${PROFILE}-$(date +%Y%m%d).qcow2
 ```
 
-Prefer the CLI? Run `rave vm build-image --profile dev` (or omit `--profile` for production) so the images land alongside the usual stamped filenames.
+Prefer the CLI? Run `rave vm build-image --profile development` (or omit `--profile` for production) so the images land alongside the usual stamped filenames.
 Use `rave vm list-profiles` any time you need to see the current set of supported profiles/attributes.
+
+When iterating quickly you can reuse the previously stamped qcow without kicking off another `nix build` by passing `--skip-build` to `rave vm create`. The command will copy the symlinked profile image (e.g., `rave-production-localhost.qcow2`) and continue without emitting the “⚠️ Build failed” fallback messages.
 
 ### Option B: CLI helper
 ```bash
@@ -77,10 +80,10 @@ This wraps the same flake output and drops the qcow2 under `run/`.
    ```bash
    rave vm launch-local \
      --profile production \
-     --image artifacts/rave-complete-YYYYMMDD.qcow2 \
+     --image artifacts/rave-production-YYYYMMDD.qcow2 \
      --https-port 18221 --ssh-port 2224
    ```
-   For the lightweight image, use `--profile dev` (and the matching qcow2 path). This profile omits Penpot, Outline, and n8n to keep resource usage low.
+   For the lightweight image, use `--profile development` (and the matching qcow2 path). This profile omits Penpot, Outline, and n8n to keep resource usage low.
 2. Wait for GitLab to finish first-boot migrations (≈5–7 minutes). Watch logs with:
    ```bash
    rave vm logs localhost gitlab --follow

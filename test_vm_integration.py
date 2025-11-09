@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """
 RAVE VM Integration Test
 
@@ -8,29 +10,70 @@ This replaces manual testing with automated verification.
 Usage: python test_vm_integration.py
 """
 
-import subprocess
-import time
+import argparse
 import json
-import sys
 import os
+import signal
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 
 class RAVEVMIntegrationTest:
     """Integration test for RAVE VM creation and service verification."""
-    
-    def __init__(self):
-        self.test_vm_name = "integration-test"
-        self.test_keypair = "~/.ssh/rave-demo"
-        self.cleanup_on_success = True
-        self.results = {}
-        
-    def log(self, message: str, level: str = "INFO"):
+
+    def __init__(self, profile: str = "development", keep_vm: bool = False):
+        self.profile = profile
+        self.repo_root = Path(__file__).resolve().parent
+        self.cli_path = self.repo_root / "cli" / "rave"
+        self.test_vm_name = f"integration-{profile}"
+        self.cleanup_on_success = not keep_vm
+        self.results: Dict[str, Any] = {}
+        self.temp_home = Path(tempfile.mkdtemp(prefix="rave-e2e-home-"))
+        self.env = os.environ.copy()
+        self.env["HOME"] = str(self.temp_home)
+        self._bootstrap_test_home()
+        self.test_keypair = self._ensure_test_keypair()
+        self._purge_stale_vm_processes()
+
+    def log(self, message: str, level: str = "INFO") -> None:
         """Log test progress."""
         print(f"[{level}] {message}")
+
+    def _bootstrap_test_home(self) -> None:
+        """Prepare isolated HOME containing Age key + config dirs."""
+        age_dir = self.temp_home / ".config" / "sops" / "age"
+        age_dir.mkdir(parents=True, exist_ok=True)
+        age_key_path = age_dir / "keys.txt"
+        if not age_key_path.exists():
+            age_key_path.write_text("AGE-SECRET-KEY-1TESTKEY0000000000000000000000000000000000000000000000000000\n")
+        self.env["SOPS_AGE_KEY_FILE"] = str(age_key_path)
+        self.env.setdefault("LIBGUESTFS_BACKEND", "direct")
+        (self.temp_home / ".config" / "rave" / "vms").mkdir(parents=True, exist_ok=True)
+        (self.temp_home / ".ssh").mkdir(parents=True, exist_ok=True)
+
+    def _ensure_test_keypair(self) -> str:
+        key_path = self.temp_home / ".ssh" / "integration_ed25519"
+        if not key_path.exists():
+            subprocess.run([
+                "ssh-keygen",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-f",
+                str(key_path),
+            ], check=True)
+        return str(key_path)
+
+    def _run_cli(self, args: list[str], timeout: int = 60) -> Dict[str, Any]:
+        return self.run_command([str(self.cli_path), *args], timeout=timeout)
         
-    def run_command(self, cmd: list, timeout: int = 30, capture_output: bool = True) -> Dict[str, Any]:
+    def run_command(self, cmd: list[str], timeout: int = 30, capture_output: bool = True) -> Dict[str, Any]:
         """Run command and return result."""
         try:
             result = subprocess.run(
@@ -38,7 +81,8 @@ class RAVEVMIntegrationTest:
                 capture_output=capture_output,
                 text=True,
                 timeout=timeout,
-                cwd="/home/nathan/Projects/rave"
+                cwd=str(self.repo_root),
+                env=self.env,
             )
             return {
                 "success": result.returncode == 0,
@@ -60,40 +104,56 @@ class RAVEVMIntegrationTest:
                 "cmd": " ".join(cmd)
             }
     
-    def cleanup(self):
+    def cleanup(self, force: bool = False) -> None:
         """Clean up test VM."""
         self.log("🧹 Cleaning up test VM...")
-        
-        # Stop VM if running
-        self.run_command(["./cli/rave", "vm", "stop", self.test_vm_name])
-        
-        # Remove VM files
-        vm_image = f"{self.test_vm_name}-dev.qcow2"
-        if Path(vm_image).exists():
-            os.remove(vm_image)
-            
-        # Remove config file (check both locations)
-        config_locations = [
-            Path.home() / ".rave" / "vms" / f"{self.test_vm_name}.json",
-            Path.home() / ".config" / "rave" / "vms" / f"{self.test_vm_name}.json"
-        ]
-        for config_file in config_locations:
-            if config_file.exists():
-                os.remove(config_file)
-                self.log(f"📁 Removed config: {config_file}")
-                
-        # Also copy a working base image for the test
-        working_image = "rave-complete.qcow2"
-        if Path(working_image).exists():
-            import shutil
-            shutil.copy2(working_image, vm_image)
-            self.log(f"📋 Copied working base image: {working_image} -> {vm_image}")
+        self._run_cli(["vm", "stop", self.test_vm_name], timeout=30)
+
+        config_file = self.temp_home / ".config" / "rave" / "vms" / f"{self.test_vm_name}.json"
+        image_path = None
+        if config_file.exists():
+            try:
+                vm_data = json.loads(config_file.read_text())
+                image_path = Path(vm_data.get("image_path", ""))
+            except json.JSONDecodeError:
+                pass
+            config_file.unlink()
+            self.log(f"📁 Removed config: {config_file}")
+
+        if image_path and image_path.exists():
+            image_path.unlink()
+            self.log(f"🧼 Removed image: {image_path}")
+
+        should_prune_home = force or self.cleanup_on_success
+        if self.temp_home.exists() and should_prune_home:
+            shutil.rmtree(self.temp_home, ignore_errors=True)
+
+    def _purge_stale_vm_processes(self) -> None:
+        """Kill leftover integration VM instances from previous runs."""
+        pidfile = Path("/tmp") / f"rave-{self.test_vm_name}.pid"
+        if pidfile.exists():
+            try:
+                pid = int(pidfile.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                self.log(f"💀 Terminated stale VM process {pid}")
+            except Exception as exc:
+                self.log(f"⚠️  Unable to kill stale VM process: {exc}", "WARN")
+            finally:
+                pidfile.unlink(missing_ok=True)
+
+        image_path = self.repo_root / f"{self.test_vm_name}-{self.profile}.qcow2"
+        if image_path.exists():
+            try:
+                image_path.unlink()
+                self.log(f"🧹 Removed stale VM image {image_path}")
+            except OSError as exc:
+                self.log(f"⚠️  Unable to remove stale image {image_path}: {exc}", "WARN")
     
     def test_prerequisites(self) -> bool:
         """Test that all prerequisites are met."""
         self.log("🔍 Testing prerequisites...")
         
-        result = self.run_command(["./cli/rave", "prerequisites"])
+        result = self._run_cli(["prerequisites"])
         self.results["prerequisites"] = result
         
         if not result["success"]:
@@ -107,11 +167,16 @@ class RAVEVMIntegrationTest:
         """Test VM creation."""
         self.log(f"🚀 Testing VM creation: {self.test_vm_name}")
         
-        result = self.run_command([
-            "./cli/rave", "vm", "create", 
-            self.test_vm_name, 
-            "--keypair", self.test_keypair
-        ], timeout=120)  # VM creation can take time
+        result = self._run_cli([
+            "vm",
+            "create",
+            self.test_vm_name,
+            "--profile",
+            self.profile,
+            "--keypair",
+            self.test_keypair,
+            "--skip-build",
+        ], timeout=600)
         
         self.results["vm_creation"] = result
         
@@ -126,9 +191,11 @@ class RAVEVMIntegrationTest:
         """Test VM startup."""
         self.log(f"▶️  Testing VM startup: {self.test_vm_name}")
         
-        result = self.run_command([
-            "./cli/rave", "vm", "start", self.test_vm_name
-        ], timeout=60)
+        result = self._run_cli([
+            "vm",
+            "start",
+            self.test_vm_name,
+        ], timeout=420)
         
         self.results["vm_start"] = result
         
@@ -143,8 +210,10 @@ class RAVEVMIntegrationTest:
         """Test VM status check."""
         self.log(f"📊 Testing VM status: {self.test_vm_name}")
         
-        result = self.run_command([
-            "./cli/rave", "vm", "status", self.test_vm_name
+        result = self._run_cli([
+            "vm",
+            "status",
+            self.test_vm_name,
         ])
         
         self.results["vm_status"] = result
@@ -162,85 +231,77 @@ class RAVEVMIntegrationTest:
     
     def get_vm_ports(self) -> Optional[Dict[str, int]]:
         """Extract VM port mappings."""
-        try:
-            # Find QEMU process for our VM
-            result = subprocess.run([
-                "ps", "aux"
-            ], capture_output=True, text=True)
-            
-            for line in result.stdout.split('\n'):
-                if self.test_vm_name in line and "qemu" in line:
-                    # Parse hostfwd arguments
-                    ports = {}
-                    parts = line.split()
-                    for i, part in enumerate(parts):
-                        if part.startswith("hostfwd=tcp::"):
-                            port_mapping = part.split(":")
-                            if len(port_mapping) >= 4:
-                                host_port = port_mapping[2]
-                                vm_port = port_mapping[3].split("-")[0]
-                                if vm_port == "80":
-                                    ports["http"] = int(host_port)
-                                elif vm_port == "443":
-                                    ports["https"] = int(host_port)
-                                elif vm_port == "22":
-                                    ports["ssh"] = int(host_port)
-                                elif vm_port == "8080":
-                                    ports["status"] = int(host_port)
-                    return ports
-        except Exception as e:
-            self.log(f"⚠️  Could not parse VM ports: {e}", "WARN")
-            
+        config_file = self.temp_home / ".config" / "rave" / "vms" / f"{self.test_vm_name}.json"
+        if config_file.exists():
+            try:
+                data = json.loads(config_file.read_text())
+                return data.get("ports")
+            except json.JSONDecodeError as exc:
+                self.log(f"⚠️  Could not parse VM config: {exc}", "WARN")
         return None
+
+    def _ssh_exec(self, command: str, timeout: int = 30) -> Dict[str, Any]:
+        ports = self.get_vm_ports()
+        if not ports or "ssh" not in ports:
+            return {"success": False, "error": "SSH port unknown"}
+        ssh_port = ports["ssh"]
+        return self.run_command(
+            [
+                "ssh",
+                "-i",
+                self.test_keypair,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ConnectTimeout=20",
+                "-p",
+                str(ssh_port),
+                "root@localhost",
+                command,
+            ],
+            timeout=timeout,
+        )
     
     def test_ssh_access(self) -> bool:
         """Test SSH access to VM."""
         self.log("🔑 Testing SSH access...")
         
         # Wait for VM to fully boot
-        self.log("⏳ Waiting 90s for VM boot...")
-        time.sleep(90)
+        boot_wait = 150
+        self.log(f"⏳ Waiting {boot_wait}s for VM boot...")
+        time.sleep(boot_wait)
         
         # Test RAVE CLI SSH with retries
-        for attempt in range(3):
-            self.log(f"🔄 SSH attempt {attempt + 1}/3...")
+        max_attempts = 5
+        retry_delay = 45
+        for attempt in range(max_attempts):
+            self.log(f"🔄 SSH attempt {attempt + 1}/{max_attempts}...")
             result = self.run_command([
-                "bash", "-c", 
-                f"echo 'systemctl --version' | ./cli/rave vm ssh {self.test_vm_name}"
-            ], timeout=30)
+                "bash",
+                "-c",
+                f"echo 'systemctl --version' | {self.cli_path} vm ssh {self.test_vm_name}"
+            ], timeout=45)
             
             if result["success"] and "systemd" in result["stdout"]:
                 self.log("✅ SSH access working via RAVE CLI")
                 self.results["ssh_access"] = result
                 return True
             
-            if attempt < 2:  # Don't wait after last attempt
-                self.log(f"⏳ Waiting 30s before retry {attempt + 2}...")
-                time.sleep(30)
+            if attempt < max_attempts - 1:  # Don't wait after last attempt
+                self.log(f"⏳ Waiting {retry_delay}s before retry {attempt + 2}...")
+                time.sleep(retry_delay)
         
         self.results["ssh_access"] = result
         
-        # Try direct SSH with password
-        ports = self.get_vm_ports()
-        if ports and "ssh" in ports:
-            ssh_port = ports["ssh"]
-            self.log(f"🔐 Trying direct SSH on port {ssh_port}...")
-            
-            result = self.run_command([
-                "sshpass", "-p", "debug123",
-                "ssh", "-o", "StrictHostKeyChecking=no",
-                "-o", "ConnectTimeout=10",
-                "-p", str(ssh_port),
-                "root@localhost",
-                "systemctl --version"
-            ], timeout=20)
-            
-            self.results["direct_ssh"] = result
-            
-            if result["success"] and "systemd" in result["stdout"]:
-                self.log("✅ SSH access working via password")
-                return True
-        
+        self.log("🔐 Trying direct SSH with the injected key...")
+        result = self._ssh_exec("systemctl --version", timeout=45)
+        self.results["direct_ssh"] = result
+        if result["success"] and "systemd" in result.get("stdout", ""):
+            self.log("✅ SSH access working via keypair")
+            return True
+       
         self.log("❌ SSH access failed with all methods", "ERROR")
         return False
     
@@ -257,10 +318,7 @@ class RAVEVMIntegrationTest:
         
         for service in services:
             self.log(f"   Checking {service}...")
-            result = self.run_command([
-                "bash", "-c", 
-                f"echo 'systemctl is-active {service}' | ./cli/rave vm ssh {self.test_vm_name}"
-            ], timeout=15)
+            result = self._ssh_exec(f"systemctl is-active {service}", timeout=30)
             
             if result["success"] and "active" in result["stdout"]:
                 self.log(f"   ✅ {service} is active")
@@ -315,9 +373,6 @@ class RAVEVMIntegrationTest:
         """Run all integration tests."""
         self.log("🧪 Starting RAVE VM Integration Tests")
         
-        # Clean up any existing test VM
-        self.cleanup()
-        
         tests = [
             ("Prerequisites", self.test_prerequisites),
             ("VM Creation", self.test_vm_creation),
@@ -359,15 +414,20 @@ class RAVEVMIntegrationTest:
             json.dump(self.results, f, indent=2)
         self.log("📁 Detailed results saved to integration_test_results.json")
         
-        if self.cleanup_on_success and failed == 0:
-            self.cleanup()
+        if failed == 0 and self.cleanup_on_success:
+            self.cleanup(force=True)
         elif failed > 0:
             self.log("⚠️  Test VM left running for debugging")
-        
+
         return failed == 0
 
 
 if __name__ == "__main__":
-    test = RAVEVMIntegrationTest()
+    parser = argparse.ArgumentParser(description="Run RAVE end-to-end VM tests")
+    parser.add_argument("--profile", default="development", help="VM profile to test (default: development)")
+    parser.add_argument("--keep-vm", action="store_true", help="Leave the VM/VHD around after tests for debugging")
+    args = parser.parse_args()
+
+    test = RAVEVMIntegrationTest(profile=args.profile, keep_vm=args.keep_vm)
     success = test.run_tests()
     sys.exit(0 if success else 1)

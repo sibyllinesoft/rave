@@ -47,7 +47,6 @@ let
   gitlabApiTokenFile = if useSecrets
     then "/run/secrets/gitlab/api-token"
     else pkgs.writeText "gitlab-api-token" "development-token";
-  penpotPublicUrl = "https://localhost:${baseHttpsPort}/penpot";
   outlinePublicUrl = "https://localhost:${baseHttpsPort}/outline";
   outlineDockerImage = "outlinewiki/outline:latest";
   outlineHostPort = 8310;
@@ -62,65 +61,93 @@ let
   n8nEncryptionKey = "n8n-encryption-key-2d01b6dba90441e8a6f7ec2af3327ef2";
   n8nBasicAuthPassword = "n8n-basic-admin-password";
   n8nBasePath = "/n8n";
-  penpotCardHtml = lib.optionalString config.services.rave.penpot.enable ''
-                          <a href="/penpot/" class="service-card">
-                              <div class="service-title">🎨 Penpot</div>
-                              <div class="service-desc">Design collaboration (GitLab OIDC)</div>
-                              <div class="service-url">${penpotPublicUrl}/</div>
-                              <span class="status active">Active</span>
-                          </a>
-'';
-  outlineCardHtml = lib.optionalString config.services.rave.outline.enable ''
-                          <a href="/outline/" class="service-card">
-                              <div class="service-title">📚 Outline</div>
-                              <div class="service-desc">Knowledge base and documentation hub</div>
-                              <div class="service-url">${outlinePublicUrl}/</div>
-                              <span class="status active">Active</span>
-                          </a>
-'';
-  n8nCardHtml = lib.optionalString config.services.rave.n8n.enable ''
-                          <a href="/n8n/" class="service-card">
-                              <div class="service-title">🧠 n8n</div>
-                              <div class="service-desc">Automation workflows & integrations</div>
-                              <div class="service-url">${n8nPublicUrl}/</div>
-                              <span class="status active">Active</span>
-                          </a>
-'';
-  penpotWelcomePrimary = lib.optionalString config.services.rave.penpot.enable ''
-echo "  Penpot       : ${penpotPublicUrl}/"
-'';
-  outlineWelcomePrimary = lib.optionalString config.services.rave.outline.enable ''
-echo "  Outline      : ${outlinePublicUrl}/"
-'';
-  n8nWelcomePrimary = lib.optionalString config.services.rave.n8n.enable ''
-echo "  n8n          : ${n8nPublicUrl}/"
-'';
-  penpotWelcomeFancy = lib.optionalString config.services.rave.penpot.enable ''
-echo "   🎨 Penpot:      ${penpotPublicUrl}/"
-'';
-  outlineWelcomeFancy = lib.optionalString config.services.rave.outline.enable ''
-echo "   📚 Outline:     ${outlinePublicUrl}/"
-'';
-  n8nWelcomeFancy = lib.optionalString config.services.rave.n8n.enable ''
-echo "   🧠 n8n:         ${n8nPublicUrl}/"
-'';
-  welcomeStatusServices = lib.concatStringsSep " " (
-    [
-      "postgresql"
-      "redis-main"
-      "nats"
-      "prometheus"
-      "grafana"
-      "gitlab"
-      "mattermost"
-      "rave-chat-bridge"
-      "nginx"
-    ]
-    ++ lib.optionals config.services.rave.penpot.enable [ "penpot-backend" "penpot-frontend" "penpot-exporter" ]
-    ++ lib.optionals config.services.rave.outline.enable [ "outline" ]
-    ++ lib.optionals config.services.rave.n8n.enable [ "n8n" ]
-  );
 
+  dbPasswordUnitSpecs = [
+    {
+      name = "grafana";
+      role = "grafana";
+      secret = "/run/secrets/grafana/db-password";
+      dependent = "grafana";
+      extraScript = "";
+    }
+    {
+      name = "mattermost";
+      role = "mattermost";
+      secret = "/run/secrets/database/mattermost-password";
+      dependent = "mattermost";
+      extraScript = "";
+    }
+    {
+      name = "penpot";
+      role = "penpot";
+      secret = "/run/secrets/database/penpot-password";
+      dependent = "penpot-backend";
+      extraScript = "";
+    }
+    {
+      name = "n8n";
+      role = "n8n";
+      secret = "/run/secrets/database/n8n-password";
+      dependent = "n8n";
+      extraScript = "";
+    }
+    {
+      name = "prometheus";
+      role = "prometheus";
+      secret = "/run/secrets/database/prometheus-password";
+      dependent = "prometheus-postgres-exporter";
+      extraScript = ''
+        DSN_FILE=/run/secrets/database/prometheus-dsn.env
+        mkdir -p /run/secrets/database
+        printf 'DATA_SOURCE_NAME=postgresql://prometheus:%s@localhost:5432/postgres?sslmode=disable\n' "$PASSWORD" > "$DSN_FILE"
+        chown prometheus-postgres-exporter:prometheus-postgres-exporter "$DSN_FILE"
+        chmod 0400 "$DSN_FILE"
+      '';
+    }
+  ];
+
+  mkPasswordUnit = unit: {
+    name = "postgres-set-${unit.name}-password";
+    value = lib.mkIf useSecrets {
+      description = "Set ${unit.role} PostgreSQL password from secret";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "postgresql.service" "sops-init.service" ];
+      requires = [ "postgresql.service" "sops-init.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        User = "root";
+        RemainAfterExit = true;
+      };
+      script = ''
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+
+        SECRET_FILE=${lib.escapeShellArg unit.secret}
+        if [ ! -s "$SECRET_FILE" ]; then
+          echo "Secret missing at $SECRET_FILE for role ${unit.role}" >&2
+          exit 1
+        fi
+
+        PASSWORD="$(tr -d '\n' < "$SECRET_FILE")"
+        ESCAPED=''${PASSWORD//\'/\'\'}
+
+        ${pkgs.sudo}/bin/sudo -u postgres ${config.services.postgresql.package}/bin/psql \
+          -v ON_ERROR_STOP=1 -d postgres \
+          -c "ALTER ROLE ${unit.role} WITH PASSWORD '$ESCAPED';"
+${unit.extraScript}
+      '';
+    };
+  };
+
+  passwordUnitServices = lib.listToAttrs (map mkPasswordUnit dbPasswordUnitSpecs);
+
+  passwordDependentOverrides = lib.listToAttrs (map (unit: {
+    name = unit.dependent;
+    value = lib.mkIf useSecrets {
+      after = lib.mkAfter [ "postgres-set-${unit.name}-password.service" ];
+      requires = lib.mkAfter [ "postgres-set-${unit.name}-password.service" ];
+    };
+  }) dbPasswordUnitSpecs);
 in
 {
   services.rave.outline = {
@@ -129,8 +156,11 @@ in
     dockerImage = outlineDockerImage;
     hostPort = outlineHostPort;
     dbPassword = outlineDbPassword;
+    dbPasswordFile = if useSecrets then "/run/secrets/database/outline-password" else null;
     secretKey = outlineSecretKey;
+    secretKeyFile = if useSecrets then "/run/secrets/outline/secret-key" else null;
     utilsSecret = outlineUtilsSecret;
+    utilsSecretFile = if useSecrets then "/run/secrets/outline/utils-secret" else null;
     redisDb = outlineRedisDb;
   };
 
@@ -140,6 +170,7 @@ in
     dockerImage = n8nDockerImage;
     hostPort = n8nHostPort;
     dbPassword = n8nDbPassword;
+    dbPasswordFile = if useSecrets then "/run/secrets/database/n8n-password" else null;
     encryptionKey = n8nEncryptionKey;
     basicAuthPassword = n8nBasicAuthPassword;
     basePath = n8nBasePath;
@@ -150,7 +181,7 @@ in
     host = "localhost";
     publicUrl = penpotPublicUrl;
     database.password = "penpot-production-password";
-    redis.port = 6380;
+    database.passwordFile = if useSecrets then "/run/secrets/database/penpot-password" else null;
     oidc = {
       enable = true;
       gitlabUrl = gitlabExternalUrl;
@@ -181,6 +212,14 @@ in
     listeningIps = [ "0.0.0.0" ];
   };
 
+  services.rave.nginx = {
+    enable = true;
+    host = "localhost";
+    chatDomain = "chat.localtest.me";
+  };
+
+  services.rave.welcome.enable = true;
+
   services.rave.redis = {
     enable = true;
     bind = "0.0.0.0";
@@ -189,6 +228,11 @@ in
     maxMemoryPolicy = "allkeys-lru";
     save = [ "900 1" "300 10" "60 10000" ];
     databases = 16;
+    allocations = {
+      gitlab = 0;
+      outline = 5;
+      penpot = 10;
+    };
   };
 
   security.rave.localCerts = {
@@ -205,15 +249,21 @@ in
       publicUrl = "https://localhost:${baseHttpsPort}/grafana/";
       adminUser = "admin";
       adminPassword = "admin123";
+      adminPasswordFile = if useSecrets then "/run/secrets/grafana/admin-password" else null;
       secretKey = "grafana-production-secret-key";
+      secretKeyFile = if useSecrets then "/run/secrets/grafana/secret-key" else null;
       database = {
         host = "localhost:5432";
         name = "grafana";
         user = "grafana";
         password = "grafana-production-password";
+        passwordFile = if useSecrets then "/run/secrets/grafana/db-password" else null;
       };
     };
-    exporters.postgres.dataSourceName = "postgresql://prometheus:prometheus_pass@localhost:5432/postgres?sslmode=disable";
+    exporters.postgres = {
+      dataSourceName = "postgresql://prometheus:prometheus_pass@localhost:5432/postgres?sslmode=disable";
+      dsnEnvFile = if useSecrets then "/run/secrets/database/prometheus-dsn.env" else null;
+    };
   };
 
   services.rave.mattermost = {
@@ -268,36 +318,32 @@ in
     };
   };
 
-  # Option definitions for RAVE configuration
-  options.services.rave.ports = {
-    https = lib.mkOption {
-      type = lib.types.int;
-      default = 8443;
-      description = "HTTPS port for the RAVE VM services";
-    };
-  };
-
   imports = [
     # Foundation modules
     ../modules/foundation/base.nix
     ../modules/foundation/networking.nix
     ../modules/foundation/nix-config.nix
+    ../modules/foundation/ports.nix
 
     # Service modules
     ../modules/services/gitlab/default.nix
     ../modules/services/monitoring/default.nix
     ../modules/services/nats/default.nix
     ../modules/services/coturn/default.nix
+    ../modules/services/nginx/default.nix
     ../modules/services/postgresql/default.nix
     ../modules/services/mattermost/default.nix
     ../modules/services/outline/default.nix
     ../modules/services/n8n/default.nix
+    ../modules/services/penpot/default.nix
     ../modules/services/redis/default.nix
+    ../modules/services/welcome/default.nix
 
     # Security modules
     # ../modules/security/certificates.nix  # DISABLED: Using inline certificate generation instead
     ../modules/security/hardening.nix
     ../modules/security/local-certs/default.nix
+    ../modules/security/sops-bootstrap/default.nix
   ];
 
 # SOPS configuration - DISABLE built-in activation to prevent conflicts
@@ -407,175 +453,41 @@ sops = lib.mkIf false {
   };
 };
 
-  # Mount SOPS keys filesystem (for AGE key access via virtfs)
-  systemd.services.mount-sops-keys = lib.mkIf config.services.rave.gitlab.useSecrets {
-    description = "Mount SOPS keys filesystem for AGE key access";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "local-fs.target" ];
-    before = [ "install-age-key.service" ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      User = "root";
-      Group = "root";
-    };
-    script = ''
-      set -euo pipefail
-      
-      # Create mount point
-      mkdir -p /host-keys
-      
-      # Try to mount virtfs with detailed error reporting
-      echo "Attempting to mount virtfs with tag 'sops-keys'..."
-      if mount -t 9p -o trans=virtio,version=9p2000.L,rw sops-keys /host-keys; then
-        echo "SOPS keys filesystem mounted successfully at /host-keys"
-        ls -la /host-keys/
-        if [ -f /host-keys/keys.txt ]; then
-          echo "AGE keys file found in mounted filesystem"
-        else
-          echo "WARNING: AGE keys file not found in mounted filesystem"
-        fi
-      else
-        echo "Failed to mount virtfs - this may be development mode"
-        echo "Available virtio devices:"
-        ls -la /sys/bus/virtio/devices/ || echo "No virtio devices found"
-        echo "Supported filesystems:"
-        grep 9p /proc/filesystems || echo "9p filesystem not supported"
-      fi
-    '';
+  security.rave.sopsBootstrap = {
+    enable = config.services.rave.gitlab.useSecrets;
+    sopsFile = ../../config/secrets.yaml;
+    secretMappings = [
+      { selector = "[\"mattermost\"][\"env\"]"; path = "/run/secrets/mattermost/env"; owner = "mattermost"; group = "mattermost"; mode = "0600"; }
+      { selector = "[\"mattermost\"][\"admin-username\"]"; path = "/run/secrets/mattermost/admin-username"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"mattermost\"][\"admin-email\"]"; path = "/run/secrets/mattermost/admin-email"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"mattermost\"][\"admin-password\"]"; path = "/run/secrets/mattermost/admin-password"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"oidc\"][\"chat-control-client-secret\"]"; path = "/run/secrets/oidc/chat-control-client-secret"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"gitlab\"][\"api-token\"]"; path = "/run/secrets/gitlab/api-token"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"gitlab\"][\"root-password\"]"; path = "/run/secrets/gitlab/root-password"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
+      { selector = "[\"gitlab\"][\"db-password\"]"; path = "/run/secrets/gitlab/db-password"; owner = "postgres"; group = "gitlab"; mode = "0440"; }
+      { selector = "[\"gitlab\"][\"secret-key-base\"]"; path = "/run/secrets/gitlab/secret-key-base"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
+      { selector = "[\"gitlab\"][\"db-key-base\"]"; path = "/run/secrets/gitlab/db-key-base"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
+      { selector = "[\"gitlab\"][\"otp-key-base\"]"; path = "/run/secrets/gitlab/otp-key-base"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
+      { selector = "[\"gitlab\"][\"jws-key-base\"]"; path = "/run/secrets/gitlab/jws-key-base"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
+      { selector = "[\"gitlab\"][\"oauth-provider-client-secret\"]"; path = "/run/secrets/gitlab/oauth-provider-client-secret"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
+      { selector = "[\"gitlab\"][\"oauth-mattermost-client-secret\"]"; path = "/run/secrets/gitlab/oauth-mattermost-client-secret"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
+      { selector = "[\"grafana\"][\"secret-key\"]"; path = "/run/secrets/grafana/secret-key"; owner = "grafana"; group = "grafana"; mode = "0400"; }
+      { selector = "[\"grafana\"][\"db-password\"]"; path = "/run/secrets/grafana/db-password"; owner = "grafana"; group = "grafana"; mode = "0400"; }
+      { selector = "[\"database\"][\"mattermost-password\"]"; path = "/run/secrets/database/mattermost-password"; owner = "root"; group = "postgres"; mode = "0440"; }
+      { selector = "[\"database\"][\"penpot-password\"]"; path = "/run/secrets/database/penpot-password"; owner = "root"; group = "postgres"; mode = "0440"; }
+      { selector = "[\"database\"][\"n8n-password\"]"; path = "/run/secrets/database/n8n-password"; owner = "root"; group = "postgres"; mode = "0440"; }
+      { selector = "[\"database\"][\"outline-password\"]"; path = "/run/secrets/database/outline-password"; owner = "root"; group = "postgres"; mode = "0440"; }
+      { selector = "[\"database\"][\"prometheus-password\"]"; path = "/run/secrets/database/prometheus-password"; owner = "root"; group = "postgres"; mode = "0440"; }
+      { selector = "[\"database\"][\"grafana-password\"]"; path = "/run/secrets/grafana/admin-password"; owner = "grafana"; group = "grafana"; mode = "0400"; }
+      { selector = "[\"outline\"][\"secret-key\"]"; path = "/run/secrets/outline/secret-key"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"outline\"][\"utils-secret\"]"; path = "/run/secrets/outline/utils-secret"; owner = "root"; group = "root"; mode = "0400"; }
+    ];
+    extraTmpfiles = [
+      "d /run/secrets/grafana 0750 root grafana -"
+      "d /run/secrets/database 0750 root postgres -"
+      "d /run/secrets/outline 0750 root root -"
+    ];
   };
-
-  # Install AGE key from host system for E2E testing
-  systemd.services.install-age-key = lib.mkIf config.services.rave.gitlab.useSecrets {
-    description = "Install AGE key from host system";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "local-fs.target" ];
-    before = [ "sops-init.service" "sops-nix.service" ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      User = "root";
-      Group = "root";
-    };
-    script = ''
-      set -euo pipefail
-      
-      # Create SOPS directory
-      mkdir -p /var/lib/sops-nix
-      
-      # Create mount point for virtfs
-      mkdir -p /host-keys
-      
-      # Try to mount virtfs first (preferred method)
-      echo "Attempting to mount virtfs for AGE keys..."
-      if mount -t 9p -o trans=virtio,version=9p2000.L,rw sops-keys /host-keys 2>/dev/null; then
-        echo "✅ virtfs mounted successfully"
-        if [ -f /host-keys/keys.txt ]; then
-          echo "Installing AGE key from virtfs-mounted host directory (canonical)"
-          cp /host-keys/keys.txt /var/lib/sops-nix/key.txt
-          chmod 600 /var/lib/sops-nix/key.txt
-          echo "AGE key installed successfully from virtfs"
-          exit 0
-        else
-          echo "⚠️ virtfs mounted but keys.txt not found"
-          umount /host-keys 2>/dev/null || true
-        fi
-      else
-        echo "ℹ️ virtfs not available, trying fallback methods..."
-      fi
-      
-      # Fallback to environment variable
-      if [ -n "''${SOPS_AGE_KEY:-}" ]; then
-        echo "Installing AGE key from environment variable (fallback)"
-        echo "$SOPS_AGE_KEY" > /var/lib/sops-nix/key.txt
-        chmod 600 /var/lib/sops-nix/key.txt
-        echo "AGE key installed successfully from environment"
-        exit 0
-      fi
-      
-      # No AGE key available
-      echo "⚠️ No AGE key found - VM will run in development mode"
-      echo "To enable production mode:"
-      echo "  1. Use RAVE CLI with AGE keys (preferred - auto virtfs)"
-      echo "  2. Set SOPS_AGE_KEY environment variable (fallback)"
-      exit 0
-    '';
-  };
-
-  # SOPS initialization service to ensure secrets are available
-  systemd.services.sops-init = lib.mkIf config.services.rave.gitlab.useSecrets {
-    description = "Initialize SOPS secrets";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "install-age-key.service" ];
-    before = [ "gitlab-db-password.service" "gitlab.service" "mattermost.service" ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      User = "root";
-      Group = "root";
-    };
-    script = ''
-      set -euo pipefail
-      
-      # Check if AGE key exists
-      if [ ! -f /var/lib/sops-nix/key.txt ]; then
-        echo "AGE key missing at /var/lib/sops-nix/key.txt"
-        exit 1
-      fi
-      
-      # Check if secrets file exists
-      if [ ! -f ${../../config/secrets.yaml} ]; then
-        echo "SOPS secrets file missing"
-        exit 1
-      fi
-      
-      # Export AGE key for SOPS
-      export SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt
-      
-      # Create secrets directories with proper permissions
-      mkdir -p /run/secrets/gitlab /run/secrets/mattermost /run/secrets/oidc
-      
-      # Helper function to extract and write secret
-      extract_secret() {
-        local key="$1"
-        local path="$2"
-        local owner="$3"
-        local group="$4"
-        local mode="$5"
-        
-        echo "Extracting secret: $key -> $path"
-        ${pkgs.sops}/bin/sops -d --extract "[\"$key\"]" ${../../config/secrets.yaml} > "$path"
-        chown "$owner:$group" "$path"
-        chmod "$mode" "$path"
-      }
-      
-      # Extract all the secrets that were previously defined in SOPS configuration
-      # NOTE: Using nested YAML structure from secrets.yaml file
-      
-      # Mattermost secrets
-      extract_secret "mattermost\"][\"env" "/run/secrets/mattermost/env" "mattermost" "mattermost" "0600"
-      extract_secret "mattermost\"][\"admin-username" "/run/secrets/mattermost/admin-username" "root" "root" "0400"
-      extract_secret "mattermost\"][\"admin-email" "/run/secrets/mattermost/admin-email" "root" "root" "0400"
-      extract_secret "mattermost\"][\"admin-password" "/run/secrets/mattermost/admin-password" "root" "root" "0400"
-      
-      # OIDC secrets
-      extract_secret "oidc\"][\"chat-control-client-secret" "/run/secrets/oidc/chat-control-client-secret" "root" "root" "0400"
-      
-      # GitLab secrets
-      extract_secret "gitlab\"][\"api-token" "/run/secrets/gitlab/api-token" "root" "root" "0400"
-      extract_secret "gitlab\"][\"root-password" "/run/secrets/gitlab/root-password" "gitlab" "gitlab" "0400"
-      extract_secret "gitlab\"][\"db-password" "/run/secrets/gitlab/db-password" "postgres" "gitlab" "0440"
-      extract_secret "gitlab\"][\"secret-key-base" "/run/secrets/gitlab/secret-key-base" "gitlab" "gitlab" "0400"
-      extract_secret "gitlab\"][\"db-key-base" "/run/secrets/gitlab/db-key-base" "gitlab" "gitlab" "0400"
-      extract_secret "gitlab\"][\"otp-key-base" "/run/secrets/gitlab/otp-key-base" "gitlab" "gitlab" "0400"
-      extract_secret "gitlab\"][\"jws-key-base" "/run/secrets/gitlab/jws-key-base" "gitlab" "gitlab" "0400"
-      extract_secret "gitlab\"][\"oauth-provider-client-secret" "/run/secrets/gitlab/oauth-provider-client-secret" "gitlab" "gitlab" "0400"
-      extract_secret "gitlab\"][\"oauth-mattermost-client-secret" "/run/secrets/gitlab/oauth-mattermost-client-secret" "gitlab" "gitlab" "0400"
-      
-      echo "SOPS secrets extracted successfully"
-    '';
-  };
-
 
   # ===== SYSTEM FOUNDATION =====
   
@@ -691,15 +603,12 @@ sops = lib.mkIf false {
       GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO grafana;
       GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO grafana;
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO grafana;
-      ALTER USER grafana WITH PASSWORD 'grafana-production-password';
 
       -- Mattermost database setup
       DO $$
       BEGIN
         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mattermost') THEN
-          CREATE ROLE mattermost WITH LOGIN PASSWORD 'mmpgsecret';
-        ELSE
-          ALTER ROLE mattermost WITH PASSWORD 'mmpgsecret';
+          CREATE ROLE mattermost WITH LOGIN;
         END IF;
       END
       $$;
@@ -722,12 +631,23 @@ sops = lib.mkIf false {
       $$;
       GRANT pg_monitor TO prometheus;
     '';
+    postStartSql = [
+      "GRANT CONNECT ON DATABASE postgres TO grafana;"
+      "GRANT USAGE ON SCHEMA public TO grafana;"
+    ];
   };
+
+  systemd.services = lib.mkMerge [
+    passwordUnitServices
+    passwordDependentOverrides
+  ];
 
   services.rave.gitlab = {
     enable = true;
     host = "localhost";
     useSecrets = true;
+    publicUrl = gitlabExternalUrl;
+    externalPort = lib.toInt baseHttpsPort;
     runner.enable = false;
     oauth = {
       enable = true;
@@ -742,402 +662,9 @@ sops = lib.mkIf false {
     };
   };
 
-  services.gitlab.extraConfig.gitlab.omniauth.full_host = lib.mkForce gitlabExternalUrl;
-  systemd.services.gitlab.environment.GITLAB_OMNIAUTH_FULL_HOST = gitlabExternalUrl;
-  services.gitlab.extraConfig.gitlab.port = lib.mkForce (lib.toInt baseHttpsPort);
-
   # ===== NGINX CONFIGURATION =====
 
-  services.nginx = {
-    enable = true;
-    commonHttpConfig = ''
-      map $http_host $rave_forwarded_port {
-        default 443;
-        ~:(?<port>\d+)$ $port;
-      }
-    '';
-    
-    # Global configuration
-    clientMaxBodySize = "10G";
-    recommendedGzipSettings = true;
-    recommendedOptimisation = true;
-    recommendedProxySettings = false;
-    recommendedTlsSettings = true;
-    logError = "/var/log/nginx/error.log debug";
-    
-    # Status page for monitoring
-    statusPage = true;
-    
-    virtualHosts."localhost" = {
-      forceSSL = true;
-      enableACME = false;
-      listen = [
-        {
-          addr = "0.0.0.0";
-          port = 443;
-          ssl = true;
-        }
-        {
-          addr = "0.0.0.0";
-          port = 80;
-          ssl = false;
-        }
-      ];
 
-      # Use manual certificate configuration
-      sslCertificate = "/var/lib/acme/localhost/cert.pem";
-      sslCertificateKey = "/var/lib/acme/localhost/key.pem";
-      
-      locations = {
-        "/" = {
-            root = pkgs.writeTextDir "index.html" ''
-              <!DOCTYPE html>
-              <html lang="en">
-              <head>
-                  <meta charset="UTF-8">
-                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                  <title>RAVE - Complete Production Environment</title>
-                  <style>
-                      * { margin: 0; padding: 0; box-sizing: border-box; }
-                      body {
-                          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                          color: #333; min-height: 100vh; padding: 20px;
-                      }
-                      .container { max-width: 1200px; margin: 0 auto; }
-                      .header { text-align: center; color: white; margin-bottom: 40px; }
-                      .header h1 { font-size: 3rem; margin-bottom: 10px; }
-                      .services { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-                      .service-card {
-                          background: white; border-radius: 10px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-                          transition: transform 0.3s ease; text-decoration: none; color: #333;
-                      }
-                      .service-card:hover { transform: translateY(-5px); }
-                      .service-title { font-size: 1.5rem; margin-bottom: 10px; color: #667eea; }
-                      .service-desc { color: #666; margin-bottom: 15px; }
-                      .service-url { color: #764ba2; font-weight: bold; }
-                      .status { display: inline-block; padding: 4px 8px; border-radius: 20px; font-size: 0.8rem; }
-                      .status.active { background: #4ade80; color: white; }
-                  </style>
-              </head>
-              <body>
-                  <div class="container">
-                      <div class="header">
-                          <h1>🚀 RAVE</h1>
-                          <p>Complete Production Environment - All Services Ready</p>
-                      </div>
-                      <div class="services">
-                          <a href="/gitlab/" class="service-card">
-                              <div class="service-title">🦊 GitLab</div>
-                              <div class="service-desc">Git repository management and CI/CD</div>
-                              <div class="service-url">https://localhost:${baseHttpsPort}/gitlab/</div>
-                              <span class="status active">Active</span>
-                          </a>
-                          <a href="/grafana/" class="service-card">
-                              <div class="service-title">📊 Grafana</div>
-                              <div class="service-desc">Monitoring dashboards and analytics</div>
-                              <div class="service-url">https://localhost:${baseHttpsPort}/grafana/</div>
-                              <span class="status active">Active</span>
-                          </a>
-                          <a href="${mattermostPublicUrl}/" class="service-card">
-                              <div class="service-title">💬 Mattermost</div>
-                              <div class="service-desc">Secure team chat and agent control</div>
-                              <div class="service-url">${mattermostPublicUrl}/</div>
-                              <span class="status active">Active</span>
-                          </a>
-                          <a href="/prometheus/" class="service-card">
-                              <div class="service-title">🔍 Prometheus</div>
-                              <div class="service-desc">Metrics collection and monitoring</div>
-                              <div class="service-url">https://localhost:${baseHttpsPort}/prometheus/</div>
-                              <span class="status active">Active</span>
-                          </a>
-                          <a href="/nats/" class="service-card">
-                              <div class="service-title">⚡ NATS JetStream</div>
-                              <div class="service-desc">High-performance messaging system</div>
-                              <div class="service-url">https://localhost:${baseHttpsPort}/nats/</div>
-                              <span class="status active">Active</span>
-                          </a>
-${penpotCardHtml}${outlineCardHtml}${n8nCardHtml}
-                      </div>
-                  </div>
-              </body>
-              </html>
-            '';
-          };
-
-          "/login" = {
-            return = "302 ${mattermostPublicUrl}/";
-          };
-
-
-          "/nats/" = {
-            proxyPass = "http://127.0.0.1:8222/";
-            extraConfig = ''
-              proxy_set_header Host "$host:$rave_forwarded_port";
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-            '';
-          };
-
-          "/n8n/" = {
-            proxyPass = "http://127.0.0.1:${toString n8nHostPort}";
-            proxyWebsockets = true;
-            extraConfig = ''
-              proxy_set_header Host "$host:$rave_forwarded_port";
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-              proxy_set_header X-Forwarded-Prefix /n8n;
-              proxy_set_header X-Forwarded-Ssl on;
-              proxy_set_header Upgrade $http_upgrade;
-              proxy_set_header Connection $connection_upgrade;
-              client_max_body_size 100M;
-              proxy_redirect off;
-            '';
-          };
-
-          "/n8n" = {
-            return = "302 /n8n/";
-          };
-
-          "/mattermost/" = {
-            proxyPass = "http://127.0.0.1:8065";
-            proxyWebsockets = true;
-            extraConfig = ''
-              proxy_set_header Host "$host:$rave_forwarded_port";
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-              proxy_set_header X-Forwarded-Ssl on;
-              proxy_set_header Upgrade $http_upgrade;
-              proxy_set_header Connection $connection_upgrade;
-              client_max_body_size 100M;
-              proxy_redirect off;
-              proxy_buffering off;
-            '';
-          };
-
-          "/mattermost" = {
-            proxyPass = "http://127.0.0.1:8065";
-            proxyWebsockets = true;
-            extraConfig = ''
-              proxy_set_header Host "$host:$rave_forwarded_port";
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-              proxy_set_header X-Forwarded-Ssl on;
-              proxy_set_header Upgrade $http_upgrade;
-              proxy_set_header Connection $connection_upgrade;
-              client_max_body_size 100M;
-              proxy_redirect off;
-              proxy_buffering off;
-            '';
-          };
-      };
-
-      # Global security headers
-      extraConfig = ''
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "DENY" always;  
-        add_header X-XSS-Protection "1; mode=block" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        port_in_redirect off;
-        absolute_redirect off;
-      '';
-    };
-
-    # Internal loopback virtual host exposing GitLab without SSL/redirects for backend services
-    virtualHosts."gitlab-internal" = {
-      listen = [ { addr = "127.0.0.1"; port = 8123; ssl = false; } ];
-      serverName = "gitlab-internal";
-      locations."/" = {
-        proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
-        proxyWebsockets = true;
-        extraConfig = ''
-          proxy_set_header Host "localhost";
-          proxy_set_header X-Forwarded-Host "localhost";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto http;
-          proxy_set_header X-Forwarded-Ssl off;
-          proxy_set_header X-Forwarded-Port 8123;
-          proxy_redirect off;
-          rewrite ^/(.*)$ /gitlab/$1 break;
-        '';
-      };
-    };
-    
-    # HTTP redirect to HTTPS
-    virtualHosts."localhost-http" = {
-      listen = [ { addr = "0.0.0.0"; port = 80; } ];
-      locations."/" = {
-        return = "301 https://localhost$request_uri";
-      };
-    };
-
-    virtualHosts."chat.localtest.me" = {
-      forceSSL = false;
-      enableACME = false;
-      listen = [ { addr = "0.0.0.0"; port = 443; ssl = true; } ];
-      http2 = true;
-      sslCertificate = "/var/lib/acme/localhost/cert.pem";
-      sslCertificateKey = "/var/lib/acme/localhost/key.pem";
-      extraConfig = ''
-        ssl_certificate /var/lib/acme/localhost/cert.pem;
-        ssl_certificate_key /var/lib/acme/localhost/key.pem;
-      '';
-      locations."/" = {
-        proxyPass = "http://127.0.0.1:8065";
-        proxyWebsockets = true;
-        extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection "upgrade";
-          client_max_body_size 100M;
-          proxy_redirect off;
-        '';
-      };
-    };
-
-    virtualHosts."localhost-mattermost" = {
-      forceSSL = true;
-      enableACME = false;
-      serverName = "localhost";
-      listen = [
-        {
-          addr = "0.0.0.0";
-          port = 8231;
-          ssl = true;
-        }
-        {
-          addr = "0.0.0.0";
-          port = 8230;
-          ssl = false;
-        }
-      ];
-
-      sslCertificate = "/var/lib/acme/localhost/cert.pem";
-      sslCertificateKey = "/var/lib/acme/localhost/key.pem";
-
-
-      locations."/mattermost/" = {
-        proxyPass = "http://127.0.0.1:8065";
-        proxyWebsockets = true;
-        extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection $connection_upgrade;
-          client_max_body_size 100M;
-          proxy_redirect off;
-          proxy_buffering off;
-        '';
-      };
-
-      locations."/mattermost" = {
-        proxyPass = "http://127.0.0.1:8065";
-        proxyWebsockets = true;
-        extraConfig = ''
-          proxy_set_header Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection $connection_upgrade;
-          client_max_body_size 100M;
-          proxy_redirect off;
-          proxy_buffering off;
-        '';
-      };
-
-
-      extraConfig = ''
-        port_in_redirect off;
-        absolute_redirect off;
-      '';
-    };
-
-    virtualHosts."chat.localtest.me-http" = {
-      listen = [ { addr = "0.0.0.0"; port = 80; } ];
-      serverName = "chat.localtest.me";
-      locations."/" = {
-        return = "301 https://chat.localtest.me$request_uri";
-      };
-    };
-  };
-
-  # Ensure GitLab is started after the database configuration completes.
-  systemd.services."gitlab-db-config".unitConfig = {
-    OnSuccess = [ "gitlab-autostart.service" ];
-  } // lib.optionalAttrs useSecrets {
-    ConditionPathExists = "/run/secrets/gitlab/db-password";
-  };
-
-  systemd.services."gitlab-autostart" = {
-    description = "Ensure GitLab starts after database configuration";
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "postgresql.service"
-      "redis-main.service"
-      "gitlab-config.service"
-      "gitlab-db-config.service"
-    ];
-    wants = [ "gitlab-db-config.service" ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      ExecStart = pkgs.writeShellScript "gitlab-autostart.sh" ''
-        set -euo pipefail
-
-        systemctl_bin='${lib.getExe' pkgs.systemd "systemctl"}'
-        attempts=0
-        max_attempts=12
-
-        # Wait (with retries) for gitlab-db-config to report active.
-        while ! "$systemctl_bin" is-active --quiet gitlab-db-config.service; do
-          if (( attempts >= max_attempts )); then
-            echo "gitlab-db-config.service did not become active" >&2
-            exit 1
-          fi
-
-          # If the config unit is in failed state, reset it so systemd can retry.
-          if "$systemctl_bin" is-failed --quiet gitlab-db-config.service; then
-            "$systemctl_bin" reset-failed gitlab-db-config.service || true
-            "$systemctl_bin" start gitlab-db-config.service || true
-          fi
-
-          attempts=$(( attempts + 1 ))
-          sleep $(( 5 * attempts ))
-        done
-
-        "$systemctl_bin" reset-failed gitlab.service || true
-        "$systemctl_bin" start gitlab.service
-      '';
-      Restart = "on-failure";
-      RestartSec = 30;
-    };
-  };
 
   # ===== SYSTEM CONFIGURATION =====
 
@@ -1196,181 +723,4 @@ ${penpotCardHtml}${outlineCardHtml}${n8nCardHtml}
     ];
   };
 
-  # System services dependency management
-  systemd.services = {
-    # Ensure PostgreSQL users exist before other services start
-    postgresql = {
-      after = [ "postgres-gitlab-group-fix.service" ];
-      wants = [ "postgres-gitlab-group-fix.service" ];
-    };
-    postgresql.postStart = ''
-      # Wait for PostgreSQL to be ready
-      while ! ${pkgs.postgresql_15}/bin/pg_isready -d postgres > /dev/null 2>&1; do
-        sleep 1
-      done
-
-      # Update user passwords (non-SOPS secrets only)
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER grafana PASSWORD 'grafana-production-password';" || true
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER penpot PASSWORD 'penpot-production-password';" || true
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER n8n PASSWORD '${n8nDbPassword}';" || true
-
-      # Grant additional permissions
-      ${pkgs.postgresql}/bin/psql -U postgres -c "GRANT CONNECT ON DATABASE postgres TO grafana;" || true
-      ${pkgs.postgresql}/bin/psql -U postgres -c "GRANT USAGE ON SCHEMA public TO grafana;" || true
-    '';
-    
-    # Separate service for GitLab password setup after SOPS is fully ready
-    gitlab-password-setup = {
-      description = "Set GitLab database password from SOPS secret";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "postgresql.service" "sops-init.service" ];
-      requires = [ "postgresql.service" "sops-init.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        User = "root";  # Run as root to ensure secret access
-      };
-      environment.PATH = lib.mkForce "${pkgs.postgresql_15}/bin:${pkgs.sudo}/bin:${pkgs.coreutils}/bin";
-      script = ''
-        # Wait for PostgreSQL to be ready
-        while ! ${pkgs.postgresql_15}/bin/pg_isready -d postgres > /dev/null 2>&1; do
-          echo "Waiting for PostgreSQL to be ready..."
-          sleep 2
-        done
-
-        # Wait for SOPS secret to be available
-        timeout=30
-        while [ ! -f "/run/secrets/gitlab/db-password" ] || [ ! -s "/run/secrets/gitlab/db-password" ]; do
-          if [ $timeout -le 0 ]; then
-            echo "Timeout waiting for SOPS secret"
-            exit 1
-          fi
-          echo "Waiting for SOPS secret to be available..."
-          sleep 1
-          timeout=$((timeout - 1))
-        done
-
-        # Set GitLab password from SOPS secret
-        GITLAB_PASSWORD=$(cat /run/secrets/gitlab/db-password)
-        
-        # Create gitlab role if it doesn't exist, then set password
-        # Use a simpler approach without heredoc to avoid syntax issues
-        sudo -u postgres ${pkgs.postgresql_15}/bin/psql -d postgres -c \
-          "DO \$\$ BEGIN
-             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gitlab') THEN
-               CREATE ROLE gitlab WITH LOGIN CREATEDB;
-             END IF;
-           END \$\$;" || {
-          echo "Failed to create GitLab role"
-          exit 1
-        }
-        
-        # Set the password securely using stdin to avoid command line exposure
-        echo "ALTER ROLE gitlab WITH PASSWORD '$GITLAB_PASSWORD';" | \
-          sudo -u postgres ${pkgs.postgresql_15}/bin/psql -d postgres || {
-          echo "Failed to set GitLab password"
-          exit 1
-        }
-        echo "GitLab database password successfully updated from SOPS secret"
-      '';
-    };
-
-    # GitLab depends on database, certificates, and password setup
-    gitlab.after = [
-      "postgresql.service"
-      "redis-main.service"
-      "generate-localhost-certs.service"
-      "gitlab-password-setup.service"
-    ];
-    gitlab.requires = [
-      "postgresql.service"
-      "redis-main.service"
-      "gitlab-password-setup.service"
-    ];
-    # GitLab database password now set by gitlab-password-setup.service
-    
-    # Grafana depends on database and certificates
-    grafana.after = [ "postgresql.service" "generate-localhost-certs.service" ];
-    grafana.requires = [ "postgresql.service" ];
-    
-    # nginx depends on certificates and all backend services
-    nginx.after = 
-      [
-        "generate-localhost-certs.service" 
-        "gitlab.service"
-        "grafana.service" 
-        "mattermost.service"
-        "prometheus.service"
-        "nats.service"
-      ]
-      ++ lib.optionals config.services.rave.penpot.enable [ "penpot-backend.service" "penpot-frontend.service" "penpot-exporter.service" ]
-      ++ lib.optionals config.services.rave.outline.enable [ "outline.service" ]
-      ++ lib.optionals config.services.rave.n8n.enable [ "n8n.service" ];
-    nginx.requires = [ "generate-localhost-certs.service" ];
-  };
-
-  systemd.tmpfiles.rules = [
-    "d /run/secrets 0755 root root -"
-    "d /run/secrets/gitlab 0750 postgres gitlab -"
-    "d /run/secrets/mattermost 0750 root mattermost -"
-    "d /run/secrets/oidc 0700 root root -"
-  ];
-
-  system.activationScripts.installRootWelcome = {
-    text = ''
-      cat <<'WELCOME' > /root/welcome.sh
-#!/bin/sh
-echo "Welcome to the RAVE complete VM"
-echo "Forwarded ports:"
-echo "  SSH          : localhost:12222 (user root, password rave-root)"
-echo "  GitLab HTTPS : https://localhost:${baseHttpsPort}/gitlab/"
-echo "  Mattermost   : ${mattermostPublicUrl}/"
-echo "  Grafana      : https://localhost:${baseHttpsPort}/grafana/"
-echo "  Prometheus   : http://localhost:19090/"
-${penpotWelcomePrimary}${outlineWelcomePrimary}${n8nWelcomePrimary}
-echo ""
-WELCOME
-      chmod 0755 /root/welcome.sh
-    '';
-  };
-
-  # Create welcome script
-  systemd.services.create-welcome-script = {
-    description = "Create system welcome script";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "multi-user.target" ];
-    
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-    };
-    
-    script = ''
-      cat > /root/welcome.sh << 'EOF'
-#!/bin/bash
-echo "🚀 RAVE Complete Production Environment"
-echo "====================================="
-echo ""
-echo "✅ All Services Ready:"
-echo "   🦊 GitLab:      https://localhost:${baseHttpsPort}/gitlab/"
-echo "   📊 Grafana:     https://localhost:${baseHttpsPort}/grafana/"  
-echo "   💬 Mattermost:  https://localhost:${baseHttpsPort}/mattermost/"
-echo "   🔍 Prometheus:  https://localhost:${baseHttpsPort}/prometheus/"
-echo "   ⚡ NATS:        https://localhost:${baseHttpsPort}/nats/"
-${penpotWelcomeFancy}${outlineWelcomeFancy}${n8nWelcomeFancy}
-echo ""
-echo "🔑 Default Credentials:"
-echo "   GitLab root:    admin123456"
-echo "   Grafana:        admin/admin123"
-echo ""
-echo "🔧 Service Status:"
-systemctl status ${welcomeStatusServices} --no-pager -l
-echo ""
-echo "🌐 Dashboard: https://localhost:${baseHttpsPort}/"
-echo ""
-EOF
-      chmod +x /root/welcome.sh
-      echo "/root/welcome.sh" >> /root/.bashrc
-    '';
-  };
 }
