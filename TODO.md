@@ -242,19 +242,29 @@ rm ai-sandbox-config.nix \
 
 ---
 
-### **Pillar 2: Unify Scripts and Remove Redundancy**
+### **Pillar 2: Unify Entry Points Around the CLI**
 
-**The Problem:** You have multiple `run-*.sh` scripts and test scripts that create confusion. Your `run.sh` script is already excellent and can serve as the single entry point.
+**The Problem:** Multiple `run-*.sh` helpers are still documented even though the Python CLI under `cli/rave` is the supported interface for building, launching, and operating VMs. This drift keeps sending contributors to a deprecated workflow.
 
-**The Solution:** We will make `run.sh` the official way to run VMs and remove the rest. We will also consolidate test scripts into a unified `test/` directory.
+**The Solution:** Make `./cli/rave` the documented Golden Path. Update guides, READMEs, and handoffs to reference CLI subcommands only, and delete shell helpers that overlap with the CLI.
 
-#### **Step 2.1: Elevate `run.sh` as the Master Script**
+#### **Step 2.1: Highlight the CLI workflow**
 
-Your `run.sh` is well-written. We just need to ensure it's the *only* way to run VMs. I have updated your `RUN-SCRIPT-DOCUMENTATION.md` to reflect the new, simpler configuration names (`production`, `development`, `demo`).
+Show the two-command happy path everywhere:
+
+```bash
+# Build/update a QCOW image
+./cli/rave vm build-image --profile production
+
+# Launch a local VM with forwarded ports & secrets
+./cli/rave vm launch-local --profile production --name prod-test
+```
+
+For persistent environments, emphasize `./cli/rave vm start|stop|status|logs <name>` instead of bespoke scripts.
 
 #### **Step 2.2: Delete Redundant Scripts**
 
-The master `run.sh` script makes these other scripts obsolete.
+With the CLI in place, these legacy helpers only create confusion:
 
 ```bash
 # 🗑️ Run this command to delete the old scripts
@@ -280,7 +290,7 @@ The `gitlab-complete/` directory contains a parallel Docker Compose implementati
 
 **Recommendation:** Archive or remove it to avoid confusion. For now, we will leave it, but understand that it is **not** part of the "Golden Path" production system. All GitLab functionality should come from the NixOS module.
 
-**Pillar 2 Complete!** You now have a single, clear command (`./run.sh`) to launch any VM configuration.
+**Pillar 2 Complete!** The CLI is now the single, documented interface for VM lifecycle management.
 
 ---
 
@@ -329,9 +339,35 @@ You have now completed a major refactoring. To ensure everything is working:
     ```
     *(Note: The first build will take a while as it re-evaluates everything.)*
 
-3.  **Run your new development VM:**
+3.  **Launch a development VM via the CLI:**
     ```bash
-    ./run.sh --config development --mode gui
+    ./cli/rave vm launch-local --profile development --name dev-gui
     ```
 
 You now have a clean, stable, and maintainable repository that fully leverages the power of NixOS. The "Golden Path" is established. Your project is ready to go.
+
+### ⚠️ Active Issue: nginx front-door vhost regression (November 2025)
+
+**What broke**
+- `nixos/modules/services/nginx/default.nix` still assigns the entire `services.nginx.virtualHosts` attrset in one shot.
+- Other modules (notably `nixos/modules/services/nats/default.nix`) assign to the same option later in the module list, so our primary `"${host}"` entry (dashboard + GitLab/Mattermost/etc.) gets overwritten. The resulting `/nix/store/*-nginx.conf` in the VM only exposes `/nginx_status` (and `/nats/` under `rave.local`).
+- Symptom: `https://localhost:28443/` never comes up because port 443 isn’t configured in the final nginx conf.
+
+**Current status**
+- Began refactoring the module to declare each vhost individually but reverted mid-way to keep the repo stable. No functional change has landed yet, so the regression persists.
+
+**Next steps for the handoff**
+1. Rewrite the `config = mkIf cfg.enable …` block so:
+   - `services.nginx = { … }` only carries the global settings.
+   - Each vhost is defined explicitly: `services.nginx.virtualHosts."${host}" = { … }`, `"${host}-http" = …`, and optional `"gitlab-internal"`, `"${host}-mattermost"`, `"${chat}"`, `"${chat}-http"` entries inside their respective `mkIf` blocks.
+   - The existing `mkMerge` payload (dashboard, GitLab, Outline, Penpot, n8n, NATS locations) should move inside the new `services.nginx.virtualHosts."${host}"` assignment so behavior stays identical.
+2. After the change, verify with:
+   ```bash
+   nix eval --impure --expr 'let eval = import <nixpkgs/nixos/lib/eval-config.nix> { system = "x86_64-linux"; modules = [ ./nixos/configs/production.nix ]; }; in builtins.attrNames eval.config.services.nginx.virtualHosts.localhost.locations'
+   ```
+   Expect both `"/"` and `/nginx_status` to appear.
+3. Rebuild (`nix build .#production`), recreate `prod-test`, and confirm `curl -k https://localhost:28443/` serves the new dashboard.
+
+**Helpful references**
+- The last known-good version of the module is available via `git show HEAD^:nixos/modules/services/nginx/default.nix`.
+- Keep an eye on other modules that still assign to `services.nginx.virtualHosts` (NATS, legacy overlays) to ensure they merge cleanly after the refactor.

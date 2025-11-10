@@ -8,7 +8,7 @@
 ## 2. Repository Topology
 - Active code and infrastructure live beside large artifacts: a dozen `*.qcow2` images, log directories (`run/`, `logs/`), and complete data volumes under `gitlab-complete/` checked into the repo root. This makes directory discovery noisy and breaks expectations for source-only repos.
 - There is no single `src/` or `packages/` boundary; instead, functionality is split across `cli/` (Python), `services/chat-control` (Python), `services/mattermost-bridge` (Python), `nixos/` (NixOS modules), `scripts/`, `build-scripts/`, `demo-scripts/`, and `legacy-configs/`.
-- Historical assets are only partially segregated: `legacy-configs/` and `archive/` contain old Nix configs, shell scripts, and nginx fixes, yet they share naming with still-used assets (e.g., `run.sh` under `legacy-configs/` conflicts with documentation that still references `./run.sh`).
+- Historical assets are only partially segregated: `legacy-configs/` and `archive/` contain old Nix configs, shell scripts, and nginx fixes, yet they share naming with still-used assets (e.g., `legacy-configs/run.sh` can be mistaken for the supported CLI path if documentation drifts).
 - Documentation is split between the root (e.g., `COMPLETE-BUILD.md`, `WORKING-SETUP.md`, `PRODUCTION-SECRETS-GUIDE.md`) and `docs/**` (architecture, services, deployment). No index ties them together, so onboarding requires guesswork.
 
 ## 3. Build & VM Lifecycle Flow
@@ -21,7 +21,7 @@
 - `cli/rave` is a Click app that bootstraps environment variables from `.env` files and wires subcommands for VM lifecycle, user management, OAuth, secrets, and TLS helpers.
 - `cli/vm_manager.py` shells out to `ssh`, `qemu-system-x86_64`, and `nix` via `PlatformManager`, stores VM metadata in JSON under `~/.local/share/rave/vms/`, and still offers `sshpass` fallbacks (indicating inconsistent keypair/secret policies).
 - Several helper files (`vm_manager.cover`, `oauth_manager.cover`, etc.) at the root of `cli/` look like coverage artefacts, living beside source files. They are easy to confuse with actual modules.
-- CLI docstrings describe `rave vm launch-local`, but README instructions emphasize `rave vm create/start`; other docs still instruct `./run.sh start` (`docs/SERVICES-OVERVIEW.md`), creating mismatched operator workflows.
+- CLI docstrings describe `rave vm launch-local`, README instructions emphasize `rave vm create/start`, and older docs occasionally drift back to `./run.sh start`—creating mismatched operator workflows whenever guidance isn’t kept in sync.
 
 ## 5. Runtime Service Stack
 - `nixos/configs/complete-production.nix` wires a monolithic VM image that includes GitLab CE, Mattermost, Penpot, Outline, n8n, Prometheus + exporters, Grafana, nginx, PostgreSQL, Redis, NATS JetStream, and a bespoke chat-control bridge. All services are enabled regardless of deployment scenario, which inflates closure size (40 GB disk, 12 GB RAM) and slows iteration.
@@ -39,7 +39,7 @@
 - **Artifact Sprawl**: Checking large QCOWs, log files, and data directories into the repo blurs the line between source and state, making it hard for automation (or agents) to know what is safe to touch.
 - **Monolithic Nix Config**: Only one `complete-production` module exists, so any attempt to build a lighter dev/test environment requires editing production definitions directly or resurrecting `legacy-configs` by hand.
 - **Inconsistent Tooling Paths**: Multiple orchestration interfaces (`cli/rave`, `build-scripts/*.sh`, `legacy-configs/run*.sh`, documentation for Docker Compose) coexist, with no authoritative matrix of which commands remain supported.
-- **Documentation Drift**: References to `./run.sh`, outdated port maps, and missing ADRs mean contributors cannot trust instructions without cross-checking real code paths.
+- **Documentation Drift**: Legacy references (e.g., `./run.sh` invocations, outdated port maps) and missing ADRs mean contributors cannot trust instructions without cross-checking real code paths.
 - **Secrets & Compliance**: Default passwords embedded in Nix (`gitlab-production-password`, `Password123!`, etc.) are still used whenever `useSecrets` is false. Because secrets live under `config/secrets.yaml` without templated validation, there is no automated guarantee they are present before builds.
 - **Testing Gap**: Only `tests/rave-vm.nix` exists; CLI, chat-control, and multi-agent services have no automated verification, yet they interact with external systems (GitLab, Mattermost, OAuth) that are brittle to regressions.
 

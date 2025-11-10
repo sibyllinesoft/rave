@@ -4,7 +4,6 @@ with lib;
 
 let
   cfg = config.services.rave.outline;
-  nginxVhost = config.services.rave.nginx.host;
   redisPlatform = config.services.rave.redis.platform or {};
   sharedAllocations = redisPlatform.allocations or {};
   sharedRedisHost = redisPlatform.dockerHost or "172.17.0.1";
@@ -13,20 +12,6 @@ let
   redisDatabase = if cfg.redisDb != null then cfg.redisDb else sharedAllocations.outline or 5;
   redisUrl = "redis://${sharedRedisHost}:${toString sharedRedisPort}/${toString redisDatabase}";
   trimNewline = "${pkgs.coreutils}/bin/tr -d '\\n'";
-
-  outlineBasePath =
-    let
-      match = builtins.match "https?://[^/]+(/.*)" cfg.publicUrl;
-    in
-    if cfg.publicUrl == "" then "/outline" else
-    if match == null || match == [] then "/outline" else builtins.head match;
-
-  basePathWithSlash =
-    let normalized = if lib.hasSuffix "/" outlineBasePath then outlineBasePath else "${outlineBasePath}/";
-    in normalized;
-  basePathNoSlash =
-    let trimmed = lib.removeSuffix "/" basePathWithSlash;
-    in if trimmed == "" then "/" else trimmed;
 in
 {
   options.services.rave.outline = {
@@ -168,28 +153,5 @@ ${optionalString (cfg.utilsSecretFile != null) ''
       };
     };
 
-    services.nginx.virtualHosts."${nginxVhost}".locations = {
-      "${basePathWithSlash}" = {
-        proxyPass = "http://127.0.0.1:${toString cfg.hostPort}/";
-        extraConfig = ''
-          proxy_set_header Host $host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-          proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-          proxy_set_header X-Forwarded-Prefix ${basePathWithSlash};
-          proxy_set_header X-Forwarded-Ssl on;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection $connection_upgrade;
-          client_max_body_size 100M;
-          proxy_redirect off;
-        '';
-      };
-
-      "${basePathNoSlash}" = {
-        return = "302 ${basePathWithSlash}";
-      };
-    };
   };
 }

@@ -5,7 +5,7 @@
 - CLI lives under `cli/` as a Python Click app (`cli/rave`, `vm_manager.py`, etc.); appears to be the only supported interface per `README.md`.
 - NixOS build entry points sit in `flake.nix` + `nixos/` (single `configs/complete-production.nix` plus modular tree under `nixos/modules/**`).
 - `services/` contains Python-based chat-control code paths separate from the Nix modules, implying additional runtime services outside the VM image.
-- Documentation is extensive but fragmented across root `.md` files and `docs/**`; some guides (e.g., `docs/SERVICES-OVERVIEW.md`) still describe deprecated Docker/Compose workflows.
+- Documentation is extensive but fragmented across root `.md` files and `docs/**`; some guides (e.g., `docs/reference/services-overview.md`) still describe the older Docker/Compose era even though the CLI + Nix VM is canonical.
 - Large vm images and QCOW checkpoints (`*-dev.qcow2`) live at repo root; need confirmation whether they are artifacts or required inputs.
 
 ## Outstanding Questions
@@ -29,7 +29,7 @@
 - `flake.nix` builds multiple qcow variants but repo also tracks dozens of `*-dev.qcow2` images under version control, suggesting manual debugging artifacts lingering beside source.
 
 ## Pass 4: Docs + Knowledge Base
-- Existing documentation spans root Markdown files plus `docs/**`, but messaging conflicts (e.g., `docs/SERVICES-OVERVIEW.md` still recommends `./run.sh start` even though only CLI is supported).
+- Existing documentation spans root Markdown files plus `docs/**`, and messaging easily drifts (e.g., `docs/reference/services-overview.md` previously told readers to run `./run.sh start`; make sure future edits keep pointing at `./cli/rave vm …`).
 - ADRs (`docs/adr/*.md`) document P0–P2 milestones but there is no ADR for later additions like chat-control or Outline/n8n inclusion.
 - Observed specialized guides (`COMPLETE-BUILD.md`, `WORKING-SETUP.md`, `PRODUCTION-SECRETS-GUIDE.md`) repeating environment bootstrap steps with slight variations—prime candidates for consolidation into a single operator guide.
 

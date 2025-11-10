@@ -215,7 +215,7 @@ in
   services.rave.nginx = {
     enable = true;
     host = "localhost";
-    chatDomain = "chat.localtest.me";
+    chatDomain = null;
   };
 
   services.rave.welcome.enable = true;

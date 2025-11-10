@@ -4,10 +4,17 @@ Your RAVE development environment now includes a complete integrated stack of de
 
 ## 🚀 Single Command Startup
 
-Start everything with one command:
+The `cli/rave` tool is the single supported entry point for building and running the integrated stack.
+
 ```bash
-./run.sh start
+# Build (or refresh) the QCOW image for the full environment
+./cli/rave vm build-image --profile production
+
+# Launch the VM locally with forwarded ports and secrets
+./cli/rave vm launch-local --profile production --name local-stack
 ```
+
+Once launched, use the remaining `rave vm …` commands to manage the VM by name (`local-stack` in this example).
 
 ## 📋 Integrated Services
 
@@ -30,25 +37,24 @@ Start everything with one command:
 ## 🛠️ Management Commands
 
 ```bash
-# Start all services
-./run.sh start
+# Build/update image (safe to run multiple times)
+./cli/rave vm build-image --profile production
 
-# Stop all services  
-./run.sh stop
+# Launch a disposable local VM
+./cli/rave vm launch-local --profile production --name local-stack
 
-# Check status
-./run.sh status
+# Manage an existing VM definition
+./cli/rave vm start local-stack
+./cli/rave vm stop local-stack
+./cli/rave vm status local-stack
+./cli/rave vm logs local-stack --service nginx --follow
+./cli/rave vm ssh local-stack
+```
 
-# View logs
-./run.sh logs
+To inspect a specific service such as Penpot:
 
-# Health check
-./run.sh validate
-
-# Manage Penpot specifically
-./run.sh penpot status
-./run.sh penpot logs
-./run.sh penpot restart
+```bash
+./cli/rave vm logs local-stack --service penpot-backend --follow
 ```
 
 ## 🔗 Workflow Integration
