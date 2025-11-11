@@ -61,6 +61,9 @@ let
   n8nEncryptionKey = "n8n-encryption-key-2d01b6dba90441e8a6f7ec2af3327ef2";
   n8nBasicAuthPassword = "n8n-basic-admin-password";
   n8nBasePath = "/n8n";
+  mattermostInternalBaseUrl = "http://127.0.0.1:8065";
+  grafanaHttpPort = config.services.rave.monitoring.grafana.httpPort;
+  pomeriumBaseUrl = "https://localhost:${baseHttpsPort}/pomerium";
 
   dbPasswordUnitSpecs = [
     {
@@ -156,11 +159,11 @@ in
     dockerImage = outlineDockerImage;
     hostPort = outlineHostPort;
     dbPassword = outlineDbPassword;
-    dbPasswordFile = if useSecrets then "/run/secrets/database/outline-password" else null;
+    dbPasswordFile = null;
     secretKey = outlineSecretKey;
-    secretKeyFile = if useSecrets then "/run/secrets/outline/secret-key" else null;
+    secretKeyFile = null;
     utilsSecret = outlineUtilsSecret;
-    utilsSecretFile = if useSecrets then "/run/secrets/outline/utils-secret" else null;
+    utilsSecretFile = null;
     redisDb = outlineRedisDb;
   };
 
@@ -174,6 +177,35 @@ in
     encryptionKey = n8nEncryptionKey;
     basicAuthPassword = n8nBasicAuthPassword;
     basePath = n8nBasePath;
+  };
+
+  services.rave.pomerium = {
+    enable = true;
+    publicUrl = pomeriumBaseUrl;
+    idp = {
+      provider = "gitlab";
+      providerUrl = gitlabExternalUrl;
+      clientId = "rave-pomerium";
+      clientSecret = "rave-pomerium-client-secret";
+      clientSecretFile = null;
+      scopes = [ "openid" "profile" "email" ];
+    };
+    policies = [
+      {
+        name = "Mattermost via Pomerium";
+        from = "${pomeriumBaseUrl}/mattermost";
+        to = mattermostInternalBaseUrl;
+        allowPublicUnauthenticated = true;
+        passIdentityHeaders = true;
+        preserveHost = true;
+      }
+      {
+        name = "Grafana via Pomerium";
+        from = "${pomeriumBaseUrl}/grafana";
+        to = "http://127.0.0.1:${toString grafanaHttpPort}";
+        allowPublicUnauthenticated = true;
+      }
+    ];
   };
 
   services.rave.penpot = {
@@ -224,10 +256,12 @@ in
     enable = true;
     bind = "0.0.0.0";
     port = 6379;
+    dockerHost = "host.docker.internal";
     maxMemory = "1GB";
     maxMemoryPolicy = "allkeys-lru";
     save = [ "900 1" "300 10" "60 10000" ];
     databases = 16;
+    extraSettings.protected-mode = "no";
     allocations = {
       gitlab = 0;
       outline = 5;
@@ -270,9 +304,9 @@ in
     enable = true;
     siteName = "RAVE Mattermost";
     publicUrl = mattermostPublicUrl;
-    internalBaseUrl = "http://127.0.0.1:8065";
+    internalBaseUrl = mattermostInternalBaseUrl;
     brandHtml = mattermostBrandHtml;
-    envFile = if useSecrets then "/run/secrets/mattermost/env" else null;
+    envFile = null;
     databaseDatasource = "postgres://mattermost:mmpgsecret@localhost:5432/mattermost?sslmode=disable&connect_timeout=10";
     admin = {
       usernameFile = mattermostAdminUsernameFile;
@@ -335,6 +369,7 @@ in
     ../modules/services/mattermost/default.nix
     ../modules/services/outline/default.nix
     ../modules/services/n8n/default.nix
+    ../modules/services/pomerium/default.nix
     ../modules/services/penpot/default.nix
     ../modules/services/redis/default.nix
     ../modules/services/welcome/default.nix
@@ -538,7 +573,7 @@ sops = lib.mkIf false {
 
   services.rave.postgresql = {
     enable = true;
-    listenAddresses = "localhost,172.17.0.1";
+    listenAddresses = "0.0.0.0";
     ensureDatabases = [ "gitlab" "grafana" "mattermost" ];
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
@@ -637,9 +672,22 @@ sops = lib.mkIf false {
     ];
   };
 
+  services.postgresql.authentication = ''
+    local   all     all                     trust
+    host    all     all     127.0.0.1/32    trust
+    host    all     all     ::1/128         trust
+    host    all     all     172.17.0.0/16   md5
+  '';
+
   systemd.services = lib.mkMerge [
     passwordUnitServices
     passwordDependentOverrides
+    {
+      postgresql = {
+        after = lib.mkAfter [ "docker.service" ];
+        wants = lib.mkAfter [ "docker.service" ];
+      };
+    }
   ];
 
   services.rave.gitlab = {
@@ -708,6 +756,8 @@ sops = lib.mkIf false {
       22    # SSH
       80    # HTTP
       443   # HTTPS
+      5432  # PostgreSQL (dockerized services like n8n need host access)
+      6379  # Redis (dockerized services)
       8443  # HTTPS (alternate)
       8220  # HTTP (VM forwarded)
       8221  # HTTPS (VM forwarded)

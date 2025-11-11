@@ -160,8 +160,10 @@ desktop.ini
 # Claude Code & AI Tools
 # -----------------------------------------------------------------------------
 # Serena cache
-.serena/cache/
-.serena/*.qcow2
+.serena/
+
+# Backup qcow2 snapshots with timestamp suffixes
+*.qcow2.bak*
 
 # Claude Code context (should be in repo root only)
 **/CLAUDE.md

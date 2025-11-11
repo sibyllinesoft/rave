@@ -22,6 +22,9 @@ let
   n8nWelcomePrimary = optionalString config.services.rave.n8n.enable ''
   echo "  n8n          : ${config.services.rave.n8n.publicUrl}/"
 '';
+  pomeriumWelcomePrimary = optionalString config.services.rave.pomerium.enable ''
+  echo "  Pomerium     : ${config.services.rave.pomerium.publicUrl}"
+'';
 
   penpotWelcomeFancy = optionalString config.services.rave.penpot.enable ''
   echo "   🎨 Penpot:      ${config.services.rave.penpot.publicUrl}/"
@@ -31,6 +34,9 @@ let
 '';
   n8nWelcomeFancy = optionalString config.services.rave.n8n.enable ''
   echo "   🧠 n8n:         ${config.services.rave.n8n.publicUrl}/"
+'';
+  pomeriumWelcomeFancy = optionalString config.services.rave.pomerium.enable ''
+  echo "   🛡  Pomerium:   ${config.services.rave.pomerium.publicUrl}"
 '';
 
   statusServices =
@@ -46,6 +52,7 @@ let
     ++ optionals config.services.rave.penpot.enable [ "penpot-backend" "penpot-frontend" "penpot-exporter" ]
     ++ optionals config.services.rave.outline.enable [ "outline" ]
     ++ optionals config.services.rave.n8n.enable [ "n8n" ]
+    ++ optionals config.services.rave.pomerium.enable [ "pomerium" ]
     ++ cfg.extraStatusServices;
 
   statusServicesStr = concatStringsSep " " statusServices;
@@ -60,7 +67,7 @@ echo "  SSH          : localhost:12222 (user root, password rave-root)"
 echo "  GitLab HTTPS : https://${host}:${baseHttpsPort}/gitlab/"
 echo "  Mattermost   : ${mattermostPublicUrl}/"
 echo "  Grafana      : ${grafanaPublicUrl}"
-echo "  Prometheus   : http://localhost:19090/"${penpotWelcomePrimary}${outlineWelcomePrimary}${n8nWelcomePrimary}
+echo "  Prometheus   : http://localhost:19090/"${penpotWelcomePrimary}${outlineWelcomePrimary}${n8nWelcomePrimary}${pomeriumWelcomePrimary}
 echo ""
 echo "🚀 RAVE Complete Production Environment"
 echo "====================================="
@@ -70,7 +77,7 @@ echo "   🦊 GitLab:      https://${host}:${baseHttpsPort}/gitlab/"
 echo "   📊 Grafana:     ${grafanaPublicUrl}"
 echo "   💬 Mattermost:  ${mattermostPublicUrl}/"
 echo "   🔍 Prometheus:  https://${host}:${baseHttpsPort}/prometheus/"
-echo "   ⚡ NATS:        https://${host}:${baseHttpsPort}/nats/"${penpotWelcomeFancy}${outlineWelcomeFancy}${n8nWelcomeFancy}
+echo "   ⚡ NATS:        https://${host}:${baseHttpsPort}/nats/"${penpotWelcomeFancy}${outlineWelcomeFancy}${n8nWelcomeFancy}${pomeriumWelcomeFancy}
 echo ""
 echo "🔑 Default Credentials:"
 echo "   GitLab root:    admin123456"

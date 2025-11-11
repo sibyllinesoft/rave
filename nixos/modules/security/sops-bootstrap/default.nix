@@ -132,18 +132,19 @@ in {
         set -euo pipefail
         mkdir -p /var/lib/sops-nix /host-keys
 
-        echo "Attempting virtfs mount for AGE keys..."
-        if ${mountCommand} 2>/dev/null; then
-          echo "virtfs mounted successfully"
+        echo "Ensuring virtfs mount for AGE keys..."
+        if ${pkgs.util-linux}/bin/mountpoint -q /host-keys || ${mountCommand} 2>/dev/null; then
+          echo "virtfs mount available"
           if [ -f /host-keys/keys.txt ]; then
             cp /host-keys/keys.txt ${ageKeyPath}
             chmod 600 ${ageKeyPath}
             echo "AGE key installed from virtfs"
             exit 0
           else
-            echo "virtfs mounted but keys.txt missing"
-            umount /host-keys 2>/dev/null || true
+            echo "virtfs accessible but keys.txt missing"
           fi
+        else
+          echo "virtfs mount could not be established"
         fi
 
         if [ -n "''${SOPS_AGE_KEY:-}" ]; then

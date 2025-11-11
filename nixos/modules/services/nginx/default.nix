@@ -37,6 +37,33 @@ let
     let trimmed = lib.removeSuffix "/" n8nNormalizedPath;
     in if trimmed == "" then "/" else trimmed;
 
+  monitoringEnabled = config.services.rave.monitoring.enable;
+  grafanaHttpPort = toString config.services.rave.monitoring.grafana.httpPort;
+  grafanaPath = pathFromUrl grafanaUrl;
+  grafanaRedirectPath = trimTrailingSlash grafanaPath;
+  promPath = normalizePath config.services.rave.monitoring.prometheus.publicPath;
+  promRedirectPath = trimTrailingSlash promPath;
+  promPortStr = toString config.services.rave.monitoring.prometheus.port;
+
+  outlineEnabled = config.services.rave.outline.enable;
+  outlinePortStr = toString config.services.rave.outline.hostPort;
+  outlineUrl = normalizeUrl config.services.rave.outline.publicUrl;
+  outlinePath = pathFromUrl outlineUrl;
+  outlineRedirectPath = trimTrailingSlash outlinePath;
+
+  penpotEnabled = config.services.rave.penpot.enable;
+  penpotPortStr = toString config.services.rave.penpot.frontendPort;
+  penpotUrl = normalizeUrl config.services.rave.penpot.publicUrl;
+  penpotPath = pathFromUrl penpotUrl;
+  penpotRedirectPath = trimTrailingSlash penpotPath;
+
+  pomeriumEnabled = config.services.rave.pomerium.enable;
+  pomeriumLoopbackUrl = "http://127.0.0.1:${toString config.services.rave.pomerium.httpPort}";
+  pomeriumPublicUrl = normalizeUrl config.services.rave.pomerium.publicUrl;
+  pomeriumPath = pathFromUrl pomeriumPublicUrl;
+  pomeriumRedirectPath = trimTrailingSlash pomeriumPath;
+  pomeriumProxyConfig = mkProxyExtra pomeriumPath;
+
   inherit (lib.strings) escapeXML;
 
   normalizeUrl = url:
@@ -51,6 +78,55 @@ let
           if grafanaCfg.publicUrl != null then grafanaCfg.publicUrl
           else "${baseHttpsUrl}/grafana/";
     in normalizeUrl derived;
+
+  ensureLeadingSlash = path: if lib.hasPrefix "/" path then path else "/${path}";
+  ensureTrailingSlash = path: if lib.hasSuffix "/" path then path else "${path}/";
+  normalizePath = path: ensureTrailingSlash (ensureLeadingSlash (if path == "" then "/" else path));
+
+  pathFromUrl = url:
+    if url == null then "/"
+    else
+      let
+        normalized = normalizeUrl url;
+        matchResult = builtins.match "https?://[^/]+(.*)" normalized;
+        tail =
+          if matchResult == null || matchResult == [] then "/"
+          else builtins.head matchResult;
+      in normalizePath tail;
+
+  trimTrailingSlash = path:
+    if path == "/" then "/"
+    else
+      let trimmed = lib.removeSuffix "/" path;
+      in if trimmed == "" then "/" else trimmed;
+
+  mkProxyExtra =
+    path:
+    let
+      normalized =
+        if path == null then null else ensureTrailingSlash path;
+      prefixHeaderWithSlash =
+        if normalized == null || normalized == "/" then null else normalized;
+      prefixHeaderNoSlash =
+        if normalized == null then null
+        else
+          let trimmed = trimTrailingSlash normalized;
+          in if trimmed == "/" then null else trimmed;
+    in ''
+      proxy_set_header Host "$host:$rave_forwarded_port";
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+      proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+      proxy_set_header X-Forwarded-Ssl on;
+      ${optionalString (prefixHeaderWithSlash != null) "proxy_set_header X-Forwarded-Prefix ${prefixHeaderWithSlash};"}
+      ${optionalString (prefixHeaderNoSlash != null) "proxy_set_header X-Script-Name ${prefixHeaderNoSlash};"}
+      proxy_set_header X-Forwarded-Uri $request_uri;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_redirect off;
+    '';
 
   mkCard = { title, description, url, icon, status }:
     let
@@ -124,6 +200,15 @@ let
         description = "Automation workflows";
         icon = "workflow";
         url = normalizeUrl config.services.rave.n8n.publicUrl;
+        status = "Enabled";
+      })
+    ])
+    ++ (lib.optionals pomeriumEnabled [
+      (mkCard {
+        title = "Pomerium";
+        description = "Identity-aware proxy gateway";
+        icon = "shield-check";
+        url = pomeriumPublicUrl;
         status = "Enabled";
       })
     ]);
@@ -349,6 +434,300 @@ let
           proxy_set_header X-Forwarded-Proto $scheme;
 '';
 
+  primaryVirtualHost = {
+    forceSSL = true;
+    enableACME = false;
+    listen = [
+      { addr = "0.0.0.0"; port = 443; ssl = true; }
+      { addr = "0.0.0.0"; port = 80; ssl = false; }
+    ];
+    sslCertificate = certificate.certFile;
+    sslCertificateKey = certificate.keyFile;
+    locations = mkMerge (
+      [
+        {
+          "/" = {
+            root = dashboardStaticRoot;
+            index = "index.html";
+            tryFiles = "$uri /index.html";
+          };
+          "/nginx_status" = {
+            extraConfig = ''
+              stub_status;
+              allow 127.0.0.1;
+              allow ::1;
+              deny all;
+            '';
+          };
+        }
+      ]
+      ++ optional gitlabEnabled (
+        {
+          "/gitlab/" = {
+            proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+            proxyWebsockets = true;
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Ssl on;
+              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection $connection_upgrade;
+              proxy_cache_bypass $http_upgrade;
+              proxy_set_header X-Script-Name /gitlab;
+              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+              client_max_body_size 10G;
+              proxy_connect_timeout 300s;
+              proxy_send_timeout 300s;
+              proxy_read_timeout 300s;
+            '';
+          };
+          "= /gitlab" = {
+            return = "301 /gitlab/";
+          };
+          "~ ^/gitlab/assets/(.*)$" = {
+            alias = "${gitlabPackage}/share/gitlab/public/assets/$1";
+            extraConfig = ''
+              expires 1y;
+            '';
+          };
+          "~ ^/gitlab/(-/.*)$" = {
+            alias = "${gitlabPackage}/share/gitlab/public$1";
+            extraConfig = ''
+              expires 1y;
+              try_files $uri =404;
+            '';
+          };
+          "~ ^/gitlab/(uploads|files)/" = {
+            proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Ssl on;
+              proxy_set_header X-Script-Name /gitlab;
+              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+            '';
+          };
+          "~ ^/gitlab/.*/-/(artifacts|archive|raw)/" = {
+            proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Ssl on;
+              proxy_set_header X-Script-Name /gitlab;
+              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+              client_max_body_size 10G;
+              proxy_request_buffering off;
+            '';
+          };
+          "/registry/" = {
+            proxyPass = "http://127.0.0.1:5000/";
+            extraConfig = ''
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+              proxy_set_header Docker-Distribution-Api-Version registry/2.0;
+              client_max_body_size 0;
+              chunked_transfer_encoding on;
+            '';
+          };
+          "/health/gitlab" = {
+            proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:/-/health";
+            extraConfig = ''
+              access_log off;
+              proxy_set_header Host "$host:$rave_forwarded_port";
+              proxy_set_header X-Forwarded-Port $rave_forwarded_port;
+              proxy_intercept_errors on;
+              error_page 500 502 503 504 = @gitlab_unhealthy;
+            '';
+          };
+          "@gitlab_unhealthy" = {
+            return = "503 \"GitLab: Unavailable\"";
+          };
+        }
+      )
+      ++ optional mattermostEnabled {
+        "/login" = {
+          return = "302 ${mattermostPublicUrl}/";
+        };
+
+        "/mattermost/" = {
+          proxyPass = mattermostProxyTarget;
+          proxyWebsockets = true;
+          extraConfig = mattermostProxyConfig;
+        };
+
+        "/mattermost" = {
+          proxyPass = mattermostProxyTarget;
+          proxyWebsockets = true;
+          extraConfig = mattermostProxyConfig;
+        };
+      }
+      ++ optional n8nEnabled {
+        "${n8nNormalizedPath}" = {
+          proxyPass = "http://127.0.0.1:${n8nHostPort}/";
+          proxyWebsockets = true;
+          extraConfig = n8nProxyConfig;
+        };
+      }
+      ++ optional (n8nEnabled && n8nRedirectPath != "/") {
+        "= ${n8nRedirectPath}" = {
+          return = "302 ${n8nNormalizedPath}";
+        };
+      }
+      ++ optional pomeriumEnabled (
+        let
+          redirectAttr = optionalAttrs (pomeriumPath != "/" && pomeriumRedirectPath != pomeriumPath) {
+            "= ${pomeriumRedirectPath}" = {
+              return = "301 ${pomeriumPath}";
+            };
+          };
+        in
+        {
+          "${pomeriumPath}" = {
+            proxyPass = pomeriumLoopbackUrl;
+            proxyWebsockets = true;
+            extraConfig = pomeriumProxyConfig;
+          };
+        }
+        // redirectAttr
+      )
+      ++ optional natsEnabled {
+        "/nats/" = {
+          proxyPass = "http://127.0.0.1:${natsHttpPort}/";
+          extraConfig = natsProxyConfig;
+        };
+      }
+      ++ optional monitoringEnabled (
+        let
+          grafanaEntries = {
+            "${grafanaPath}" = {
+              proxyPass = "http://127.0.0.1:${grafanaHttpPort}";
+              proxyWebsockets = true;
+              extraConfig = mkProxyExtra grafanaPath;
+            };
+          };
+          promEntries =
+            {
+              "${promPath}" = {
+                proxyPass = "http://127.0.0.1:${promPortStr}/";
+                proxyWebsockets = true;
+                extraConfig = mkProxyExtra promPath;
+              };
+            }
+            // optionalAttrs (promPath != "/" && promRedirectPath != promPath) {
+              "= ${promRedirectPath}" = {
+                return = "301 ${promPath}";
+              };
+            };
+        in grafanaEntries // promEntries
+      )
+      ++ optional outlineEnabled (
+        let
+          redirectAttr = optionalAttrs (outlinePath != "/" && outlineRedirectPath != outlinePath) {
+            "= ${outlineRedirectPath}" = {
+              return = "301 ${outlinePath}";
+            };
+          };
+        in
+        {
+          "${outlinePath}" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/";
+            proxyWebsockets = true;
+            extraConfig = mkProxyExtra outlinePath;
+          };
+        }
+        // redirectAttr
+      )
+      ++ optional (outlineEnabled && outlinePath != "/") (
+        {
+          "/static/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/static/";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/images/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/images/";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/email/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/email/";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/fonts/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/fonts/";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/locales/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/locales/";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/s/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/s/";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/share/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/share/";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/doc/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/doc/";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/embeds/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/embeds/";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/opensearch.xml" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/opensearch.xml";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+          "/robots.txt" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/robots.txt";
+            extraConfig = mkProxyExtra outlinePath;
+          };
+        }
+      )
+      ++ optional penpotEnabled (
+        let
+          redirectAttr = optionalAttrs (penpotPath != "/" && penpotRedirectPath != penpotPath) {
+            "= ${penpotRedirectPath}" = {
+              return = "301 ${penpotPath}";
+            };
+          };
+        in
+        {
+          "${penpotPath}" = {
+            proxyPass = "http://127.0.0.1:${penpotPortStr}/";
+            proxyWebsockets = true;
+            extraConfig = mkProxyExtra penpotPath;
+          };
+        }
+        // redirectAttr
+      )
+    );
+
+    extraConfig = ''
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-Frame-Options "DENY" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      port_in_redirect off;
+      absolute_redirect off;
+    '';
+  };
+
 in
 {
   options.services.rave.nginx = {
@@ -421,187 +800,35 @@ in
         statusPage = true;
       };
 
-      services.nginx.virtualHosts."${host}" = {
-        forceSSL = true;
-        enableACME = false;
-        listen = [
-          { addr = "0.0.0.0"; port = 443; ssl = true; }
-          { addr = "0.0.0.0"; port = 80; ssl = false; }
-        ];
-        sslCertificate = certificate.certFile;
-        sslCertificateKey = certificate.keyFile;
-        locations = mkMerge (
-          [
-            {
-              "/" = {
-                root = dashboardStaticRoot;
-                index = "index.html";
-                tryFiles = "$uri /index.html";
-              };
-            }
-          ]
-          ++ optional gitlabEnabled (
-            {
-              "/gitlab/" = {
-                proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
-                proxyWebsockets = true;
-                extraConfig = ''
-                  proxy_set_header Host "$host:$rave_forwarded_port";
-                  proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Ssl on;
-                  proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection $connection_upgrade;
-                  proxy_cache_bypass $http_upgrade;
-                  proxy_set_header X-Script-Name /gitlab;
-                  proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-                  client_max_body_size 10G;
-                  proxy_connect_timeout 300s;
-                  proxy_send_timeout 300s;
-                  proxy_read_timeout 300s;
-                '';
-              };
-              "= /gitlab" = {
-                return = "301 /gitlab/";
-              };
-              "~ ^/gitlab/assets/(.*)$" = {
-                alias = "${gitlabPackage}/share/gitlab/public/assets/$1";
-                extraConfig = ''
-                  expires 1y;
-                '';
-              };
-              "~ ^/gitlab/(-/.*)$" = {
-                alias = "${gitlabPackage}/share/gitlab/public$1";
-                extraConfig = ''
-                  expires 1y;
-                  try_files $uri =404;
-                '';
-              };
-              "~ ^/gitlab/(uploads|files)/" = {
-                proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
-                extraConfig = ''
-                  proxy_set_header Host "$host:$rave_forwarded_port";
-                  proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Ssl on;
-                  proxy_set_header X-Script-Name /gitlab;
-                  proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-                '';
-              };
-              "~ ^/gitlab/.*/-/(artifacts|archive|raw)/" = {
-                proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:";
-                extraConfig = ''
-                  proxy_set_header Host "$host:$rave_forwarded_port";
-                  proxy_set_header X-Forwarded-Host "$host:$rave_forwarded_port";
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Ssl on;
-                  proxy_set_header X-Script-Name /gitlab;
-                  proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-                  client_max_body_size 10G;
-                  proxy_request_buffering off;
-                '';
-              };
-              "/registry/" = {
-                proxyPass = "http://127.0.0.1:5000/";
-                extraConfig = ''
-                  proxy_set_header Host "$host:$rave_forwarded_port";
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-                  proxy_set_header Docker-Distribution-Api-Version registry/2.0;
-                  client_max_body_size 0;
-                  chunked_transfer_encoding on;
-                '';
-              };
-              "/health/gitlab" = {
-                proxyPass = "http://unix:/run/gitlab/gitlab-workhorse.socket:/-/health";
-                extraConfig = ''
-                  access_log off;
-                  proxy_set_header Host "$host:$rave_forwarded_port";
-                  proxy_set_header X-Forwarded-Port $rave_forwarded_port;
-                  proxy_intercept_errors on;
-                  error_page 500 502 503 504 = @gitlab_unhealthy;
-                '';
-              };
-              "@gitlab_unhealthy" = {
-                return = "503 \"GitLab: Unavailable\"";
-              };
-            }
-          )
-          ++ optional mattermostEnabled {
-            "/login" = {
-              return = "302 ${mattermostPublicUrl}/";
-            };
-
-            "/mattermost/" = {
-              proxyPass = mattermostProxyTarget;
-              proxyWebsockets = true;
-              extraConfig = mattermostProxyConfig;
-            };
-
-            "/mattermost" = {
-              proxyPass = mattermostProxyTarget;
-              proxyWebsockets = true;
-              extraConfig = mattermostProxyConfig;
-            };
-          }
-          ++ optional n8nEnabled {
-            "${n8nNormalizedPath}" = {
-              proxyPass = "http://127.0.0.1:${n8nHostPort}";
-              proxyWebsockets = true;
-              extraConfig = n8nProxyConfig;
-            };
-          }
-          ++ optional (n8nEnabled && n8nRedirectPath != "/") {
-            "${n8nRedirectPath}" = {
-              return = "302 ${n8nNormalizedPath}";
-            };
-          }
-          ++ optional natsEnabled {
-            "/nats/" = {
-              proxyPass = "http://127.0.0.1:${natsHttpPort}/";
-              extraConfig = natsProxyConfig;
-            };
-          }
-        );
-
-        extraConfig = ''
-          add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-          add_header X-Content-Type-Options "nosniff" always;
-          add_header X-Frame-Options "DENY" always;
-          add_header X-XSS-Protection "1; mode=block" always;
-          add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-          port_in_redirect off;
-          absolute_redirect off;
-        '';
-      };
-
-      services.nginx.virtualHosts."${host}-http" = {
-        listen = [ { addr = "0.0.0.0"; port = 80; } ];
-        locations."/" = {
-          return = "301 https://${host}$request_uri";
-        };
-      };
-
       systemd.services.nginx = {
-        after =
-          [ "generate-localhost-certs.service" ]
-          ++ optionals config.services.rave.gitlab.enable [ "gitlab.service" ]
-          ++ optionals config.services.rave.monitoring.enable [ "grafana.service" "prometheus.service" ]
-          ++ optionals mattermostEnabled [ "mattermost.service" ]
-          ++ optionals natsEnabled [ "nats.service" ]
-          ++ optionals config.services.rave.penpot.enable [ "penpot-backend.service" "penpot-frontend.service" "penpot-exporter.service" ]
-          ++ optionals config.services.rave.outline.enable [ "outline.service" ]
-          ++ optionals n8nEnabled [ "n8n.service" ];
+        after = [ "generate-localhost-certs.service" ];
         requires = [ "generate-localhost-certs.service" ];
+      };
+    }
+    {
+      services.nginx.virtualHosts."${host}" = primaryVirtualHost;
+    }
+    {
+      services.nginx.virtualHosts."${host}-http" = {
+        listen = [
+          { addr = "0.0.0.0"; port = 80; }
+          { addr = "[::]"; port = 80; }
+        ];
+        serverName = "${host}-http localhost 127.0.0.1";
+        locations = {
+          "/" = {
+            return = "301 https://${host}$request_uri";
+          };
+          "/nginx_status" = {
+            extraConfig = ''
+              stub_status;
+              allow 127.0.0.1;
+              allow ::1;
+              deny all;
+              access_log off;
+            '';
+          };
+        };
       };
     }
     (mkIf gitlabEnabled {

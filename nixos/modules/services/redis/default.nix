@@ -38,8 +38,8 @@ in
 
     dockerHost = mkOption {
       type = types.str;
-      default = "172.17.0.1";
-      description = "Host IP that Docker containers should use when connecting to Redis.";
+      default = "host.docker.internal";
+      description = "Hostname or IP that Docker containers should use when connecting to Redis.";
     };
 
     databases = mkOption {

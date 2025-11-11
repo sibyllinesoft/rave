@@ -22,6 +22,7 @@ const categories = [
   { id: 'core', title: 'Core infrastructure', icon: Icons.Server, description: 'Datastores, ingress, cache layers' },
   { id: 'development', title: 'Dev acceleration', icon: Icons.Code2, description: 'Message buses, workflow, automation' },
   { id: 'monitoring', title: 'Observability', icon: Icons.BarChart3, description: 'Dashboards, tracing, alerting' },
+  { id: 'security', title: 'Zero trust & security', icon: Icons.ShieldCheck, description: 'Access control, identity, policy enforcement' },
   { id: 'design', title: 'Design & prototyping', icon: Icons.Palette, description: 'Product design + research tools' },
   { id: 'collaboration', title: 'Collaboration', icon: Icons.Users, description: 'Knowledge base, chat, async work' },
 ];
@@ -189,13 +190,7 @@ function App() {
     <div className="min-h-screen bg-[color:var(--color-bg-0)] pb-32 text-[color:var(--color-text-1)]">
       <header className="border-b border-[color:var(--color-stroke)]/30 bg-[color:var(--color-bg-1)]/95">
         <div className="mx-auto max-w-7xl px-6 py-8">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-[0.35em] text-[color:var(--color-muted)]">RAVE provisioning</p>
-            <h1 className="text-[30px] font-semibold text-[color:var(--color-text-1)]">Web provisioning demo</h1>
-            <p className="text-sm text-[color:var(--color-text-2)]">
-              Cardized services on the left, sticky summary on the right. Adjust inputs and totals update in under 100&nbsp;ms.
-            </p>
-          </div>
+          <h1 className="text-[34px] font-semibold text-[color:var(--color-text-1)]">Rave Provisioning Manager</h1>
 
           <nav className="mt-6 grid gap-3 md:grid-cols-3">
             {steps.map(step => (

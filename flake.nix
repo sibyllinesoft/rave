@@ -63,7 +63,7 @@
           ];
 
           virtualisation.diskSize = lib.mkDefault (40 * 1024); # 40GB default
-          virtualisation.memorySize = lib.mkDefault 12288; # 12GB default
+          virtualisation.memorySize = lib.mkDefault 16384; # 16GB default
           virtualisation.useNixStoreImage = false;
           virtualisation.sharedDirectories = lib.mkForce {};
           virtualisation.mountHostNixStore = lib.mkForce false;

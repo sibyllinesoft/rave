@@ -8,17 +8,34 @@ let
   redisPlatform = config.services.rave.redis.platform or {};
   sharedAllocations = redisPlatform.allocations or {};
   sharedRedisUnit = redisPlatform.unit or "redis-main.service";
-  sharedRedisHost = redisPlatform.dockerHost or "172.17.0.1";
+  sharedRedisHost = redisPlatform.dockerHost or "host.docker.internal";
   sharedRedisPort = redisPlatform.port or 6379;
   sharedRedisDb = sharedAllocations.penpot or 10;
 
   dbPasswordExpr = if cfg.database.passwordFile != null
-    then "$(cat ${cfg.database.passwordFile})"
+    then "$(${pkgs.coreutils}/bin/cat ${cfg.database.passwordFile} | ${trimNewline})"
     else cfg.database.password;
 
-  oidcSecretExpr = if cfg.oidc.clientSecretFile != null
-    then "$(cat ${cfg.oidc.clientSecretFile})"
-    else cfg.oidc.clientSecret;
+  trimNewline = "${pkgs.coreutils}/bin/tr -d '\\n'";
+  readSecretSnippet = { var, file, fallback }: if file != null then ''
+    if [ -s ${file} ]; then
+      ${var}="$(${pkgs.coreutils}/bin/cat ${file} | ${trimNewline})"
+    else
+      ${var}=${lib.escapeShellArg fallback}
+    fi
+  '' else ''
+    ${var}=${lib.escapeShellArg fallback}
+  '';
+  dbPasswordSnippet = readSecretSnippet {
+    var = "PENPOT_DB_PASSWORD";
+    file = cfg.database.passwordFile;
+    fallback = cfg.database.password;
+  };
+  oidcSecretSnippet = if cfg.oidc.enable then readSecretSnippet {
+    var = "PENPOT_OIDC_SECRET";
+    file = cfg.oidc.clientSecretFile;
+    fallback = cfg.oidc.clientSecret;
+  } else "";
 
   redisHost = if cfg.redis.host != null then cfg.redis.host else sharedRedisHost;
   defaultRedisPort = if cfg.managedRedis then 6380 else sharedRedisPort;
@@ -34,6 +51,43 @@ let
   exporterPortStr = toString cfg.exporterPort;
   frontendPortStr = toString cfg.frontendPort;
   publicUrl = cfg.publicUrl;
+  backendEnvVars = [
+    "PENPOT_FLAGS"
+    "PENPOT_PUBLIC_URI"
+    "PENPOT_DATABASE_URI"
+    "PENPOT_REDIS_URI"
+    "PENPOT_ASSETS_STORAGE_BACKEND"
+    "PENPOT_STORAGE_ASSETS_FS_DIRECTORY"
+    "PENPOT_TELEMETRY_ENABLED"
+    "PENPOT_SMTP_DEFAULT_FROM"
+    "PENPOT_SMTP_DEFAULT_REPLY_TO"
+    "PENPOT_SMTP_HOST"
+    "PENPOT_SMTP_PORT"
+    "PENPOT_SMTP_TLS"
+    "PENPOT_SMTP_SSL"
+  ];
+  backendEnvFlags = concatStringsSep " " (map (var: "-e ${var}") backendEnvVars);
+  backendOidcVars = [
+    "PENPOT_OIDC_CLIENT_ID"
+    "PENPOT_OIDC_CLIENT_SECRET"
+    "PENPOT_OIDC_BASE_URI"
+    "PENPOT_OIDC_CLIENT_NAME"
+    "PENPOT_OIDC_AUTH_URI"
+    "PENPOT_OIDC_TOKEN_URI"
+    "PENPOT_OIDC_USER_URI"
+    "PENPOT_OIDC_SCOPES"
+    "PENPOT_OIDC_NAME_ATTR"
+    "PENPOT_OIDC_EMAIL_ATTR"
+  ];
+  backendOidcFlags = concatStringsSep " " (map (var: "-e ${var}") backendOidcVars);
+  backendAllEnvFlags = backendEnvFlags + optionalString cfg.oidc.enable " ${backendOidcFlags}";
+  frontendEnvVars = [
+    "PENPOT_FRONTEND_URI"
+    "PENPOT_BACKEND_URI"
+    "PENPOT_EXPORTER_URI"
+  ];
+  frontendEnvFlags = concatStringsSep " " (map (var: "-e ${var}") frontendEnvVars);
+  hostGatewayArg = "--add-host host.docker.internal:host-gateway";
 in {
   options.services.rave.penpot = {
     enable = mkEnableOption "Penpot design tool with PostgreSQL and Redis backends";
@@ -89,8 +143,8 @@ in {
     database = {
       host = mkOption {
         type = types.str;
-        default = "localhost";
-        description = "PostgreSQL host";
+        default = "host.docker.internal";
+        description = "PostgreSQL host reachable from the Docker containers";
       };
 
       port = mkOption {
@@ -206,16 +260,60 @@ in {
 
     networking.firewall.allowedTCPPorts = mkAfter [ cfg.frontendPort cfg.backendPort cfg.exporterPort ];
 
+    systemd.services."docker-pull-penpot-backend" = {
+      description = "Pre-pull Penpot backend Docker image";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "docker.service" ];
+      requires = [ "docker.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "0";
+        ExecStart = ''
+          ${pkgs.docker}/bin/docker pull ${cfg.backendImage}
+        '';
+      };
+    };
+
+    systemd.services."docker-pull-penpot-frontend" = {
+      description = "Pre-pull Penpot frontend Docker image";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "docker.service" ];
+      requires = [ "docker.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "0";
+        ExecStart = ''
+          ${pkgs.docker}/bin/docker pull ${cfg.frontendImage}
+        '';
+      };
+    };
+
+    systemd.services."docker-pull-penpot-exporter" = {
+      description = "Pre-pull Penpot exporter Docker image";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "docker.service" ];
+      requires = [ "docker.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "0";
+        ExecStart = ''
+          ${pkgs.docker}/bin/docker pull ${cfg.exporterImage}
+        '';
+      };
+    };
+
     systemd.services.penpot-backend = {
       description = "Penpot Backend";
       wantedBy = [ "multi-user.target" ];
-      after = [ "docker.service" "postgresql.service" ] ++ redisDependencyUnits;
-      requires = [ "docker.service" "postgresql.service" ] ++ redisDependencyUnits;
+      after = [ "docker.service" "postgresql.service" "docker-pull-penpot-backend.service" ] ++ redisDependencyUnits;
+      requires = [ "docker.service" "postgresql.service" "docker-pull-penpot-backend.service" ] ++ redisDependencyUnits;
 
       environment = {
         PENPOT_FLAGS = "enable-registration enable-login-with-oidc disable-email-verification enable-prepl-server";
         PENPOT_PUBLIC_URI = publicUrl;
-        PENPOT_DATABASE_URI = "postgresql://${cfg.database.username}:${dbPasswordExpr}@${cfg.database.host}:${toString cfg.database.port}/${cfg.database.name}";
         PENPOT_REDIS_URI = redisUri;
         PENPOT_ASSETS_STORAGE_BACKEND = "assets-fs";
         PENPOT_STORAGE_ASSETS_FS_DIRECTORY = "/opt/data/assets";
@@ -228,7 +326,6 @@ in {
         PENPOT_SMTP_SSL = "false";
       } // optionalAttrs cfg.oidc.enable {
         PENPOT_OIDC_CLIENT_ID = cfg.oidc.clientId;
-        PENPOT_OIDC_CLIENT_SECRET = oidcSecretExpr;
         PENPOT_OIDC_BASE_URI = cfg.oidc.gitlabUrl;
         PENPOT_OIDC_CLIENT_NAME = "GitLab";
         PENPOT_OIDC_AUTH_URI = "${cfg.oidc.gitlabUrl}/oauth/authorize";
@@ -244,22 +341,31 @@ in {
         Restart = "always";
         RestartSec = 10;
         ExecStartPre = [
-          "${pkgs.docker}/bin/docker network create penpot-network --driver bridge || true"
-          "${pkgs.docker}/bin/docker volume create penpot-assets || true"
-          "${pkgs.docker}/bin/docker pull ${cfg.backendImage}"
+          "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker rm -f penpot-backend || true'"
+          "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker network create penpot-network --driver bridge || true'"
+          "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker volume create penpot-assets || true'"
         ];
         ExecStart = pkgs.writeShellScript "penpot-backend-start" ''
+          set -euo pipefail
+          urlencode() {
+            RAW="$1" ${pkgs.python3}/bin/python3 - <<'PY'
+import os, urllib.parse
+print(urllib.parse.quote(os.environ["RAW"], safe='._-~'))
+PY
+          }
+          ${dbPasswordSnippet}
+          PENPOT_DB_USER_ENC="$(urlencode ${lib.escapeShellArg cfg.database.username})"
+          PENPOT_DB_PASS_ENC="$(urlencode "''${PENPOT_DB_PASSWORD}")"
+          export PENPOT_DATABASE_URI="postgresql://${cfg.database.host}:${toString cfg.database.port}/${cfg.database.name}?user=''${PENPOT_DB_USER_ENC}&password=''${PENPOT_DB_PASS_ENC}"
+          ${optionalString cfg.oidc.enable ''
+            ${oidcSecretSnippet}
+            export PENPOT_OIDC_CLIENT_SECRET="''${PENPOT_OIDC_SECRET}"
+          ''}
           exec ${pkgs.docker}/bin/docker run --rm --name penpot-backend --network penpot-network \
+            ${hostGatewayArg} \
             -p 127.0.0.1:${backendPortStr}:6060 \
             -v penpot-assets:/opt/data/assets \
-            ${concatStringsSep " \
-            " (map (var: "-e ${var}") [
-              "PENPOT_FLAGS" "PENPOT_PUBLIC_URI" "PENPOT_DATABASE_URI" "PENPOT_REDIS_URI"
-              "PENPOT_ASSETS_STORAGE_BACKEND" "PENPOT_STORAGE_ASSETS_FS_DIRECTORY" "PENPOT_TELEMETRY_ENABLED"
-              "PENPOT_SMTP_DEFAULT_FROM" "PENPOT_SMTP_DEFAULT_REPLY_TO" "PENPOT_SMTP_HOST" "PENPOT_SMTP_PORT"
-              "PENPOT_SMTP_TLS" "PENPOT_SMTP_SSL"
-            ])}
-            ${optionalString cfg.oidc.enable "-e PENPOT_OIDC_CLIENT_ID -e PENPOT_OIDC_CLIENT_SECRET -e PENPOT_OIDC_BASE_URI -e PENPOT_OIDC_CLIENT_NAME -e PENPOT_OIDC_AUTH_URI -e PENPOT_OIDC_TOKEN_URI -e PENPOT_OIDC_USER_URI -e PENPOT_OIDC_SCOPES -e PENPOT_OIDC_NAME_ATTR -e PENPOT_OIDC_EMAIL_ATTR"} \
+            ${backendAllEnvFlags} \
             ${cfg.backendImage}
         '';
         ExecStop = "${pkgs.docker}/bin/docker stop penpot-backend";
@@ -269,17 +375,55 @@ in {
     systemd.services.penpot-frontend = {
       description = "Penpot Frontend";
       wantedBy = [ "multi-user.target" ];
-      after = [ "docker.service" "penpot-backend.service" ];
-      requires = [ "docker.service" "penpot-backend.service" ];
+      after = [
+        "docker.service"
+        "penpot-backend.service"
+        "penpot-exporter.service"
+        "docker-pull-penpot-frontend.service"
+      ];
+      requires = [
+        "docker.service"
+        "docker-pull-penpot-frontend.service"
+      ];
+
+      environment = {
+        PENPOT_FRONTEND_URI = publicUrl;
+        PENPOT_BACKEND_URI = "http://penpot-backend:6060";
+        PENPOT_EXPORTER_URI = "http://penpot-exporter:6061";
+      };
 
       serviceConfig = {
         Type = "exec";
         Restart = "always";
         RestartSec = 10;
-        ExecStartPre = "${pkgs.docker}/bin/docker pull ${cfg.frontendImage}";
+        ExecStartPre = [
+          "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker rm -f penpot-frontend || true'"
+        ];
         ExecStart = pkgs.writeShellScript "penpot-frontend-start" ''
+          wait_for_container() {
+            local name="$1"
+            local attempts=0
+            local max_attempts=30
+            while true; do
+              if ${pkgs.docker}/bin/docker inspect -f '{{.State.Running}}' "$name" >/dev/null 2>&1; then
+                break
+              fi
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge "$max_attempts" ]; then
+                echo "Container $name not ready after $max_attempts attempts" >&2
+                exit 1
+              fi
+              sleep 2
+            done
+          }
+
+          wait_for_container penpot-backend
+          wait_for_container penpot-exporter
+
           exec ${pkgs.docker}/bin/docker run --rm --name penpot-frontend --network penpot-network \
-            -p 127.0.0.1:${frontendPortStr}:80 \
+            ${hostGatewayArg} \
+            -p 127.0.0.1:${frontendPortStr}:8080 \
+            ${frontendEnvFlags} \
             ${cfg.frontendImage}
         '';
         ExecStop = "${pkgs.docker}/bin/docker stop penpot-frontend";
@@ -289,8 +433,15 @@ in {
     systemd.services.penpot-exporter = {
       description = "Penpot Exporter";
       wantedBy = [ "multi-user.target" ];
-      after = [ "docker.service" "penpot-backend.service" ];
-      requires = [ "docker.service" "penpot-backend.service" ];
+      after = [
+        "docker.service"
+        "penpot-backend.service"
+        "docker-pull-penpot-exporter.service"
+      ];
+      requires = [
+        "docker.service"
+        "docker-pull-penpot-exporter.service"
+      ];
 
       environment = {
         PENPOT_PUBLIC_URI = publicUrl;
@@ -300,9 +451,12 @@ in {
         Type = "exec";
         Restart = "always";
         RestartSec = 10;
-        ExecStartPre = "${pkgs.docker}/bin/docker pull ${cfg.exporterImage}";
+        ExecStartPre = [
+          "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker rm -f penpot-exporter || true'"
+        ];
         ExecStart = pkgs.writeShellScript "penpot-exporter-start" ''
           exec ${pkgs.docker}/bin/docker run --rm --name penpot-exporter --network penpot-network \
+            ${hostGatewayArg} \
             -p 127.0.0.1:${exporterPortStr}:6061 \
             -e PENPOT_PUBLIC_URI \
             ${cfg.exporterImage}

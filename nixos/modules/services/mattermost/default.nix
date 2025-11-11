@@ -359,6 +359,12 @@ in
   };
 
   config = mkIf cfg.enable {
+    systemd.tmpfiles.rules = [
+      "d /var/lib/mattermost 0755 mattermost mattermost -"
+      "d /var/lib/mattermost/plugins 0755 mattermost mattermost -"
+      "d /var/lib/rave 0755 mattermost mattermost -"
+    ];
+
     services.mattermost = {
       enable = true;
       package = cfg.package;
@@ -444,6 +450,7 @@ in
         ''}
         ${pkgs.python3}/bin/python3 ${updateMattermostScript}
         ${pkgs.coreutils}/bin/mkdir -p /var/lib/mattermost
+        ${pkgs.coreutils}/bin/chown -R mattermost:mattermost /var/lib/mattermost
         ${pkgs.coreutils}/bin/rm -rf /var/lib/mattermost/.client-tmp
         ${pkgs.coreutils}/bin/cp -R ${cfg.package}/client /var/lib/mattermost/.client-tmp
         ${pkgs.coreutils}/bin/rm -rf /var/lib/mattermost/client

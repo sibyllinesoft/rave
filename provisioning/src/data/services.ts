@@ -67,6 +67,23 @@ export const availableServices: Service[] = [
     },
   },
   {
+    id: 'pomerium',
+    name: 'Pomerium',
+    description: 'Identity-aware proxy that adds OAuth and policy controls',
+    icon: 'ShieldCheck',
+    category: 'security',
+    resourceUsage: {
+      cpu: 0.5,
+      memory: 1,
+      storage: 4,
+    },
+    scaling: {
+      concurrentUsers: { cpu: 0.01, memory: 0.02 },
+      teamSize: { storage: 0.05 },
+    },
+    requirements: ['GitLab', 'Nginx'],
+  },
+  {
     id: 'grafana',
     name: 'Grafana',
     description: 'Monitoring and observability platform with dashboards and alerting',

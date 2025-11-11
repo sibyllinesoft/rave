@@ -6,12 +6,15 @@ let
   cfg = config.services.rave.outline;
   redisPlatform = config.services.rave.redis.platform or {};
   sharedAllocations = redisPlatform.allocations or {};
-  sharedRedisHost = redisPlatform.dockerHost or "172.17.0.1";
+  sharedRedisHost = redisPlatform.dockerHost or "host.docker.internal";
   sharedRedisPort = redisPlatform.port or 6379;
   sharedRedisUnit = redisPlatform.unit or "redis-main.service";
   redisDatabase = if cfg.redisDb != null then cfg.redisDb else sharedAllocations.outline or 5;
   redisUrl = "redis://${sharedRedisHost}:${toString sharedRedisPort}/${toString redisDatabase}";
-  trimNewline = "${pkgs.coreutils}/bin/tr -d '\\n'";
+  trimNewline = "${pkgs.coreutils}/bin/tr -d \"\\n\"";
+  dbPasswordExpr = if cfg.dbPasswordFile != null
+    then "$(${pkgs.coreutils}/bin/cat ${cfg.dbPasswordFile} | ${trimNewline})"
+    else cfg.dbPassword;
 in
 {
   options.services.rave.outline = {
@@ -39,6 +42,18 @@ in
       type = lib.types.str;
       default = "outline-production-password";
       description = "Database password for the Outline PostgreSQL user.";
+    };
+
+    dbHost = lib.mkOption {
+      type = lib.types.str;
+      default = "host.docker.internal";
+      description = "Hostname containers should use to reach PostgreSQL.";
+    };
+
+    dbPort = lib.mkOption {
+      type = lib.types.int;
+      default = 5432;
+      description = "PostgreSQL port for Outline.";
     };
 
     dbPasswordFile = lib.mkOption {
@@ -84,13 +99,28 @@ in
       { name = "outline"; ensureDBOwnership = true; }
     ];
     systemd.services.postgresql.postStart = lib.mkAfter ''
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER outline PASSWORD '${cfg.dbPassword}';" || true
+      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER outline PASSWORD '${dbPasswordExpr}';" || true
     '';
+
+    systemd.services."docker-pull-outline" = {
+      description = "Pre-pull Outline Docker image";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "docker.service" ];
+      requires = [ "docker.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "0";
+        ExecStart = ''
+          ${pkgs.docker}/bin/docker pull ${cfg.dockerImage}
+        '';
+      };
+    };
 
     systemd.services.outline = {
       description = "Outline wiki (Docker)";
-      after = [ "docker.service" "postgresql.service" sharedRedisUnit ];
-      requires = [ "docker.service" "postgresql.service" sharedRedisUnit ];
+      after = [ "docker.service" "postgresql.service" sharedRedisUnit "docker-pull-outline.service" ];
+      requires = [ "docker.service" "postgresql.service" sharedRedisUnit "docker-pull-outline.service" ];
       wantedBy = [ "multi-user.target" ];
 
       serviceConfig = {
@@ -99,7 +129,6 @@ in
         RestartSec = 5;
         ExecStartPre = [
           "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker rm -f outline || true'"
-          "${pkgs.docker}/bin/docker pull ${cfg.dockerImage}"
           "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker volume create outline-data || true'"
         ];
         ExecStart = pkgs.writeShellScript "outline-start" ''
@@ -137,11 +166,13 @@ ${optionalString (cfg.utilsSecretFile != null) ''
             --name outline \
             -p 127.0.0.1:${toString cfg.hostPort}:3000 \
             -v outline-data:/var/lib/outline/data \
+            --add-host host.docker.internal:host-gateway \
             -e URL=${cfg.publicUrl} \
+            -e CDN_URL=${cfg.publicUrl} \
             -e PORT=3000 \
             -e SECRET_KEY="$SECRET_KEY" \
             -e UTILS_SECRET="$UTILS_SECRET" \
-            -e DATABASE_URL="postgresql://outline:''${DB_PASSWORD}@172.17.0.1:5432/outline" \
+            -e DATABASE_URL="postgresql://outline:''${DB_PASSWORD}@${cfg.dbHost}:${toString cfg.dbPort}/outline" \
             -e PGSSLMODE=disable \
             -e REDIS_URL=${redisUrl} \
             -e FILE_STORAGE=local \

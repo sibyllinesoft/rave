@@ -10,6 +10,11 @@ let
     if cfg.dbPasswordFile != null
     then "$(cat ${cfg.dbPasswordFile})"
     else cfg.dbPassword;
+
+  ensureLeadingSlash = path: if lib.hasPrefix "/" path then path else "/${path}";
+  ensureTrailingSlash = path: if lib.hasSuffix "/" path then path else "${path}/";
+  normalizedBasePath = ensureTrailingSlash (ensureLeadingSlash (if cfg.basePath == "" then "/n8n" else cfg.basePath));
+  normalizedPublicUrl = ensureTrailingSlash cfg.publicUrl;
 in {
   options.services.rave.n8n = {
     enable = mkEnableOption "n8n automation service";
@@ -36,6 +41,18 @@ in {
       type = lib.types.str;
       default = "n8n-production-password";
       description = "PostgreSQL password used by n8n";
+    };
+
+    dbHost = lib.mkOption {
+      type = lib.types.str;
+      default = "host.docker.internal";
+      description = "Hostname containers should use to reach PostgreSQL.";
+    };
+
+    dbPort = lib.mkOption {
+      type = lib.types.int;
+      default = 5432;
+      description = "PostgreSQL port for n8n.";
     };
 
     dbPasswordFile = lib.mkOption {
@@ -70,15 +87,14 @@ in {
     systemd.services.n8n = {
       description = "n8n automation (Docker)";
           wantedBy = [ "multi-user.target" ];
-          after = [ "docker.service" "postgresql.service" ];
-          requires = [ "docker.service" "postgresql.service" ];
+          after = [ "docker.service" "postgresql.service" "docker-pull-n8n.service" ];
+          requires = [ "docker.service" "postgresql.service" "docker-pull-n8n.service" ];
           serviceConfig = {
             Type = "simple";
             Restart = "always";
             RestartSec = 10;
             ExecStartPre = [
               "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker rm -f n8n || true'"
-              "${pkgs.docker}/bin/docker pull ${cfg.dockerImage}"
               "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker volume create n8n-data || true'"
             ];
             ExecStart = pkgs.writeShellScript "n8n-start" ''
@@ -87,19 +103,21 @@ in {
                 --rm \
                 -p 127.0.0.1:${toString cfg.hostPort}:5678 \
                 -v n8n-data:/home/node/.n8n \
+                --add-host host.docker.internal:host-gateway \
                 -e DB_TYPE=postgresdb \
-                -e DB_POSTGRESDB_HOST=172.17.0.1 \
-                -e DB_POSTGRESDB_PORT=5432 \
+                -e DB_POSTGRESDB_HOST=${cfg.dbHost} \
+                -e DB_POSTGRESDB_PORT=${toString cfg.dbPort} \
                 -e DB_POSTGRESDB_DATABASE=n8n \
                 -e DB_POSTGRESDB_USER=n8n \
                 -e DB_POSTGRESDB_PASSWORD=${dbPasswordExpr} \
                 -e N8N_ENCRYPTION_KEY=${cfg.encryptionKey} \
-                -e WEBHOOK_URL=${cfg.publicUrl} \
+                -e N8N_BASE_PATH=${normalizedBasePath} \
+                -e N8N_PATH=${normalizedBasePath} \
+                -e WEBHOOK_URL=${normalizedPublicUrl} \
                 -e N8N_HOST=localhost \
                 -e N8N_PORT=5678 \
                 -e N8N_PROTOCOL=https \
-                -e N8N_BASE_PATH=${cfg.basePath} \
-                -e N8N_EDITOR_BASE_URL=${cfg.publicUrl} \
+                -e N8N_EDITOR_BASE_URL=${normalizedPublicUrl} \
                 -e EXECUTIONS_DATA_SAVE_ON_ERROR=all \
                 -e EXECUTIONS_DATA_SAVE_ON_SUCCESS=none \
                 -e EXECUTIONS_DATA_PRUNE=true \
@@ -109,8 +127,23 @@ in {
                 ${cfg.dockerImage}
             '';
             ExecStop = "${pkgs.docker}/bin/docker stop n8n";
-          };
         };
+      };
+
+    systemd.services.docker-pull-n8n = {
+      description = "Pre-pull n8n Docker image";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "docker.service" ];
+      requires = [ "docker.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "0";
+        ExecStart = ''
+          ${pkgs.docker}/bin/docker pull ${cfg.dockerImage}
+        '';
+      };
+    };
 
   };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CompanyDetails } from '../types';
 import * as Icons from 'lucide-react';
 
@@ -20,25 +20,43 @@ const cicdOptions = [
 ] as const;
 
 export const CompanyDetailsPanel = ({ details, onUpdate }: CompanyDetailsPanelProps) => {
-  const [draftDetails, setDraftDetails] = useState(details);
-  const lastCommittedRef = useRef(details);
+  const [draftQuantities, setDraftQuantities] = useState({
+    teamSize: details.teamSize.toString(),
+    concurrentUsers: details.concurrentUsers.toString(),
+  });
 
   useEffect(() => {
-    setDraftDetails(details);
-    lastCommittedRef.current = details;
-  }, [details]);
+    setDraftQuantities({
+      teamSize: details.teamSize.toString(),
+      concurrentUsers: details.concurrentUsers.toString(),
+    });
+  }, [details.teamSize, details.concurrentUsers]);
 
-  const updateField = <K extends keyof CompanyDetails>(field: K, value: CompanyDetails[K]) => {
-    setDraftDetails(prev => ({ ...prev, [field]: value }));
+  const clampNumericInput = (value: string, min: number, max: number) => {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.min(max, Math.max(min, parsed));
+    }
+    return min;
   };
 
-  const commitDraft = (override?: CompanyDetails) => {
-    const payload = override ?? draftDetails;
-    if (lastCommittedRef.current === payload) {
-      return;
+  const normalisedNumbers = () => ({
+    teamSize: clampNumericInput(draftQuantities.teamSize, 1, 500),
+    concurrentUsers: clampNumericInput(draftQuantities.concurrentUsers, 1, 1000),
+  });
+
+  const buildNextDetails = (overrides: Partial<CompanyDetails> = {}) => ({
+    ...details,
+    ...normalisedNumbers(),
+    ...overrides,
+  });
+
+  const commitNumbers = () => {
+    const next = buildNextDetails();
+    setDraftQuantities({ teamSize: next.teamSize.toString(), concurrentUsers: next.concurrentUsers.toString() });
+    if (next.teamSize !== details.teamSize || next.concurrentUsers !== details.concurrentUsers) {
+      onUpdate(next);
     }
-    lastCommittedRef.current = payload;
-    onUpdate(payload);
   };
 
   return (
@@ -55,43 +73,45 @@ export const CompanyDetailsPanel = ({ details, onUpdate }: CompanyDetailsPanelPr
         <div className="grid gap-4 md:grid-cols-2">
           <NumberField
             label="Developers"
-            value={draftDetails.teamSize}
+            value={draftQuantities.teamSize}
             min={1}
             max={500}
-            onChange={value => updateField('teamSize', value)}
-            onCommit={commitDraft}
+            onChange={value => setDraftQuantities(prev => ({ ...prev, teamSize: value }))}
+            onCommit={commitNumbers}
           />
           <NumberField
             label="Total users"
-            value={draftDetails.concurrentUsers}
+            value={draftQuantities.concurrentUsers}
             min={1}
             max={1000}
-            onChange={value => updateField('concurrentUsers', value)}
-            onCommit={commitDraft}
+            onChange={value => setDraftQuantities(prev => ({ ...prev, concurrentUsers: value }))}
+            onCommit={commitNumbers}
           />
         </div>
 
         <SegmentGroup
           label="Development activity"
-          value={draftDetails.developmentIntensity}
+          value={details.developmentIntensity}
           options={devIntensityOptions}
           onChange={value => {
             const nextValue = value as CompanyDetails['developmentIntensity'];
-            const nextDetails = { ...draftDetails, developmentIntensity: nextValue };
-            setDraftDetails(nextDetails);
-            commitDraft(nextDetails);
+            if (nextValue === details.developmentIntensity) return;
+            const nextDetails = buildNextDetails({ developmentIntensity: nextValue });
+            setDraftQuantities({ teamSize: nextDetails.teamSize.toString(), concurrentUsers: nextDetails.concurrentUsers.toString() });
+            onUpdate(nextDetails);
           }}
         />
 
         <SegmentGroup
           label="CI/CD usage"
-          value={draftDetails.cicdUsage}
+          value={details.cicdUsage}
           options={cicdOptions}
           onChange={value => {
             const nextValue = value as CompanyDetails['cicdUsage'];
-            const nextDetails = { ...draftDetails, cicdUsage: nextValue };
-            setDraftDetails(nextDetails);
-            commitDraft(nextDetails);
+            if (nextValue === details.cicdUsage) return;
+            const nextDetails = buildNextDetails({ cicdUsage: nextValue });
+            setDraftQuantities({ teamSize: nextDetails.teamSize.toString(), concurrentUsers: nextDetails.concurrentUsers.toString() });
+            onUpdate(nextDetails);
           }}
         />
       </div>
@@ -101,10 +121,10 @@ export const CompanyDetailsPanel = ({ details, onUpdate }: CompanyDetailsPanelPr
 
 interface NumberFieldProps {
   label: string;
-  value: number;
+  value: string;
   min: number;
   max: number;
-  onChange: (value: number) => void;
+  onChange: (value: string) => void;
   onCommit: () => void;
 }
 
@@ -116,7 +136,7 @@ const NumberField = ({ label, value, min, max, onChange, onCommit }: NumberField
       min={min}
       max={max}
       value={value}
-      onChange={event => onChange(Math.min(max, Math.max(min, Number(event.target.value) || min)))}
+      onChange={event => onChange(event.target.value)}
       onBlur={onCommit}
       onKeyDown={event => {
         if (event.key === 'Enter') {

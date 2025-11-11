@@ -3,7 +3,7 @@ export interface Service {
   name: string;
   description: string;
   icon: string;
-  category: 'core' | 'development' | 'design' | 'monitoring' | 'collaboration';
+  category: 'core' | 'development' | 'design' | 'monitoring' | 'collaboration' | 'security';
   resourceUsage: {
     cpu: number; // CPU cores baseline
     memory: number; // GB baseline
