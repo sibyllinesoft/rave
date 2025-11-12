@@ -17,6 +17,8 @@ let
   gitlabPackage = config.services.gitlab.packages.gitlab;
   mattermostPublicUrl = "https://localhost:${baseHttpsPort}/mattermost";
   penpotPublicUrl = "https://localhost:${baseHttpsPort}/penpot";
+  localCertDir = config.security.rave.localCerts.certDir or "/var/lib/acme/localhost";
+  localCaPath = "${localCertDir}/ca.pem";
   mattermostPath =
     let
       matchResult = builtins.match "https://[^/]+(.*)" mattermostPublicUrl;
@@ -47,7 +49,7 @@ let
   gitlabApiTokenFile = if useSecrets
     then "/run/secrets/gitlab/api-token"
     else pkgs.writeText "gitlab-api-token" "development-token";
-  outlinePublicUrl = "https://localhost:${baseHttpsPort}/outline";
+  outlinePublicUrl = "https://outline.localhost:${baseHttpsPort}/";
   outlineDockerImage = "outlinewiki/outline:latest";
   outlineHostPort = 8310;
   outlineDbPassword = "outline-production-password";
@@ -63,7 +65,14 @@ let
   n8nBasePath = "/n8n";
   mattermostInternalBaseUrl = "http://127.0.0.1:8065";
   grafanaHttpPort = config.services.rave.monitoring.grafana.httpPort;
-  pomeriumBaseUrl = "https://localhost:${baseHttpsPort}/pomerium";
+  pomeriumRouteHost = "https://localhost:${baseHttpsPort}";
+  pomeriumConsolePath = "/pomerium";
+  pomeriumBaseUrl = "${pomeriumRouteHost}${pomeriumConsolePath}";
+  pomeriumRedirectUri = "https://localhost:${baseHttpsPort}/oauth2/callback";
+  pomeriumIdp = config.services.rave.pomerium.idp;
+  pomeriumInlineSecret = pomeriumIdp.clientSecret or "";
+  pomeriumSecretFile = pomeriumIdp.clientSecretFile;
+  gitlabRailsRunner = "${config.system.path}/bin/gitlab-rails";
 
   dbPasswordUnitSpecs = [
     {
@@ -179,6 +188,22 @@ in
     basePath = n8nBasePath;
   };
 
+  services.rave.auth-manager = {
+    enable = true;
+    listenAddress = "0.0.0.0:8088";
+    openFirewall = true;
+    sourceIdp = "gitlab";
+    signingKey = lib.mkIf (!useSecrets) "auth-manager-dev-signing-key";
+    signingKeyFile = lib.mkIf useSecrets "/run/secrets/auth-manager/signing-key";
+    pomeriumSharedSecret = lib.mkIf (!useSecrets) config.services.rave.pomerium.sharedSecret;
+    pomeriumSharedSecretFile = lib.mkIf useSecrets "/run/secrets/auth-manager/pomerium-shared-secret";
+    mattermost = {
+      url = mattermostPublicUrl;
+      adminToken = lib.mkIf (!useSecrets) "mattermost-admin-token";
+      adminTokenFile = lib.mkIf useSecrets "/run/secrets/auth-manager/mattermost-admin-token";
+    };
+  };
+
   services.rave.pomerium = {
     enable = true;
     publicUrl = pomeriumBaseUrl;
@@ -189,11 +214,13 @@ in
       clientSecret = "rave-pomerium-client-secret";
       clientSecretFile = null;
       scopes = [ "openid" "profile" "email" ];
+      providerCaFile = localCaPath;
     };
     policies = [
       {
         name = "Mattermost via Pomerium";
-        from = "${pomeriumBaseUrl}/mattermost";
+        from = pomeriumRouteHost;
+        path = "/mattermost";
         to = mattermostInternalBaseUrl;
         allowPublicUnauthenticated = true;
         passIdentityHeaders = true;
@@ -201,11 +228,13 @@ in
       }
       {
         name = "Grafana via Pomerium";
-        from = "${pomeriumBaseUrl}/grafana";
+        from = pomeriumRouteHost;
+        path = "/grafana";
         to = "http://127.0.0.1:${toString grafanaHttpPort}";
         allowPublicUnauthenticated = true;
       }
     ];
+    extraSettings = {};
   };
 
   services.rave.penpot = {
@@ -366,6 +395,7 @@ in
     ../modules/services/coturn/default.nix
     ../modules/services/nginx/default.nix
     ../modules/services/postgresql/default.nix
+    ../modules/services/auth-manager/default.nix
     ../modules/services/mattermost/default.nix
     ../modules/services/outline/default.nix
     ../modules/services/n8n/default.nix
@@ -388,13 +418,6 @@ sops = lib.mkIf false {
   age.keyFile = "/var/lib/sops-nix/key.txt";
   validateSopsFiles = false;
   secrets = {
-    "mattermost/env" = {
-      owner = "mattermost";
-      group = "mattermost";
-      mode = "0600";
-      path = "/run/secrets/mattermost/env";
-      restartUnits = [ "mattermost.service" ];
-    };
     "mattermost/admin-username" = {
       owner = "root";
       group = "root";
@@ -492,7 +515,6 @@ sops = lib.mkIf false {
     enable = config.services.rave.gitlab.useSecrets;
     sopsFile = ../../config/secrets.yaml;
     secretMappings = [
-      { selector = "[\"mattermost\"][\"env\"]"; path = "/run/secrets/mattermost/env"; owner = "mattermost"; group = "mattermost"; mode = "0600"; }
       { selector = "[\"mattermost\"][\"admin-username\"]"; path = "/run/secrets/mattermost/admin-username"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"mattermost\"][\"admin-email\"]"; path = "/run/secrets/mattermost/admin-email"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"mattermost\"][\"admin-password\"]"; path = "/run/secrets/mattermost/admin-password"; owner = "root"; group = "root"; mode = "0400"; }
@@ -516,11 +538,15 @@ sops = lib.mkIf false {
       { selector = "[\"database\"][\"grafana-password\"]"; path = "/run/secrets/grafana/admin-password"; owner = "grafana"; group = "grafana"; mode = "0400"; }
       { selector = "[\"outline\"][\"secret-key\"]"; path = "/run/secrets/outline/secret-key"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"outline\"][\"utils-secret\"]"; path = "/run/secrets/outline/utils-secret"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"auth-manager\"][\"signing-key\"]"; path = "/run/secrets/auth-manager/signing-key"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"auth-manager\"][\"pomerium-shared-secret\"]"; path = "/run/secrets/auth-manager/pomerium-shared-secret"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"auth-manager\"][\"mattermost-admin-token\"]"; path = "/run/secrets/auth-manager/mattermost-admin-token"; owner = "root"; group = "root"; mode = "0400"; }
     ];
     extraTmpfiles = [
       "d /run/secrets/grafana 0750 root grafana -"
       "d /run/secrets/database 0750 root postgres -"
       "d /run/secrets/outline 0750 root root -"
+      "d /run/secrets/auth-manager 0750 root root -"
     ];
   };
 
@@ -687,13 +713,79 @@ sops = lib.mkIf false {
         after = lib.mkAfter [ "docker.service" ];
         wants = lib.mkAfter [ "docker.service" ];
       };
+      gitlab-sidekiq = {
+        unitConfig.BindsTo = lib.mkForce "";
+        after = lib.mkAfter [ "gitlab.service" ];
+        requires = lib.mkAfter [ "gitlab.service" ];
+      };
+      gitlab-pomerium-oauth = {
+        description = "Ensure GitLab OAuth client for Pomerium exists";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "gitlab-db-config.service" "gitlab.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          User = "gitlab";
+          Group = "gitlab";
+          TimeoutStartSec = "900s";
+          Restart = "on-failure";
+          RestartSec = "30s";
+        };
+        environment = {
+          HOME = "/var/gitlab/state/home";
+          RAILS_ENV = "production";
+        };
+        script = ''
+          set -euo pipefail
+
+          until ${pkgs.systemd}/bin/systemctl is-active --quiet gitlab-db-config.service; do
+            sleep 5
+          done
+
+          until ${pkgs.systemd}/bin/systemctl is-active --quiet gitlab.service; do
+            sleep 5
+          done
+
+          export POMERIUM_UID=${lib.escapeShellArg pomeriumIdp.clientId}
+          export POMERIUM_REDIRECT_URI=${lib.escapeShellArg pomeriumRedirectUri}
+          export POMERIUM_SCOPES="openid profile email"
+          export POMERIUM_NAME="Pomerium SSO"
+          export POMERIUM_SECRET=${lib.escapeShellArg pomeriumInlineSecret}
+${lib.optionalString (pomeriumSecretFile != null) ''
+          if [ -s ${lib.escapeShellArg pomeriumSecretFile} ]; then
+            export POMERIUM_SECRET="$(${pkgs.coreutils}/bin/tr -d '\n' < ${lib.escapeShellArg pomeriumSecretFile})"
+          fi
+''}
+
+          ${gitlabRailsRunner} runner - <<'RUBY'
+uid = ENV.fetch("POMERIUM_UID")
+redirect_uri = ENV.fetch("POMERIUM_REDIRECT_URI")
+secret = ENV.fetch("POMERIUM_SECRET")
+scopes = ENV.fetch("POMERIUM_SCOPES")
+name = ENV.fetch("POMERIUM_NAME")
+
+app = Doorkeeper::Application.find_or_initialize_by(uid: uid)
+app.name = name
+app.redirect_uri = redirect_uri
+app.secret = secret
+app.scopes = scopes
+app.confidential = true
+app.trusted = true if app.respond_to?(:trusted=)
+app.skip_authorization = true if app.respond_to?(:skip_authorization=)
+app.save!
+RUBY
+        '';
+      };
+      pomerium = lib.mkIf config.services.rave.pomerium.enable {
+        after = lib.mkAfter [ "gitlab-pomerium-oauth.service" ];
+        requires = lib.mkAfter [ "gitlab-pomerium-oauth.service" ];
+      };
     }
   ];
 
   services.rave.gitlab = {
     enable = true;
     host = "localhost";
-    useSecrets = true;
+    useSecrets = false;
     publicUrl = gitlabExternalUrl;
     externalPort = lib.toInt baseHttpsPort;
     runner.enable = false;

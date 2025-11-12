@@ -6,6 +6,8 @@ with lib;
 
 let
   cfg = config.services.rave.nats;
+  nginxCfg = config.services.rave.nginx or {};
+  nginxHost = nginxCfg.host or "localhost";
   
   natsConfig = pkgs.writeText "nats-server.conf" ''
     # Server configuration
@@ -183,7 +185,8 @@ in {
     };
   };
   
-  config = mkIf cfg.enable {
+  config = mkIf cfg.enable (mkMerge [
+    {
     # Install NATS server and CLI tools
     environment.systemPackages = with pkgs; [
       nats-server
@@ -267,25 +270,6 @@ in {
       create = "644 nats nats";
     };
 
-    # Nginx reverse proxy configuration for NATS monitoring
-    services.nginx.virtualHosts."rave.local".locations = mkMerge [
-      {
-        # NATS HTTP monitoring interface
-        "/nats/" = {
-          proxyPass = "http://127.0.0.1:${toString cfg.httpPort}/";
-          extraConfig = ''
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            
-            # Add NATS monitoring headers
-            proxy_set_header NATS-Server "${cfg.serverName}";
-          '';
-        };
-      }
-    ];
-
     # Health check script for NATS
     systemd.services.nats-health-check = {
       description = "NATS Health Check";
@@ -323,5 +307,20 @@ in {
         Unit = "nats-health-check.service";
       };
     };
-  };
+    }
+    (mkIf (nginxCfg.enable or false) {
+      services.nginx.virtualHosts."${nginxHost}".locations."/nats/" = {
+        proxyPass = "http://127.0.0.1:${toString cfg.httpPort}/";
+        extraConfig = ''
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          
+          # Add NATS monitoring headers
+          proxy_set_header NATS-Server "${cfg.serverName}";
+        '';
+      };
+    })
+  ]);
 }

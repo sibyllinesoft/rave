@@ -19,7 +19,6 @@ import datetime
 import click
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
 
 # Add the cli directory to Python path for imports
 CLI_DIR = Path(__file__).parent
@@ -798,33 +797,8 @@ def _prepare_secret_entries(
     grafana = secrets_data.get("grafana", {}) or {}
     database_creds = secrets_data.get("database", {}) or {}
 
-    mm_env_content = mattermost_raw.get("env") or ""
-    env_lines = mm_env_content.splitlines() if mm_env_content else []
-    datasource_value = ""
-    datasource_password = ""
-    for line in env_lines:
-        if line.startswith("MM_SQLSETTINGS_DATASOURCE="):
-            datasource_value = line.split("=", 1)[1].strip()
-            parsed = urlparse(datasource_value)
-            datasource_password = parsed.password or ""
-            break
-
-    if not datasource_value:
-        fallback_password = database_creds.get("mattermost-password") or "mmpgsecret"
-        datasource_password = fallback_password
-        datasource_value = (
-            "postgres://mattermost:" + fallback_password +
-            "@localhost:5432/mattermost?sslmode=disable&connect_timeout=10"
-        )
-        env_lines.append("MM_SERVICESETTINGS_ENABLELOCALMODE=false")
-        env_lines.append("MM_SQLSETTINGS_DRIVERNAME=postgres")
-        env_lines.append(f"MM_SQLSETTINGS_DATASOURCE={datasource_value}")
-        env_lines.append("MM_BLEVESETTINGS_INDEXDIR=/var/lib/mattermost/bleve-indexes")
-        mm_env_content = "\n".join(env_lines)
-
     mattermost = dict(mattermost_raw)
-    if mm_env_content:
-        mattermost["env"] = mm_env_content
+    datasource_password = database_creds.get("mattermost-password") or ""
 
     def _derive_hex(base_value: Optional[str], label: str) -> str:
         seed = (base_value or label).encode("utf-8")
@@ -867,7 +841,6 @@ def _prepare_secret_entries(
         ("mattermost/admin-username", mattermost.get("admin-username"), "root", "root", "0400", None),
         ("mattermost/admin-email", mattermost.get("admin-email"), "root", "root", "0400", None),
         ("mattermost/admin-password", mattermost.get("admin-password"), "root", "root", "0400", None),
-        ("mattermost/env", mattermost.get("env"), "mattermost", "mattermost", "0600", None),
         ("oidc/chat-control-client-secret", oidc.get("chat-control-client-secret"), "root", "root", "0400", None),
         ("gitlab/api-token", gitlab.get("api-token"), "gitlab", "gitlab", "0400", None),
         ("gitlab/oauth-provider-client-secret", gitlab.get("oauth-provider-client-secret"), "gitlab", "gitlab", "0400", None),

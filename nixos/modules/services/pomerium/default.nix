@@ -24,6 +24,7 @@ let
     filterNullOrEmpty {
       name = policy.name;
       from = policy.from;
+      path = policy.path;
       to = policy.to;
       pass_identity_headers = policy.passIdentityHeaders;
       preserve_host = policy.preserveHost;
@@ -81,6 +82,17 @@ let
 
     ${pkgs.gettext}/bin/envsubst '$SHARED_SECRET $COOKIE_SECRET $IDP_CLIENT_SECRET' < ${configTemplate} > "$runtime_dir/config.yaml"
 
+    bundle="$runtime_dir/ca-bundle.pem"
+    cat ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt > "$bundle"
+    ${
+      optionalString (cfg.idp.providerCaFile != null) ''
+    if [ -s ${lib.escapeShellArg cfg.idp.providerCaFile} ]; then
+      cat ${lib.escapeShellArg cfg.idp.providerCaFile} >> "$bundle"
+    fi
+      ''
+    }
+    export SSL_CERT_FILE="$bundle"
+
     exec ${lib.getExe cfg.package} --config "$runtime_dir/config.yaml"
   '';
 
@@ -94,7 +106,13 @@ let
 
       from = mkOption {
         type = types.str;
-        description = "Public URL users visit for this route (scheme + host + optional path).";
+        description = "Public URL users visit for this route (scheme + host only).";
+      };
+
+      path = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional path prefix enforced for the policy (set when from contains no path).";
       };
 
       to = mkOption {
@@ -253,6 +271,11 @@ in
         default = null;
         description = "Path to a secret file containing the IdP client secret.";
       };
+      providerCaFile = mkOption {
+        type = types.nullOr pathOrString;
+        default = null;
+        description = "Optional PEM file trusted when contacting the IdP issuer.";
+      };
 
       scopes = mkOption {
         type = types.listOf types.str;
@@ -293,8 +316,10 @@ in
     systemd.services.pomerium = {
       description = "RAVE Pomerium Identity Proxy";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
+      after = [ "network-online.target" ]
+        ++ lib.optionals config.security.rave.localCerts.enable [ "generate-localhost-certs.service" ];
       wants = [ "network-online.target" ];
+      requires = lib.optionals config.security.rave.localCerts.enable [ "generate-localhost-certs.service" ];
       path = with pkgs; [ coreutils gettext ];
       serviceConfig = {
         Type = "simple";

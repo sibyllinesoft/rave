@@ -97,6 +97,7 @@ subjectAltName = @alt_names
 DNS.1 = localhost
 DNS.2 = rave.local
 DNS.3 = *.rave.local
+DNS.4 = outline.localhost
 IP.1 = 127.0.0.1
 IP.2 = ::1
 '';

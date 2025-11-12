@@ -42,3 +42,27 @@ func TestIssuerValidateRejectsInvalid(t *testing.T) {
 		t.Fatalf("expected error for invalid token")
 	}
 }
+
+func TestIssuerIncludesAudience(t *testing.T) {
+	issuer, err := NewIssuer("another-secret-value-here")
+	if err != nil {
+		t.Fatalf("NewIssuer failed: %v", err)
+	}
+	issuer.SetNowFunc(func() time.Time { return time.Unix(2_000_000_100, 0).UTC() })
+
+	token, err := issuer.Issue("service-subject", []string{"mattermost", "n8n"}, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("Issue failed: %v", err)
+	}
+	claims, err := issuer.Validate(token.Value)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	aud, ok := claims["aud"].([]interface{})
+	if !ok || len(aud) != 2 {
+		t.Fatalf("expected audience array, got %#v", claims["aud"])
+	}
+	if aud[0] != "mattermost" || aud[1] != "n8n" {
+		t.Fatalf("unexpected audience claims: %#v", aud)
+	}
+}

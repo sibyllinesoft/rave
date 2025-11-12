@@ -83,6 +83,9 @@ in {
   config = lib.mkIf cfg.enable {
     services.postgresql.ensureDatabases = mkAfter [ "n8n" ];
     services.postgresql.ensureUsers = mkAfter [ { name = "n8n"; ensureDBOwnership = true; } ];
+    systemd.services.postgresql.postStart = mkAfter ''
+      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER n8n PASSWORD '${dbPasswordExpr}';" || true
+    '';
 
     systemd.services.n8n = {
       description = "n8n automation (Docker)";

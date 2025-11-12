@@ -51,6 +51,8 @@ let
   exporterPortStr = toString cfg.exporterPort;
   frontendPortStr = toString cfg.frontendPort;
   publicUrl = cfg.publicUrl;
+  ensureTrailingSlash = url: if lib.hasSuffix "/" url then url else "${url}/";
+  publicUrlNormalized = ensureTrailingSlash publicUrl;
   backendEnvVars = [
     "PENPOT_FLAGS"
     "PENPOT_PUBLIC_URI"
@@ -313,7 +315,7 @@ in {
 
       environment = {
         PENPOT_FLAGS = "enable-registration enable-login-with-oidc disable-email-verification enable-prepl-server";
-        PENPOT_PUBLIC_URI = publicUrl;
+        PENPOT_PUBLIC_URI = publicUrlNormalized;
         PENPOT_REDIS_URI = redisUri;
         PENPOT_ASSETS_STORAGE_BACKEND = "assets-fs";
         PENPOT_STORAGE_ASSETS_FS_DIRECTORY = "/opt/data/assets";
@@ -387,7 +389,7 @@ PY
       ];
 
       environment = {
-        PENPOT_FRONTEND_URI = publicUrl;
+        PENPOT_FRONTEND_URI = publicUrlNormalized;
         PENPOT_BACKEND_URI = "http://penpot-backend:6060";
         PENPOT_EXPORTER_URI = "http://penpot-exporter:6061";
       };
@@ -444,7 +446,7 @@ PY
       ];
 
       environment = {
-        PENPOT_PUBLIC_URI = publicUrl;
+        PENPOT_PUBLIC_URI = publicUrlNormalized;
       };
 
       serviceConfig = {

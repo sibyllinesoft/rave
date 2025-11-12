@@ -36,44 +36,68 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
+      lib = nixpkgs.lib;
       
-      # Build-time port configuration (can be overridden)
-      makeVmModules = { httpsPort ? 8443, configModule ? ./nixos/configs/production.nix }: [
-        configModule
-        sops-nix.nixosModules.sops
-        "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
-        ({ lib, ... }: {
-          # Pass port configuration to the NixOS module
-          services.rave.ports.https = httpsPort;
-          nixpkgs.overlays = [
-            (final: prev:
-              let
-                unstable = import (builtins.fetchTarball {
-                  url = "https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz";
-                  sha256 = "1vlmhgh1zdr00afxzsd7kfaynkc9zif0kwmbjmzvb1nqrwj05x3z";
-                }) {
-                  system = prev.system;
-                  config = prev.config;
-                };
-              in {
-                go_1_24 = unstable.go_1_24;
-                buildGo124Module = unstable.buildGo124Module;
-              }
-            )
-          ];
+      goOverlay =
+        final: prev:
+          let
+            unstable = import (builtins.fetchTarball {
+              url = "https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz";
+              sha256 = "1vlmhgh1zdr00afxzsd7kfaynkc9zif0kwmbjmzvb1nqrwj05x3z";
+            }) {
+              inherit system;
+              config = prev.config;
+            };
+          in {
+            go_1_24 = unstable.go_1_24;
+            buildGo124Module = unstable.buildGo124Module;
+          };
 
-          virtualisation.diskSize = lib.mkDefault (40 * 1024); # 40GB default
-          virtualisation.memorySize = lib.mkDefault 16384; # 16GB default
-          virtualisation.useNixStoreImage = false;
-          virtualisation.sharedDirectories = lib.mkForce {};
-          virtualisation.mountHostNixStore = lib.mkForce false;
-          virtualisation.writableStore = lib.mkForce false;
-        })
-      ];
-      
-      vmModules = makeVmModules {}; # Default prod profile, port 8443
-      devVmModules = makeVmModules { configModule = ./nixos/configs/development.nix; };
-      demoVmModules = makeVmModules { configModule = ./nixos/configs/demo.nix; };
+      mkAuthManager = pkgs: pkgs.buildGoModule {
+        pname = "auth-manager";
+        version = "0.1.0";
+        src = ./auth-manager;
+        subPackages = [ "cmd/auth-manager" ];
+        vendorHash = "sha256-xj6jSxUiSAYNbIITOY50KoCyGcABvWSCFhXA9ytrX3M=";
+      };
+
+      authOverlay = final: prev: {
+        auth-manager = mkAuthManager prev;
+      };
+
+      mkImage =
+        { configModule
+        , format ? "qcow"
+        , httpsPort ? 8443
+        , extraModules ? []
+        }:
+        let
+          modules =
+            [
+              configModule
+              sops-nix.nixosModules.sops
+              "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
+              ({ lib, ... }: {
+                services.rave.ports.https = httpsPort;
+                nixpkgs.overlays = [ authOverlay goOverlay ];
+                virtualisation.diskSize = lib.mkDefault (40 * 1024);
+                virtualisation.memorySize = lib.mkDefault 16384;
+                virtualisation.useNixStoreImage = false;
+                virtualisation.sharedDirectories = lib.mkForce {};
+                virtualisation.mountHostNixStore = lib.mkForce false;
+                virtualisation.writableStore = lib.mkForce false;
+              })
+            ]
+            ++ extraModules;
+
+          formatArgs =
+            if format == "qcow"
+            then { customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ]; }
+            else {};
+        in
+          nixos-generators.nixosGenerate ({
+            inherit system format modules;
+          } // formatArgs);
     in {
       nixosTests = {
         minimal-vm = import ./tests/minimal-vm.nix {
@@ -93,40 +117,15 @@
 
     # VM image packages exposed via meaningful profile names
     packages.${system} = rec {
-      production = nixos-generators.nixosGenerate {
-        inherit system;
-        format = "qcow";
-        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
-        modules = vmModules;
-      };
-
-      productionPort7443 = nixos-generators.nixosGenerate {
-        inherit system;
-        format = "qcow";
-        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
-        modules = makeVmModules { httpsPort = 7443; };
-      };
-
-      productionPort9443 = nixos-generators.nixosGenerate {
-        inherit system;
-        format = "qcow";
-        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
-        modules = makeVmModules { httpsPort = 9443; };
-      };
+      production = mkImage { configModule = ./nixos/configs/production.nix; };
+      development = mkImage { configModule = ./nixos/configs/development.nix; };
+      demo = mkImage { configModule = ./nixos/configs/demo.nix; };
 
       productionWithPort =
         let
-          mkImage = { httpsPort ? 8443 }:
-            nixos-generators.nixosGenerate {
-              inherit system;
-              format = "qcow";
-              customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
-              modules = makeVmModules { inherit httpsPort; };
-            };
-
           makeOverridableImage = args:
             let
-              result = mkImage args;
+              result = mkImage ({ configModule = ./nixos/configs/production.nix; } // args);
             in
               result // {
                 override = moreArgs: makeOverridableImage (args // moreArgs);
@@ -134,28 +133,29 @@
         in
           makeOverridableImage {};
 
-      development = nixos-generators.nixosGenerate {
-        inherit system;
-        format = "qcow";
-        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
-        modules = devVmModules;
+      virtualbox = mkImage {
+        configModule = ./nixos/configs/production.nix;
+        format = "virtualbox";
       };
-
-      demo = nixos-generators.nixosGenerate {
-        inherit system;
-        format = "qcow";
-        customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ];
-        modules = demoVmModules;
+      vmware = mkImage {
+        configModule = ./nixos/configs/production.nix;
+        format = "vmware";
+      };
+      raw = mkImage {
+        configModule = ./nixos/configs/production.nix;
+        format = "raw";
+      };
+      iso = mkImage {
+        configModule = ./nixos/configs/production.nix;
+        format = "iso";
       };
 
       default = production;
 
       # Legacy aliases (to be removed once CLI migrates)
       rave-qcow2 = production;
-      rave-qcow2-port-7443 = productionPort7443;
-      rave-qcow2-port-9443 = productionPort9443;
-      rave-qcow2-custom-port = productionWithPort;
       rave-qcow2-dev = development;
+      rave-qcow2-custom-port = productionWithPort;
 
       # RAVE CLI - Main management interface
       rave-cli = pkgs.writeShellScriptBin "rave" ''
@@ -163,6 +163,8 @@
         cd ${./.}
         exec python3 cli/rave "$@"
       '';
+
+      auth-manager = mkAuthManager pkgs;
     };
 
     profileMetadata = {

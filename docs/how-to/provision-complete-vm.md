@@ -57,7 +57,7 @@ Pick the profile that matches your use case:
 | Production | `nix build .#production` | Full stack, all services enabled, larger resource footprint. |
 | Development | `nix build .#development` | Faster local iteration (Outline + n8n disabled, smaller VM). |
 | Demo | `nix build .#demo` | Lightweight showcase build (observability/productivity extras disabled). |
-| Production (custom port) | `nix build '.#productionWithPort.override { httpsPort = 9443; }'` or legacy `.#rave-qcow2-port-9443` | Same as production but with a baked-in HTTPS port override. |
+| Production (custom port) | `nix build '.#productionWithPort.override { httpsPort = 9443; }'` | Same as production but with a baked-in HTTPS port override. |
 
 Each build drops a qcow2 under `result/`. Copy it to `artifacts/` (gitignored) with a meaningful name:
 ```bash

@@ -44,7 +44,6 @@ class SecretsInstallCommandTests(unittest.TestCase):
                 "admin-username": "mm-admin",
                 "admin-email": "mm@example.com",
                 "admin-password": "mm-pass",
-                "env": "MM_SQLSETTINGS_DATASOURCE=postgres://mattermost:mm-pass@localhost:5432/mattermost",
             },
             "gitlab": {
                 "api-token": "gitlab-token",
@@ -118,8 +117,7 @@ class SecretsInstallCommandTests(unittest.TestCase):
     def test_prepare_secret_entries_generates_expected_entries(self) -> None:
         plan = rave_cli._prepare_secret_entries(self._sample_secrets(), Path("config/secrets.yaml"))
         self.assertGreater(len(plan["entries"]), 0)
-        env_secret = next(entry for entry in plan["entries"] if entry["name"] == "mattermost/env")
-        self.assertIn("MM_SQLSETTINGS_DATASOURCE", env_secret["content"])
+        self.assertNotIn("mattermost/env", [entry["name"] for entry in plan["entries"]])
         self.assertEqual(plan["datasource_password"], "mm-pass")
 
     def test_secrets_diff_outputs_plan(self) -> None:

@@ -232,13 +232,13 @@ nix build
 ### Custom Port Build Options
 ```bash
 # Build VM with custom port 7443
-nix build .#rave-qcow2-port-7443
+nix build '.#productionWithPort.override { httpsPort = 7443; }'
 
 # Build VM with custom port 9443  
-nix build .#rave-qcow2-port-9443
+nix build '.#productionWithPort.override { httpsPort = 9443; }'
 
 # Default build (port 8443)
-nix build  # or nix build .#rave-qcow2
+nix build  # or nix build .#production
 ```
 
 **IMPORTANT**: Port configuration is now baked into the VM image at build time. All OAuth URLs, service configurations, and certificates use the configured port consistently.

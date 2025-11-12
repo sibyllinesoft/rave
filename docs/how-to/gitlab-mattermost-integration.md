@@ -41,9 +41,9 @@ Each flake profile (production, development, demo) simply sets the `services.rav
 ## Architecture
 
 ```
-GitLab (localhost:18221/gitlab/)
+GitLab (localhost:8443/gitlab/)
     ↓ OAuth Provider
-Mattermost (localhost:18231/mattermost/)
+Mattermost (localhost:8443/mattermost/)
     ↓ Incoming Webhooks
 "builds" Channel
     ↓ Notifications
@@ -80,23 +80,13 @@ Whenever you update the Python automation helpers (`ensure-gitlab-mattermost-ci.
 
 ### Runtime Environment
 
-The CI bridge systemd service still passes a few environment variables to the script for clarity:
-
-```bash
-MATTERMOST_BASE_URL=http://127.0.0.1:8065
-MATTERMOST_SITE_URL=https://localhost:18231/mattermost
-MATTERMOST_TEAM_NAME=rave
-MATTERMOST_TEAM_DISPLAY_NAME=RAVE
-MATTERMOST_CHANNEL_NAME=builds
-MATTERMOST_CHANNEL_DISPLAY_NAME=Builds
-GITLAB_API_BASE_URL=http://127.0.0.1:8123/api/v4
-```
+The CI bridge systemd service now generates its environment automatically from the Nix options (GitLab external URL, Mattermost site URL, etc.). If you still have an old `.env` file with `localhost:1822x` overrides, delete those entries—the managed values always track the canonical `https://localhost:${services.rave.ports.https}` base.
 
 ## URLs
 
-- **GitLab**: https://localhost:18221/gitlab/
-- **Mattermost**: https://localhost:18231/mattermost/
-- **Main Dashboard**: https://localhost:18221/
+- **GitLab**: https://localhost:8443/gitlab/
+- **Mattermost**: https://localhost:8443/mattermost/
+- **Main Dashboard**: https://localhost:8443/
 
 ## Testing the Integration
 
@@ -106,11 +96,11 @@ GITLAB_API_BASE_URL=http://127.0.0.1:8123/api/v4
    ```
 
 2. **Access GitLab**: 
-   - Visit https://localhost:18221/gitlab/
+   - Visit https://localhost:8443/gitlab/
    - Sign in with root/admin123456
 
 3. **Access Mattermost**:
-   - Visit https://localhost:18231/mattermost/
+   - Visit https://localhost:8443/mattermost/
    - Click "GitLab" to sign in with OAuth
 
 4. **Test CI Notifications**:

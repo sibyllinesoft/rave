@@ -492,6 +492,8 @@ in
 
           "$systemctl_bin" reset-failed gitlab.service || true
           "$systemctl_bin" start gitlab.service
+          "$systemctl_bin" reset-failed gitlab-sidekiq.service || true
+          "$systemctl_bin" start gitlab-sidekiq.service
         '';
         Restart = "on-failure";
         RestartSec = 30;

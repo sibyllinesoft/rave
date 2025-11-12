@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/rave-org/rave/auth-manager/internal/bridge"
 	"github.com/rave-org/rave/auth-manager/internal/config"
 	"github.com/rave-org/rave/auth-manager/internal/mattermost"
 	"github.com/rave-org/rave/auth-manager/internal/pomerium"
@@ -218,19 +219,18 @@ func (s *Server) handleMattermostBridge(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	canon := bridge.FromPomerium(identity)
+	mmIdent := canon.MattermostIdentity()
+
 	attributes := map[string]string{}
-	if identity.User != "" {
-		attributes["user"] = identity.User
+	if mmIdent.User != "" {
+		attributes["user"] = mmIdent.User
 	}
 	if len(identity.Groups) > 0 {
 		attributes["groups"] = strings.Join(identity.Groups, ",")
 	}
 
-	mmUser, err := s.mmClient.EnsureUser(r.Context(), mattermost.Identity{
-		Email: identity.Email,
-		Name:  identity.Name,
-		User:  identity.User,
-	})
+	mmUser, err := s.mmClient.EnsureUser(r.Context(), mmIdent)
 	if err != nil {
 		respondError(w, http.StatusBadGateway, err)
 		return
@@ -248,9 +248,9 @@ func (s *Server) handleMattermostBridge(w http.ResponseWriter, r *http.Request) 
 	attributes["mattermost_user_id"] = mmUser.ID
 	shadowUser, err := s.shadowStore.Upsert(r.Context(), shadow.Identity{
 		Provider: "pomerium",
-		Subject:  identity.Subject,
-		Email:    identity.Email,
-		Name:     identity.Name,
+		Subject:  canon.Subject,
+		Email:    canon.Email,
+		Name:     mmIdent.Name,
 	}, attributes)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err)

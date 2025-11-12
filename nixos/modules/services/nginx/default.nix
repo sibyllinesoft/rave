@@ -7,7 +7,8 @@ let
 
   pathOrString = types.either types.path types.str;
 
-  baseHttpsPort = toString config.services.rave.ports.https;
+  baseHttpsPortValue = config.services.rave.ports.https;
+  baseHttpsPort = toString baseHttpsPortValue;
   host = cfg.host;
   chatDomain = cfg.chatDomain;
   certificate = cfg.certificate;
@@ -50,6 +51,37 @@ let
   outlineUrl = normalizeUrl config.services.rave.outline.publicUrl;
   outlinePath = pathFromUrl outlineUrl;
   outlineRedirectPath = trimTrailingSlash outlinePath;
+  hostFromUrl = url:
+    if url == null then null
+    else
+      let matchResult = builtins.match "https?://([^/:]+).*" url;
+      in if matchResult == null || matchResult == [] then null else builtins.head matchResult;
+  outlineHostName = hostFromUrl outlineUrl;
+  outlineSeparateHost = outlineEnabled && outlineHostName != null && outlineHostName != host;
+  outlineLegacyPath = "/outline/";
+  outlineAssetPrefixes = [
+    "/_next/"
+    "/static/"
+    "/images/"
+    "/email/"
+    "/fonts/"
+    "/locales/"
+    "/s/"
+    "/share/"
+    "/doc/"
+    "/embeds/"
+  ];
+  outlineAssetFiles = [
+    "/opensearch.xml"
+    "/robots.txt"
+    "/manifest.webmanifest"
+    "/sw.js"
+    "/favicon.ico"
+    "/icon.png"
+    "/icon-192x192.png"
+    "/icon-512x512.png"
+    "/apple-touch-icon.png"
+  ];
 
   penpotEnabled = config.services.rave.penpot.enable;
   penpotPortStr = toString config.services.rave.penpot.frontendPort;
@@ -58,7 +90,8 @@ let
   penpotRedirectPath = trimTrailingSlash penpotPath;
 
   pomeriumEnabled = config.services.rave.pomerium.enable;
-  pomeriumLoopbackUrl = "http://127.0.0.1:${toString config.services.rave.pomerium.httpPort}";
+  pomeriumLoopbackBase = "http://127.0.0.1:${toString config.services.rave.pomerium.httpPort}";
+  pomeriumLoopbackConsole = "${pomeriumLoopbackBase}/";
   pomeriumPublicUrl = normalizeUrl config.services.rave.pomerium.publicUrl;
   pomeriumPath = pathFromUrl pomeriumPublicUrl;
   pomeriumRedirectPath = trimTrailingSlash pomeriumPath;
@@ -437,10 +470,14 @@ let
   primaryVirtualHost = {
     forceSSL = true;
     enableACME = false;
-    listen = [
-      { addr = "0.0.0.0"; port = 443; ssl = true; }
-      { addr = "0.0.0.0"; port = 80; ssl = false; }
-    ];
+    listen =
+      [
+        { addr = "0.0.0.0"; port = 443; ssl = true; }
+        { addr = "[::]"; port = 443; ssl = true; }
+        { addr = "0.0.0.0"; port = 80; ssl = false; }
+        { addr = "[::]"; port = 80; ssl = false; }
+      ]
+      ++ optional (baseHttpsPortValue != 443) { addr = "127.0.0.1"; port = baseHttpsPortValue; ssl = true; };
     sslCertificate = certificate.certFile;
     sslCertificateKey = certificate.keyFile;
     locations = mkMerge (
@@ -596,9 +633,17 @@ let
         in
         {
           "${pomeriumPath}" = {
-            proxyPass = pomeriumLoopbackUrl;
+            proxyPass = pomeriumLoopbackConsole;
             proxyWebsockets = true;
             extraConfig = pomeriumProxyConfig;
+          };
+          "/.pomerium/" = {
+            proxyPass = pomeriumLoopbackBase;
+            proxyWebsockets = true;
+            extraConfig = mkProxyExtra "/.pomerium/";
+          };
+          "/.pomerium" = {
+            return = "301 /.pomerium/";
           };
         }
         // redirectAttr
@@ -633,7 +678,7 @@ let
             };
         in grafanaEntries // promEntries
       )
-      ++ optional outlineEnabled (
+      ++ optional (outlineEnabled && !outlineSeparateHost) (
         let
           redirectAttr = optionalAttrs (outlinePath != "/" && outlineRedirectPath != outlinePath) {
             "= ${outlineRedirectPath}" = {
@@ -650,50 +695,41 @@ let
         }
         // redirectAttr
       )
+      ++ optional (outlineEnabled && outlinePath != "/" && !outlineSeparateHost) (
+        let
+          prefixLocations = listToAttrs (map (location: {
+            name = location;
+            value = {
+              proxyPass = "http://127.0.0.1:${outlinePortStr}${location}";
+              proxyWebsockets = true;
+              extraConfig = mkProxyExtra outlinePath;
+            };
+          }) outlineAssetPrefixes);
+
+          fileLocations = listToAttrs (map (file: {
+            name = file;
+            value = {
+              proxyPass = "http://127.0.0.1:${outlinePortStr}${file}";
+              extraConfig = mkProxyExtra outlinePath;
+            };
+          }) outlineAssetFiles);
+        in prefixLocations // fileLocations
+      )
+      ++ optional outlineSeparateHost (
+        {
+          "${outlineLegacyPath}" = {
+            return = "308 ${outlineUrl}";
+          };
+          "= ${trimTrailingSlash outlineLegacyPath}" = {
+            return = "308 ${outlineUrl}";
+          };
+        }
+      )
       ++ optional (outlineEnabled && outlinePath != "/") (
         {
-          "/static/" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/static/";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/images/" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/images/";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/email/" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/email/";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/fonts/" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/fonts/";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/locales/" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/locales/";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/s/" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/s/";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/share/" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/share/";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/doc/" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/doc/";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/embeds/" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/embeds/";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/opensearch.xml" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/opensearch.xml";
-            extraConfig = mkProxyExtra outlinePath;
-          };
-          "/robots.txt" = {
-            proxyPass = "http://127.0.0.1:${outlinePortStr}/robots.txt";
+          "~ ^/api($|/)" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}";
+            proxyWebsockets = true;
             extraConfig = mkProxyExtra outlinePath;
           };
         }
@@ -808,6 +844,32 @@ in
     {
       services.nginx.virtualHosts."${host}" = primaryVirtualHost;
     }
+    (mkIf outlineSeparateHost {
+      services.nginx.virtualHosts."${outlineHostName}" = {
+        forceSSL = true;
+        enableACME = false;
+        listen = [
+          { addr = "0.0.0.0"; port = 443; ssl = true; }
+          { addr = "[::]"; port = 443; ssl = true; }
+          { addr = "0.0.0.0"; port = 80; ssl = false; }
+          { addr = "[::]"; port = 80; ssl = false; }
+        ];
+        serverName = outlineHostName;
+        sslCertificate = certificate.certFile;
+        sslCertificateKey = certificate.keyFile;
+        locations = {
+          "/" = {
+            proxyPass = "http://127.0.0.1:${outlinePortStr}/";
+            proxyWebsockets = true;
+            extraConfig = mkProxyExtra "/";
+          };
+        };
+        extraConfig = ''
+          port_in_redirect off;
+          absolute_redirect off;
+        '';
+      };
+    })
     {
       services.nginx.virtualHosts."${host}-http" = {
         listen = [

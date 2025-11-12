@@ -12,6 +12,9 @@ let
   redisDatabase = if cfg.redisDb != null then cfg.redisDb else sharedAllocations.outline or 5;
   redisUrl = "redis://${sharedRedisHost}:${toString sharedRedisPort}/${toString redisDatabase}";
   trimNewline = "${pkgs.coreutils}/bin/tr -d \"\\n\"";
+  publicUrlNormalized =
+    let val = cfg.publicUrl or "";
+    in if lib.hasSuffix "/" val then val else "${val}/";
   dbPasswordExpr = if cfg.dbPasswordFile != null
     then "$(${pkgs.coreutils}/bin/cat ${cfg.dbPasswordFile} | ${trimNewline})"
     else cfg.dbPassword;
@@ -167,8 +170,8 @@ ${optionalString (cfg.utilsSecretFile != null) ''
             -p 127.0.0.1:${toString cfg.hostPort}:3000 \
             -v outline-data:/var/lib/outline/data \
             --add-host host.docker.internal:host-gateway \
-            -e URL=${cfg.publicUrl} \
-            -e CDN_URL=${cfg.publicUrl} \
+            -e URL=${publicUrlNormalized} \
+            -e CDN_URL=${publicUrlNormalized} \
             -e PORT=3000 \
             -e SECRET_KEY="$SECRET_KEY" \
             -e UTILS_SECRET="$UTILS_SECRET" \
@@ -177,7 +180,7 @@ ${optionalString (cfg.utilsSecretFile != null) ''
             -e REDIS_URL=${redisUrl} \
             -e FILE_STORAGE=local \
             -e FILE_STORAGE_LOCAL_ROOT_DIR=/var/lib/outline/data \
-            -e FILE_STORAGE_LOCAL_SERVER_ROOT=${cfg.publicUrl}/uploads \
+            -e FILE_STORAGE_LOCAL_SERVER_ROOT=${publicUrlNormalized}uploads \
             ${cfg.dockerImage}
         '';
         ExecStop = "${pkgs.docker}/bin/docker stop outline";
