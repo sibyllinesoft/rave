@@ -40,7 +40,7 @@ while [ $check_count -lt $max_checks ]; do
             echo "⚠️  Internal Server Error (may indicate configuration issue)"
             ;;
         "000"|"")
-            echo "❌ No response (nginx may not be started yet)"
+            echo "❌ No response (Traefik may not be started yet)"
             ;;
         *)
             echo "❓ Unexpected response: HTTP $response"

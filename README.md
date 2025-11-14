@@ -29,7 +29,7 @@ rave vm start acme-corp
 rave vm ssh acme-corp
 
 # View service logs
-rave vm logs acme-corp nginx --follow
+rave vm logs acme-corp traefik --follow
 ```
 
 ### Prepare Secrets (**required before building new VMs**)
@@ -88,13 +88,18 @@ rave/
 ├── docs/                  # Documentation and reports
 ├── scripts/               # Utility and test scripts
 ├── build-scripts/         # VM build automation
-├── demo-scripts/          # Demo and example scripts
+-├── demo-scripts/          # Demo and example scripts
 ├── artifacts/             # Gitignored qcow images, logs, volume snapshots
 │   └── qcow/              # Canonical qcow images per profile + dated builds
 └── legacy/                # Archived assets kept for reference
     ├── configs/           # Historical Nix configs & scripts (formerly legacy-configs/)
-    └── archive/           # Deprecated shell helpers & nginx fixes
+    └── archive/           # Deprecated shell helpers & legacy nginx fixes
 ```
+
+> ℹ️ The React-based provisioning dashboard now lives in the sibling repo
+> [`../rave-infra/provisioning`](../rave-infra/provisioning). This keeps UI-specific
+> dependencies out of the core VM builder while sharing the same artifacts bucket
+> and CLI workflows.
 
 ## 🖥️ Architecture
 
@@ -103,9 +108,10 @@ Each company VM includes:
 - **NATS JetStream** - Event streaming and messaging
 - **PostgreSQL** - Primary database
 - **Redis** - Caching (default + GitLab instances)
-- **nginx** - Reverse proxy with SSL termination
+- **Traefik** - Reverse proxy with SSL termination
 - **Penpot** - Design collaboration (OAuth via GitLab)
 - **Mattermost** - Team chat and agent control (OAuth via GitLab)
+- **Authentik** - Built-in IdP/front door; Pomerium becomes an optional value add
 
 ### Isolation
 - **Port ranges**: Each company gets unique ports (8100+, 8110+, etc.)
@@ -154,7 +160,7 @@ rave oauth apply --company <name> --provider google --client-id ...
 rave overrides init                          # Scaffold config/overrides/global
 rave overrides status                        # List known layers + file counts
 rave overrides create-layer host-foo --priority 50 \
-  --preset nginx                             # Add a dedicated layer with presets
+  --preset traefik                           # Add a dedicated layer with presets
 rave overrides apply --dry-run --company <name> \
   --preflight-cmd "nixos-rebuild test --flake .#{company}"  # Preview + host preflight
 rave overrides apply --company <name> --json-output  # Sync overrides and emit JSON summary
@@ -162,7 +168,7 @@ rave overrides apply --company <name> --json-output  # Sync overrides and emit J
 
 - The CLI treats `config/overrides/<layer>/files/` as a mirror of `/` on the VM, copying files verbatim with owner/mode hints from the layer’s `metadata.json`.
 - Drop complete units under `config/overrides/<layer>/systemd/` to create/override services in `/etc/systemd/system/`; `daemon-reload` is handled automatically.
-- Metadata presets (`--preset nginx`, `--preset gitlab`, etc.) append opinionated pattern blocks so new layers inherit the correct restart/reload semantics automatically.
+- Metadata presets (`--preset traefik`, `--preset gitlab`, etc.) append opinionated pattern blocks so new layers inherit the correct restart/reload semantics automatically (options: traefik, gitlab, mattermost, pomerium, authentik).
 - `--dry-run` first runs `nix flake check` (override with `--nix-check-cmd` or skip via `--skip-nix-check`), optionally executes extra `--preflight-cmd` commands (placeholders: `{company}`, `{layers}`), then streams the layer into the VM in preview mode, printing the plan without touching the filesystem. Add `--json-output` to capture the resulting plan for automation.
 
 ### Secrets
@@ -186,6 +192,11 @@ additional hostnames (e.g. `--domain app.dev.vm`).
 Need to front the stack with Google OAuth instead of GitLab? Follow `docs/how-to/oauth-google.md`
 for the Google Console steps, SOPS secret layout, and the new `--idp-*` flags available on
 `rave vm build-image` and `rave vm create`.
+Prefer running Authentik (now baked into every image) as your IdP while keeping Pomerium optional?
+See `docs/how-to/authentik.md` for the required secrets, default routes, and how to use
+`RAVE_DISABLE_POMERIUM` when you want Traefik/Authentik to front the stack directly.
+Want GitLab to skip the first-boot migrations? Capture a schema dump once and reuse it via
+`services.rave.gitlab.databaseSeedFile` (see `docs/how-to/gitlab-schema-seed.md`).
 
 ### End-to-End Smoke Test
 ```bash

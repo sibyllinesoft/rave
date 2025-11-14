@@ -76,7 +76,7 @@ in {
     basePath = lib.mkOption {
       type = lib.types.str;
       default = "/n8n";
-      description = "Base path served via nginx";
+      description = "Base path served via the ingress proxy";
     };
   };
 

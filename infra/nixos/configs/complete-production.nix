@@ -32,6 +32,7 @@ let
     if mattermostPath == "" then "/oauth/gitlab/login" else "${mattermostPath}/oauth/gitlab/login";
   mattermostLoginUrl = "${mattermostPublicUrl}/oauth/gitlab/login";
   mattermostBrandHtml = "Use the GitLab button below to sign in. If it does not appear, open ${mattermostLoginPath} manually.";
+  mattermostDbPassword = "mmpgsecret";
   mattermostGitlabClientId = "41622b028bfb499bcadfcdf42a8618734a6cebc901aa8f77661bceeebc7aabba";
   mattermostGitlabClientSecretFile = if useSecrets
     then "/run/secrets/gitlab/oauth-mattermost-client-secret"
@@ -73,14 +74,28 @@ let
   n8nBasePath = "/n8n";
   mattermostInternalBaseUrl = "http://127.0.0.1:8065";
   grafanaHttpPort = config.services.rave.monitoring.grafana.httpPort;
+  grafanaDbPassword = config.services.rave.monitoring.grafana.database.password;
   pomeriumRouteHost = "https://localhost:${baseHttpsPort}";
   pomeriumBaseUrl = pomeriumRouteHost;
   pomeriumRedirectUri = "https://localhost:${baseHttpsPort}/oauth2/callback";
   pomeriumIdp = config.services.rave.pomerium.idp;
   pomeriumInlineSecret = pomeriumIdp.clientSecret or "";
   pomeriumSecretFile = pomeriumIdp.clientSecretFile;
-  nginxBackendPort = 9443;
-  nginxBackendUrl = "http://127.0.0.1:${toString nginxBackendPort}";
+  authentikPublicUrl = "https://auth.localtest.me:${baseHttpsPort}/";
+  authentikHostPort = 9130;
+  authentikMetricsPort = 9131;
+  authentikSecretKeyFile = if useSecrets
+    then "/run/secrets/authentik/secret-key"
+    else pkgs.writeText "authentik-secret-key" "authentik-development-secret";
+  authentikBootstrapPasswordFile = if useSecrets
+    then "/run/secrets/authentik/bootstrap-password"
+    else pkgs.writeText "authentik-bootstrap-password" "SuperSecurePassword123!";
+  authentikDbPassword = "authentik-db-password";
+  authentikDbPasswordFile = if useSecrets
+    then "/run/secrets/database/authentik-password"
+    else pkgs.writeText "authentik-db-password" authentikDbPassword;
+  traefikBackendPort = 9443;
+  traefikBackendUrl = "http://127.0.0.1:${toString traefikBackendPort}";
   authManagerListenAddr = config.services.rave.auth-manager.listenAddress or ":8088";
   authManagerPort =
     let
@@ -95,6 +110,7 @@ let
       name = "grafana";
       role = "grafana";
       secret = "/run/secrets/grafana/db-password";
+      fallback = grafanaDbPassword;
       dependent = "grafana";
       extraScript = "";
     }
@@ -102,6 +118,7 @@ let
       name = "mattermost";
       role = "mattermost";
       secret = "/run/secrets/database/mattermost-password";
+      fallback = mattermostDbPassword;
       dependent = "mattermost";
       extraScript = "";
     }
@@ -109,6 +126,7 @@ let
       name = "penpot";
       role = "penpot";
       secret = "/run/secrets/database/penpot-password";
+      fallback = config.services.rave.penpot.database.password;
       dependent = "penpot-backend";
       extraScript = "";
     }
@@ -116,6 +134,7 @@ let
       name = "n8n";
       role = "n8n";
       secret = "/run/secrets/database/n8n-password";
+      fallback = n8nDbPassword;
       dependent = "n8n";
       extraScript = "";
     }
@@ -123,6 +142,7 @@ let
       name = "prometheus";
       role = "prometheus";
       secret = "/run/secrets/database/prometheus-password";
+      fallback = "prometheus_pass";
       dependent = "prometheus-postgres-exporter";
       extraScript = ''
         DSN_FILE=/run/secrets/database/prometheus-dsn.env
@@ -132,50 +152,82 @@ let
         chmod 0400 "$DSN_FILE"
       '';
     }
+  ] ++ lib.optionals config.services.rave.authentik.enable [
+    {
+      name = "authentik-server";
+      role = "authentik";
+      secret = "/run/secrets/database/authentik-password";
+      fallback = authentikDbPassword;
+      dependent = "authentik-server";
+      extraScript = "";
+    }
+    {
+      name = "authentik-worker";
+      role = "authentik";
+      secret = "/run/secrets/database/authentik-password";
+      fallback = authentikDbPassword;
+      dependent = "authentik-worker";
+      extraScript = "";
+    }
   ];
 
-  mkPasswordUnit = unit: {
-    name = "postgres-set-${unit.name}-password";
-    value = lib.mkIf useSecrets {
-      description = "Set ${unit.role} PostgreSQL password from secret";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "postgresql.service" "sops-init.service" ];
-      requires = [ "postgresql.service" "sops-init.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        User = "root";
-        RemainAfterExit = true;
-      };
-      script = ''
-        #!${pkgs.bash}/bin/bash
-        set -euo pipefail
+  mkPasswordUnit = unit:
+    let
+      hasFallback = unit ? fallback && unit.fallback != null;
+      shouldRun = useSecrets || hasFallback;
+    in {
+      name = "postgres-set-${unit.name}-password";
+      value = lib.mkIf shouldRun {
+        description = "Set ${unit.role} PostgreSQL password";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "postgresql.service" ] ++ lib.optionals useSecrets [ "sops-init.service" ];
+        requires = [ "postgresql.service" ] ++ lib.optionals useSecrets [ "sops-init.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          User = "root";
+          RemainAfterExit = true;
+        };
+        script = ''
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
 
-        SECRET_FILE=${lib.escapeShellArg unit.secret}
-        if [ ! -s "$SECRET_FILE" ]; then
-          echo "Secret missing at $SECRET_FILE for role ${unit.role}" >&2
-          exit 1
-        fi
+          ${lib.optionalString useSecrets ''
+          SECRET_FILE=${lib.escapeShellArg unit.secret}
+          if [ ! -s "$SECRET_FILE" ]; then
+            echo "Secret missing at $SECRET_FILE for role ${unit.role}" >&2
+            exit 1
+          fi
+          PASSWORD="$(tr -d '\n' < "$SECRET_FILE")"
+          ''}
+          ${lib.optionalString (!useSecrets && hasFallback) ''
+          PASSWORD=${lib.escapeShellArg unit.fallback}
+          ''}
 
-        PASSWORD="$(tr -d '\n' < "$SECRET_FILE")"
-        ESCAPED=''${PASSWORD//\'/\'\'}
+          ESCAPED=''${PASSWORD//\'/\'\'}
 
-        ${pkgs.sudo}/bin/sudo -u postgres ${config.services.postgresql.package}/bin/psql \
-          -v ON_ERROR_STOP=1 -d postgres \
-          -c "ALTER ROLE ${unit.role} WITH PASSWORD '$ESCAPED';"
+          ${pkgs.sudo}/bin/sudo -u postgres ${config.services.postgresql.package}/bin/psql \
+            -v ON_ERROR_STOP=1 -d postgres \
+            -c "ALTER ROLE ${unit.role} WITH PASSWORD '$ESCAPED';"
 ${unit.extraScript}
-      '';
+        '';
+      };
     };
-  };
 
   passwordUnitServices = lib.listToAttrs (map mkPasswordUnit dbPasswordUnitSpecs);
 
-  passwordDependentOverrides = lib.listToAttrs (map (unit: {
-    name = unit.dependent;
-    value = lib.mkIf useSecrets {
-      after = lib.mkAfter [ "postgres-set-${unit.name}-password.service" ];
-      requires = lib.mkAfter [ "postgres-set-${unit.name}-password.service" ];
+  mkPasswordDependency = unit:
+    let
+      hasFallback = unit ? fallback && unit.fallback != null;
+      shouldRun = useSecrets || hasFallback;
+    in {
+      name = unit.dependent;
+      value = lib.mkIf shouldRun {
+        after = lib.mkAfter [ "postgres-set-${unit.name}-password.service" ];
+        requires = lib.mkAfter [ "postgres-set-${unit.name}-password.service" ];
+      };
     };
-  }) dbPasswordUnitSpecs);
+
+  passwordDependentOverrides = lib.listToAttrs (map mkPasswordDependency dbPasswordUnitSpecs);
 in
 {
   services.rave.outline = {
@@ -220,6 +272,34 @@ in
     basePath = n8nBasePath;
   };
 
+  services.rave.authentik = {
+    enable = true;
+    publicUrl = authentikPublicUrl;
+    hostPort = authentikHostPort;
+    metricsPort = authentikMetricsPort;
+    rootDomain = "auth.localtest.me";
+    defaultExternalPort = baseHttpsPort;
+    secretKey = if useSecrets then null else "authentik-development-secret";
+    secretKeyFile = if useSecrets then authentikSecretKeyFile else null;
+    bootstrap = {
+      email = "admin@auth.localtest.me";
+      password = if useSecrets then null else "authentik-admin-password";
+      passwordFile = if useSecrets then authentikBootstrapPasswordFile else null;
+    };
+    database = {
+      host = "127.0.0.1";
+      port = 5432;
+      name = "authentik";
+      user = "authentik";
+      password = if useSecrets then null else "authentik-db-password";
+      passwordFile = if useSecrets then authentikDbPasswordFile else null;
+    };
+    redis = {
+      database = config.services.rave.redis.allocations.authentik or 12;
+    };
+    email.enable = false;
+  };
+
   services.rave.auth-manager = {
     enable = true;
     listenAddress = "0.0.0.0:8088";
@@ -238,7 +318,7 @@ in
   };
 
   services.rave.pomerium = {
-    enable = true;
+    enable = lib.mkDefault true;
     publicUrl = pomeriumBaseUrl;
     httpPort = config.services.rave.ports.https;
     tls = {
@@ -269,14 +349,14 @@ in
         name = "Grafana via Pomerium";
         from = pomeriumRouteHost;
         path = "/grafana";
-        to = nginxBackendUrl;
+        to = traefikBackendUrl;
         allowPublicUnauthenticated = true;
       }
       {
         name = "RAVE Front Door";
         from = pomeriumRouteHost;
         path = "/";
-        to = nginxBackendUrl;
+        to = traefikBackendUrl;
         allowPublicUnauthenticated = true;
       }
     ];
@@ -319,12 +399,12 @@ in
     listeningIps = [ "0.0.0.0" ];
   };
 
-  services.rave.nginx = {
+  services.rave.traefik = {
     enable = true;
     host = "localhost";
     chatDomain = null;
-    behindPomerium = true;
-    backendPort = nginxBackendPort;
+    behindPomerium = config.services.rave.pomerium.enable;
+    backendPort = traefikBackendPort;
   };
 
   services.rave.welcome.enable = true;
@@ -343,6 +423,7 @@ in
       gitlab = 0;
       outline = 5;
       penpot = 10;
+      authentik = 12;
     };
   };
 
@@ -441,12 +522,13 @@ in
     ../modules/services/monitoring/default.nix
     ../modules/services/nats/default.nix
     ../modules/services/coturn/default.nix
-    ../modules/services/nginx/default.nix
+    ../modules/services/traefik/default.nix
     ../modules/services/postgresql/default.nix
     ../modules/services/auth-manager/default.nix
     ../modules/services/mattermost/default.nix
     ../modules/services/outline/default.nix
     ../modules/services/n8n/default.nix
+    ../modules/services/authentik/default.nix
     ../modules/services/pomerium/default.nix
     ../modules/services/penpot/default.nix
     ../modules/services/redis/default.nix
@@ -583,6 +665,7 @@ sops = lib.mkIf false {
       { selector = "[\"database\"][\"n8n-password\"]"; path = "/run/secrets/database/n8n-password"; owner = "root"; group = "postgres"; mode = "0440"; }
       { selector = "[\"database\"][\"outline-password\"]"; path = "/run/secrets/database/outline-password"; owner = "root"; group = "postgres"; mode = "0440"; }
       { selector = "[\"database\"][\"prometheus-password\"]"; path = "/run/secrets/database/prometheus-password"; owner = "root"; group = "postgres"; mode = "0440"; }
+      { selector = "[\"database\"][\"authentik-password\"]"; path = "/run/secrets/database/authentik-password"; owner = "root"; group = "postgres"; mode = "0440"; }
       { selector = "[\"database\"][\"grafana-password\"]"; path = "/run/secrets/grafana/admin-password"; owner = "grafana"; group = "grafana"; mode = "0400"; }
       { selector = "[\"outline\"][\"secret-key\"]"; path = "/run/secrets/outline/secret-key"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"outline\"][\"utils-secret\"]"; path = "/run/secrets/outline/utils-secret"; owner = "root"; group = "root"; mode = "0400"; }
@@ -591,6 +674,8 @@ sops = lib.mkIf false {
       { selector = "[\"auth-manager\"][\"signing-key\"]"; path = "/run/secrets/auth-manager/signing-key"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"auth-manager\"][\"pomerium-shared-secret\"]"; path = "/run/secrets/auth-manager/pomerium-shared-secret"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"auth-manager\"][\"mattermost-admin-token\"]"; path = "/run/secrets/auth-manager/mattermost-admin-token"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"authentik\"][\"secret-key\"]"; path = "/run/secrets/authentik/secret-key"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"authentik\"][\"bootstrap-password\"]"; path = "/run/secrets/authentik/bootstrap-password"; owner = "root"; group = "root"; mode = "0400"; }
     ];
     extraTmpfiles = [
       "d /run/secrets/grafana 0750 root grafana -"
@@ -598,6 +683,7 @@ sops = lib.mkIf false {
       "d /run/secrets/outline 0750 root root -"
       "d /run/secrets/benthos 0750 root root -"
       "d /run/secrets/auth-manager 0750 root root -"
+      "d /run/secrets/authentik 0750 root root -"
     ];
   };
 
@@ -651,12 +737,15 @@ sops = lib.mkIf false {
   services.rave.postgresql = {
     enable = true;
     listenAddresses = "0.0.0.0";
-    ensureDatabases = [ "gitlab" "grafana" "mattermost" ];
+    ensureDatabases = [ "gitlab" "grafana" "mattermost" ]
+      ++ lib.optionals config.services.rave.authentik.enable [ "authentik" ];
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
       { name = "grafana"; ensureDBOwnership = true; }
       { name = "mattermost"; ensureDBOwnership = true; }
       { name = "prometheus"; ensureDBOwnership = false; }
+    ] ++ lib.optionals config.services.rave.authentik.enable [
+      { name = "authentik"; ensureDBOwnership = true; }
     ];
     settings = {
       max_connections = 200;
@@ -686,6 +775,10 @@ sops = lib.mkIf false {
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mattermost')
       \gexec
 
+      SELECT format('CREATE ROLE %I LOGIN', 'authentik')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authentik')
+      \gexec
+
       SELECT format('CREATE ROLE %I LOGIN', 'prometheus')
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'prometheus')
       \gexec
@@ -702,6 +795,10 @@ sops = lib.mkIf false {
       SELECT format('CREATE DATABASE %I OWNER %I', 'mattermost', 'mattermost')
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'mattermost')
       \\gexec
+
+      SELECT format('CREATE DATABASE %I OWNER %I', 'authentik', 'authentik')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'authentik')
+      \gexec
 
       -- GitLab database setup
       ALTER ROLE gitlab CREATEDB;
@@ -731,6 +828,15 @@ sops = lib.mkIf false {
       GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO mattermost;
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO mattermost;
 
+      -- Authentik database setup
+      GRANT ALL PRIVILEGES ON DATABASE authentik TO authentik;
+      ALTER DATABASE authentik OWNER TO authentik;
+      GRANT USAGE ON SCHEMA public TO authentik;
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO authentik;
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO authentik;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO authentik;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO authentik;
+
       -- Prometheus exporter
       DO $$
       BEGIN
@@ -754,6 +860,8 @@ sops = lib.mkIf false {
     host    all     all     127.0.0.1/32    trust
     host    all     all     ::1/128         trust
     host    all     all     172.17.0.0/16   md5
+    host    all     all     10.244.0.0/16   md5
+    host    all     all     10.0.0.0/8      md5
   '';
 
   systemd.services = lib.mkMerge [
@@ -769,7 +877,7 @@ sops = lib.mkIf false {
         after = lib.mkAfter [ "gitlab.service" ];
         requires = lib.mkAfter [ "gitlab.service" ];
       };
-      gitlab-pomerium-oauth = {
+      gitlab-pomerium-oauth = lib.mkIf config.services.rave.pomerium.enable {
         description = "Ensure GitLab OAuth client for Pomerium exists";
         wantedBy = [ "multi-user.target" ];
         after = [ "gitlab-db-config.service" "gitlab.service" ];
@@ -839,6 +947,10 @@ RUBY
     useSecrets = false;
     publicUrl = gitlabExternalUrl;
     externalPort = lib.toInt baseHttpsPort;
+    databaseSeedFile =
+      if builtins.pathExists ./artifacts/gitlab/schema.sql
+      then ./artifacts/gitlab/schema.sql
+      else null;
     runner.enable = false;
     oauth = {
       enable = true;

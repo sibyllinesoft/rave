@@ -274,7 +274,7 @@ test_service_security() {
     local max_score=6
     
     # Services running as non-root
-    local services=("vibe-kanban" "claude-code-router" "nginx")
+    local services=("vibe-kanban" "claude-code-router" "traefik")
     local non_root_services=0
     
     for service in "${services[@]}"; do

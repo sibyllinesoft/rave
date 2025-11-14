@@ -429,7 +429,7 @@ done
 
 # Test 3: System Services (via SSH)
 echo "🔧 Testing system services..."
-if timeout 30 ssh -o ConnectTimeout=10 agent@$RAVE_HOST 'systemctl is-active nginx grafana prometheus webhook-dispatcher' 2>/dev/null; then
+if timeout 30 ssh -o ConnectTimeout=10 agent@$RAVE_HOST 'systemctl is-active traefik grafana prometheus webhook-dispatcher' 2>/dev/null; then
   echo "✅ Core services are active"
 else
   echo "⚠️  Service status check failed (requires SSH access)"
@@ -519,7 +519,7 @@ log_message() {
 }
 
 # Check core services
-SERVICES=("nginx" "grafana" "prometheus" "webhook-dispatcher")
+SERVICES=("traefik" "grafana" "prometheus" "webhook-dispatcher")
 for service in "${SERVICES[@]}"; do
   if systemctl is-active "$service" >/dev/null 2>&1; then
     log_message "✅ $service is active"

@@ -1183,7 +1183,7 @@ exit
             journalctl_cmd.extend(["-u", f"{service}.service"])
         elif all_services:
             # Show logs from all main services
-            services = ["nginx", "postgresql", "nats", "redis-default", "redis-gitlab"]
+            services = ["traefik", "postgresql", "nats", "redis-default", "redis-gitlab"]
             for svc in services:
                 journalctl_cmd.extend(["-u", f"{svc}.service"])
         
@@ -1869,7 +1869,7 @@ PY
         key_pem: str,
         ca_pem: str,
     ) -> Dict[str, any]:
-        """Copy TLS materials into the VM and restart nginx."""
+        """Copy TLS materials into the VM and restart Traefik."""
 
         entries = [
             {
@@ -1900,7 +1900,7 @@ PY
                 "remote_path": "/var/lib/acme/localhost/key.pem",
                 "content": key_pem,
                 "owner": "root",
-                "group": "nginx",
+                "group": "traefik",
                 "mode": "0640",
                 "dir_mode": "0750",
             },

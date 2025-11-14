@@ -18,7 +18,7 @@ qemu-system-x86_64 \
   -daemonize \
   -display none
 
-echo "VM starting... waiting for certificate generation and nginx startup..."
+echo "VM starting... waiting for certificate generation and Traefik startup..."
 
 # Wait for HTTPS to be available
 for i in {1..60}; do
@@ -36,7 +36,7 @@ echo ""
 echo "🔒 RAVE HTTPS Certificate Demo Ready!"
 echo ""
 echo "✅ Automated certificate generation: WORKING"
-echo "✅ nginx with HTTPS: WORKING"
+echo "✅ Traefik with HTTPS: WORKING"
 echo "✅ Self-signed certificates: WORKING"
 echo ""
 echo "🌐 Test the demo:"

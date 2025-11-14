@@ -743,7 +743,7 @@ def overrides_status(ctx):
 @click.option(
     '--preset', 'presets', multiple=True,
     type=click.Choice(sorted(METADATA_PRESETS.keys())),
-    help='Apply metadata presets (nginx/gitlab/mattermost/pomerium) to the new layer',
+    help='Apply metadata presets (traefik/gitlab/mattermost/pomerium) to the new layer',
 )
 @click.pass_context
 def overrides_create_layer(
@@ -1082,7 +1082,7 @@ def issue(ctx, company_name: str, domains: List[str]):
     })
 
     click.echo("✅ Installed certificate under /var/lib/acme/localhost on the VM")
-    click.echo("🔁 nginx restarted to pick up the new TLS material")
+    click.echo("🔁 Traefik restarted to pick up the new TLS material")
     root_info = platform.mkcert_caroot()
     if root_info:
         click.echo(f"ℹ️  If other devices need trust, share {root_info / 'rootCA.pem'}")

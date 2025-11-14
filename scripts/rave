@@ -43,7 +43,7 @@ EXAMPLES:
     rave vm start
     rave cert real --domain myrave.com --email me@example.com
     rave health
-    rave logs nginx
+    rave logs traefik
 
 For more help: rave <command> --help
 EOF
@@ -182,8 +182,8 @@ cert_generate() {
     
     if vm_ssh "systemctl restart generate-dev-certs"; then
         echo -e "${GREEN}✅ Certificates generated successfully${NC}"
-        vm_ssh "systemctl restart nginx"
-        echo -e "${GREEN}✅ Nginx restarted${NC}"
+        vm_ssh "systemctl restart traefik"
+        echo -e "${GREEN}✅ Traefik restarted${NC}"
         cert_status
     else
         echo -e "${RED}❌ Certificate generation failed${NC}"
@@ -272,7 +272,7 @@ health_check() {
     
     # Service Status
     echo -e "${BLUE}📊 Service Status:${NC}"
-    SERVICES=("nginx" "redis-default" "redis-gitlab" "postgresql" "nats")
+    SERVICES=("traefik" "redis-default" "redis-gitlab" "postgresql" "nats")
     
     for service in "${SERVICES[@]}"; do
         if vm_ssh "systemctl is-active $service" >/dev/null 2>&1; then
@@ -304,7 +304,7 @@ health_check() {
 }
 
 show_logs() {
-    local service="${1:-nginx}"
+    local service="${1:-traefik}"
     echo -e "${BLUE}📜 Showing logs for: $service${NC}"
     vm_ssh "journalctl -u $service.service -f"
 }
@@ -375,7 +375,7 @@ case "${1:-}" in
         health_check
         ;;
     "logs")
-        show_logs "${2:-nginx}"
+        show_logs "${2:-traefik}"
         ;;
     "test")
         run_tests

@@ -47,7 +47,7 @@ Once launched, use the remaining `rave vm …` commands to manage the VM by name
 ./apps/cli/rave vm start local-stack
 ./apps/cli/rave vm stop local-stack
 ./apps/cli/rave vm status local-stack
-./apps/cli/rave vm logs local-stack --service nginx --follow
+./apps/cli/rave vm logs local-stack --service traefik --follow
 ./apps/cli/rave vm ssh local-stack
 ```
 
@@ -117,6 +117,6 @@ To inspect a specific service such as Penpot:
 Both services can be customized via their respective configuration files:
 - **GitLab**: `gitlab-complete/docker-compose.yml` (GITLAB_OMNIBUS_CONFIG)
 - **Penpot**: Environment variables in the same `docker-compose.yml`
-- **Nginx**: Configuration files in `gitlab-complete/nginx/`
+- **Traefik**: Front-door ingress managed via `infra/nixos/modules/services/traefik/default.nix`
 
 Your development environment is now a complete platform for both design and development work!

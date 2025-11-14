@@ -20,7 +20,7 @@ for i in {1..20}; do
             echo '  PostgreSQL:' \$(systemctl is-active postgresql.service)
             echo '  Redis:     ' \$(systemctl is-active redis-main.service)
             echo '  GitLab:    ' \$(systemctl is-active gitlab.service)
-            echo '  nginx:     ' \$(systemctl is-active nginx.service)
+            echo '  traefik:   ' \$(systemctl is-active traefik.service)
         " 2>/dev/null
         
         # Test GitLab response

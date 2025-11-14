@@ -12,10 +12,18 @@
     services.rave.nats.enable = lib.mkForce false;
     services.rave.pomerium.enable = lib.mkForce false;
     services.rave.auth-manager.enable = lib.mkForce false;
-    services.rave.nginx.enable = lib.mkForce false;
+    services.rave.traefik.enable = lib.mkForce false;
 
     services.rave.postgresql.enable = lib.mkForce true;
     services.rave.postgresql.listenAddresses = "0.0.0.0";
+    services.postgresql.authentication = ''
+      local   all     all                     trust
+      host    all     all     127.0.0.1/32    trust
+      host    all     all     ::1/128         trust
+      host    all     all     172.17.0.0/16   md5
+      host    all     all     10.244.0.0/16   md5
+      host    all     all     10.0.0.0/8      md5
+    '';
 
     services.rave.redis = {
       enable = lib.mkForce true;

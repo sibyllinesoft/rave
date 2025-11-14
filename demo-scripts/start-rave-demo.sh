@@ -23,7 +23,7 @@ echo ""
 # Wait for VM to boot and services to start
 for i in {1..60}; do
     if curl -s --connect-timeout 2 http://localhost:8080/health > /dev/null 2>&1; then
-        echo "✅ nginx is running!"
+        echo "✅ Traefik ingress is running!"
         break
     fi
     echo "Waiting for VM to boot... ($i/60)"

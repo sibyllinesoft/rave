@@ -27,7 +27,7 @@ This runbook provides operational procedures for deploying, monitoring, and main
 
 ### Critical Service Ports
 - **22**: SSH (key authentication only)
-- **3002**: HTTPS (nginx unified proxy)
+- **3002**: HTTPS (Traefik unified proxy)
 - **9090**: Prometheus (localhost only)
 - **3030**: Grafana (internal)
 - **3001**: Webhook dispatcher
@@ -116,7 +116,7 @@ done
 
 # Check critical services
 SERVICES=(
-  "nginx"
+  "traefik"
   "postgresql" 
   "grafana"
   "prometheus"
@@ -274,7 +274,7 @@ systemctl show grafana.service | grep Memory
 # 4. Restart services if necessary (in order)
 sudo systemctl restart prometheus
 sudo systemctl restart grafana
-sudo systemctl restart nginx
+sudo systemctl restart traefik
 
 # 5. Verify memory reduction
 watch -n 5 free -h
@@ -392,7 +392,7 @@ export SAFE=1
 sudo systemctl restart prometheus
 sudo systemctl restart grafana
 sudo systemctl restart webhook-dispatcher
-sudo systemctl restart nginx
+sudo systemctl restart traefik
 
 # 3. Monitor memory recovery
 watch -n 5 free -h
@@ -433,8 +433,8 @@ sops secrets.yaml
 # 2. Restart sops-nix secret delivery
 sudo systemctl restart sops-nix
 
-# 3. Restart nginx to reload certificates
-sudo systemctl restart nginx
+# 3. Restart Traefik to reload certificates
+sudo systemctl restart traefik
 
 # 4. Verify certificate renewal
 curl -k -I https://localhost:3002/
@@ -624,7 +624,7 @@ openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt newcert.pem
 
 # 5. Deploy new certificate
 sudo systemctl restart sops-nix
-sudo systemctl restart nginx
+sudo systemctl restart traefik
 
 # 6. Verify HTTPS functionality
 curl -k -I https://localhost:3002/
@@ -679,7 +679,7 @@ sudo systemctl set-property prometheus.service CPUQuota=50%
 sudo systemctl set-property grafana.service CPUQuota=25%
 
 # 2. Configure process priorities
-sudo systemctl set-property nginx.service Nice=-5      # Higher priority
+sudo systemctl set-property traefik.service Nice=-5      # Higher priority
 sudo systemctl set-property prometheus.service Nice=5  # Lower priority
 
 # 3. Optimize Nix build settings
@@ -712,7 +712,7 @@ while true; do
   echo ""
   
   echo "=== Service Status ==="
-  systemctl status nginx grafana prometheus postgresql --no-pager -l
+  systemctl status traefik grafana prometheus postgresql --no-pager -l
   echo ""
   
   echo "=== Network Connections ==="

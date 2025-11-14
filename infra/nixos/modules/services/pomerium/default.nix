@@ -194,7 +194,7 @@ in
     publicUrl = mkOption {
       type = types.str;
       default = "https://localhost:8443/pomerium";
-      description = "Base URL exposed via nginx for Pomerium managed routes.";
+      description = "Base URL exposed via the ingress proxy for Pomerium managed routes.";
     };
 
     authenticateUrl = mkOption {
@@ -212,13 +212,13 @@ in
     forwardAuthUrl = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "Optional forward-auth endpoint for nginx/envoy integrations.";
+      description = "Optional forward-auth endpoint for ingress/envoy integrations.";
     };
 
     httpPort = mkOption {
       type = types.int;
       default = 8740;
-      description = "Loopback HTTP port Pomerium listens on (nginx proxies to this address).";
+      description = "Loopback HTTP port Pomerium listens on (Traefik proxies to this address).";
     };
 
     grpcPort = mkOption {

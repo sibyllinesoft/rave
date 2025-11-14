@@ -554,7 +554,7 @@ class RAVEVMIntegrationTest:
             
         self.log("🔍 Testing service status...")
         
-        services = ["nginx", "postgresql", "nats"]
+        services = ["traefik", "postgresql", "nats"]
         all_services_ok = True
         
         for service in services:

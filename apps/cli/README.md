@@ -7,7 +7,7 @@ Comprehensive CLI for managing RAVE (Reproducible AI Virtual Environment) compan
 - **VM Management**: Create, start, stop, reset company development VMs
 - **User Management**: Add/remove users via GitLab OAuth integration  
 - **SSH & Logging**: Direct access to VMs and service logs
-- **Pre-configured Services**: GitLab, NATS, PostgreSQL, Redis, nginx with SSL
+- **Pre-configured Services**: GitLab, NATS, PostgreSQL, Redis, Traefik with SSL
 - **OAuth Integration**: Penpot and Element pre-configured with GitLab OAuth
 
 ## Installation
@@ -38,7 +38,7 @@ rave vm status acme-corp
 rave vm ssh acme-corp
 
 # View logs
-rave vm logs acme-corp nginx --follow
+rave vm logs acme-corp traefik --follow
 
 # Add users
 rave user add john@acme-corp.com --oauth-id 12345 --access developer --company acme-corp
@@ -71,7 +71,7 @@ rave user list --company acme-corp
 ### Overrides (GitOps layer)
 - `rave overrides init` - Create `config/overrides/global/` with the default metadata and directory scaffold.
 - `rave overrides status` - Print the currently discovered layers, priorities, and managed file counts.
-- `rave overrides create-layer host-foo --priority 50 --preset nginx` - Scaffold a host/app-specific layer with preset restart/reload metadata (presets: nginx/gitlab/mattermost/pomerium).
+- `rave overrides create-layer host-foo --priority 50 --preset traefik` - Scaffold a host/app-specific layer with preset restart/reload metadata (presets: traefik/gitlab/mattermost/pomerium/authentik). Legacy `--preset nginx` remains available as an alias.
 - `rave overrides apply --dry-run --company <vm> --preflight-cmd "nixos-rebuild test --flake .#{company}"` - Runs `nix flake check` (overrideable via `--nix-check-cmd`) plus optional preflight commands with `{company}` / `{layers}` templating before streaming a preview plan from the VM.
 - `rave overrides apply --company <vm> [--layer NAME] --json-output` - Package the Git-tracked overrides, stream them into the running VM, and emit a machine-readable summary for automation.
 
@@ -82,7 +82,7 @@ Each company VM includes:
 - **NATS JetStream** (internal) for event streaming
 - **PostgreSQL** (internal) for data storage
 - **Redis** (internal) for caching
-- **nginx** (reverse proxy) with SSL certificates
+- **Traefik** (reverse proxy) with SSL certificates
 - **Penpot** (pre-configured with GitLab OAuth)
 - **Element** (pre-configured with GitLab OAuth)
 

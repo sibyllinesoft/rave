@@ -26,7 +26,7 @@ pkgs.nixosTest {
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    machine.wait_until_succeeds("systemctl is-active nginx")
+    machine.wait_until_succeeds("systemctl is-active traefik")
     machine.wait_until_succeeds("systemctl is-active postgresql")
 
     machine.wait_until_succeeds(

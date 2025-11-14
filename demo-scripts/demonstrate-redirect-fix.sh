@@ -2,6 +2,8 @@
 echo "🔧 RAVE GitLab Redirect Fix Demonstration"
 echo "========================================"
 echo ""
+echo "(Legacy demo: showcases the pre-Traefik nginx ingress fix.)"
+echo ""
 
 echo "📋 PROBLEM IDENTIFIED:"
 echo "  • GitLab redirects to: http://localhost/users/sign_in (MISSING PORT)"
@@ -9,13 +11,13 @@ echo "  • Should redirect to:   http://localhost:8080/users/sign_in (WITH PORT
 echo ""
 
 echo "🔍 ROOT CAUSE ANALYSIS:"
-echo "  • GitLab generates redirect URLs based on the Host header from nginx"
+echo "  • GitLab generates redirect URLs based on the Host header from the legacy nginx proxy"
 echo "  • Incorrect: proxy_set_header Host \$host;"
 echo "  • Correct:   proxy_set_header Host \$host:\$server_port;"
 echo ""
 
 echo "⚙️  THE FIX:"
-echo "  Updated nginx proxy headers in demo-https-config.nix:"
+echo "  Updated legacy nginx proxy headers in demo-https-config.nix:"
 echo ""
 echo "  BEFORE (caused missing port in redirects):"
 echo "    proxy_set_header Host \$host;"
@@ -28,8 +30,8 @@ echo "    proxy_set_header X-Forwarded-Port \$server_port;"
 echo ""
 
 echo "📄 Configuration Files Created:"
-echo "  ✅ nginx-redirect-fix.conf - Standalone nginx config with proper headers"
-echo "  ✅ gitlab-redirect-fix.conf - Complete nginx server block with fix"
+echo "  ✅ nginx-redirect-fix.conf - Legacy nginx config with proper headers"
+echo "  ✅ gitlab-redirect-fix.conf - Legacy nginx server block with fix"
 echo "  ✅ demo-https-config.nix - Updated NixOS configuration"
 echo ""
 
@@ -40,9 +42,9 @@ echo "  • All GitLab URLs include port: :8080 ✅"
 echo ""
 
 echo "🚀 IMPLEMENTATION STATUS:"
-echo "  ✅ Root cause identified (nginx Host header)"
+echo "  ✅ Root cause identified (legacy nginx Host header)"
 echo "  ✅ Fix implemented in configuration files"
-echo "  ✅ New VM built with corrected nginx headers"
+echo "  ✅ New VM built with corrected legacy nginx headers"
 echo "  🔄 Ready for testing when GitLab backend starts properly"
 echo ""
 

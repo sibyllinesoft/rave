@@ -34,7 +34,7 @@ CONF
     chmod 755 "$CERT_DIR"
     chmod 644 "$CERT_DIR"/cert.pem "$CERT_DIR"/ca.pem
     chmod 640 "$CERT_DIR"/key.pem
-    chgrp -f nginx "$CERT_DIR"/cert.pem "$CERT_DIR"/key.pem 2>/dev/null || true
+    chgrp -f traefik "$CERT_DIR"/cert.pem "$CERT_DIR"/key.pem 2>/dev/null || true
   '';
 
 in

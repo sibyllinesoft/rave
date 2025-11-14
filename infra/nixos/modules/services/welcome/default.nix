@@ -8,9 +8,10 @@ let
   redisUnit = redisPlatform.unit or "redis-main.service";
 
   baseHttpsPort = toString config.services.rave.ports.https;
-  host = config.services.rave.nginx.host;
+  host = config.services.rave.traefik.host;
   mattermostPublicUrl = config.services.rave.mattermost.publicUrl;
   grafanaPublicUrl = config.services.rave.monitoring.grafana.publicUrl;
+  authentikPublicUrl = config.services.rave.authentik.publicUrl;
   dashboardUrl = "https://${host}:${baseHttpsPort}/";
 
   penpotWelcomePrimary = optionalString config.services.rave.penpot.enable ''
@@ -25,6 +26,9 @@ let
   pomeriumWelcomePrimary = optionalString config.services.rave.pomerium.enable ''
   echo "  Pomerium     : ${config.services.rave.pomerium.publicUrl}"
 '';
+  authentikWelcomePrimary = optionalString config.services.rave.authentik.enable ''
+  echo "  Authentik    : ${authentikPublicUrl}"
+'';
 
   penpotWelcomeFancy = optionalString config.services.rave.penpot.enable ''
   echo "   🎨 Penpot:      ${config.services.rave.penpot.publicUrl}/"
@@ -38,12 +42,15 @@ let
   pomeriumWelcomeFancy = optionalString config.services.rave.pomerium.enable ''
   echo "   🛡  Pomerium:   ${config.services.rave.pomerium.publicUrl}"
 '';
+  authentikWelcomeFancy = optionalString config.services.rave.authentik.enable ''
+  echo "   🔐 Authentik:   ${authentikPublicUrl}"
+'';
 
   statusServices =
     [
       "postgresql"
       redisUnit
-      "nginx"
+      "traefik"
     ]
     ++ optionals config.services.rave.gitlab.enable [ "gitlab" ]
     ++ optionals config.services.rave.monitoring.enable [ "prometheus" "grafana" ]
@@ -53,6 +60,7 @@ let
     ++ optionals config.services.rave.outline.enable [ "outline" ]
     ++ optionals config.services.rave.n8n.enable [ "n8n" ]
     ++ optionals config.services.rave.pomerium.enable [ "pomerium" ]
+    ++ optionals config.services.rave.authentik.enable [ "authentik-server" "authentik-worker" ]
     ++ cfg.extraStatusServices;
 
   statusServicesStr = concatStringsSep " " statusServices;
@@ -67,7 +75,7 @@ echo "  SSH          : localhost:12222 (user root, password rave-root)"
 echo "  GitLab HTTPS : https://${host}:${baseHttpsPort}/gitlab/"
 echo "  Mattermost   : ${mattermostPublicUrl}/"
 echo "  Grafana      : ${grafanaPublicUrl}"
-echo "  Prometheus   : http://localhost:19090/"${penpotWelcomePrimary}${outlineWelcomePrimary}${n8nWelcomePrimary}${pomeriumWelcomePrimary}
+echo "  Prometheus   : http://localhost:19090/"${penpotWelcomePrimary}${outlineWelcomePrimary}${n8nWelcomePrimary}${pomeriumWelcomePrimary}${authentikWelcomePrimary}
 echo ""
 echo "🚀 RAVE Complete Production Environment"
 echo "====================================="
@@ -77,7 +85,7 @@ echo "   🦊 GitLab:      https://${host}:${baseHttpsPort}/gitlab/"
 echo "   📊 Grafana:     ${grafanaPublicUrl}"
 echo "   💬 Mattermost:  ${mattermostPublicUrl}/"
 echo "   🔍 Prometheus:  https://${host}:${baseHttpsPort}/prometheus/"
-echo "   ⚡ NATS:        https://${host}:${baseHttpsPort}/nats/"${penpotWelcomeFancy}${outlineWelcomeFancy}${n8nWelcomeFancy}${pomeriumWelcomeFancy}
+echo "   ⚡ NATS:        https://${host}:${baseHttpsPort}/nats/"${penpotWelcomeFancy}${outlineWelcomeFancy}${n8nWelcomeFancy}${pomeriumWelcomeFancy}${authentikWelcomeFancy}
 echo ""
 echo "🔑 Default Credentials:"
 echo "   GitLab root:    admin123456"

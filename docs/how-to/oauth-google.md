@@ -1,6 +1,8 @@
 # Configure Google OAuth for Pomerium
 
 This guide walks through registering a Google OAuth client, storing the credentials with SOPS, and baking them into a RAVE VM image so Pomerium can act as the front door for Mattermost and other services.
+If you plan to use (the now default) Authentik or disable Pomerium entirely, see
+`docs/how-to/authentik.md` for the `RAVE_DISABLE_POMERIUM` workflow and the required secrets.
 
 ## 1. Prerequisites
 

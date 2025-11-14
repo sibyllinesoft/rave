@@ -24,15 +24,15 @@ if sshpass -p 'debug123' ssh -o "StrictHostKeyChecking=no" -o "UserKnownHostsFil
         fi
         
         # Fix permissions
-        chown -R nginx:nginx /var/lib/acme/localhost/
+        chown -R traefik:traefik /var/lib/acme/localhost/
         chmod 640 /var/lib/acme/localhost/key.pem
         chmod 644 /var/lib/acme/localhost/cert.pem
         
-        # Restart nginx
-        systemctl restart nginx
+        # Restart Traefik
+        systemctl restart traefik
         
         echo 'Certificate fix complete!'
-        systemctl status nginx --no-pager
+        systemctl status traefik --no-pager
     "
     echo "✅ Certificate fix applied successfully"
 else

@@ -25,9 +25,8 @@ in {
     };
 
     services.gitlab = {
-      # GitLab talks to the external data plane over the default PostgreSQL port;
-      # host-only override keeps the remote endpoint configurable without
-      # touching the upstream module options (which no longer expose databasePort).
+      # GitLab talks to the external data plane; force the host override so we reuse
+      # the shared Postgres that lives on the data plane VM.
       databaseHost = lib.mkForce dataHost;
     };
 

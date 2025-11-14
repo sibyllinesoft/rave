@@ -62,7 +62,7 @@ Tokens are signed with `AUTH_MANAGER_SIGNING_KEY` (HS256) and are independent fr
 
 - Wire `/api/v1/oauth/exchange` to consume OAuth callbacks.
 - Synchronize generated shadow identities into Mattermost via its REST API.
-- Emit short-lived session tokens that Pomerium (or nginx forward-auth) can validate.
+- Emit short-lived session tokens that Pomerium (or Traefik forward-auth) can validate.
 - Persist state in PostgreSQL or Redis instead of the in-memory map provided here.
 
 ## Handoff notes

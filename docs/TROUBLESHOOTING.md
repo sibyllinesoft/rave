@@ -24,12 +24,12 @@ curl -k https://localhost:3002/
 journalctl -u rave-production.service --since "30 minutes ago"
 
 # Level 2: Component Analysis
-ssh agent@localhost systemctl status nginx grafana prometheus
+ssh agent@localhost systemctl status traefik grafana prometheus
 curl -k https://localhost:3002/grafana/api/health
 curl http://localhost:9090/-/ready
 
 # Level 3: Deep Diagnostics
-ssh agent@localhost 'ps aux | grep -E "(nginx|grafana|prometheus)"'
+ssh agent@localhost 'ps aux | grep -E "(traefik|grafana|prometheus)"'
 ssh agent@localhost 'netstat -tulpn | grep -E ":3002|:3030|:9090"'
 ssh agent@localhost 'free -h && df -h'
 
@@ -270,9 +270,9 @@ fi
 echo "Checking firewall configuration..."
 ssh agent@localhost 'sudo iptables -L INPUT -n | grep -E ":22|:3002"'
 
-# Test nginx status
-echo "Checking nginx status..."
-ssh agent@localhost 'systemctl is-active nginx && curl -s http://localhost:3002 >/dev/null'
+# Test Traefik status
+echo "Checking Traefik status..."
+ssh agent@localhost 'systemctl is-active traefik && curl -sk https://localhost:3002 >/dev/null'
 
 failures=${failures:-0}
 if [ $failures -eq 0 ]; then
@@ -315,17 +315,17 @@ case $ISSUE_TYPE in
     ssh agent@localhost 'sudo iptables -L INPUT -n | grep ACCEPT'
     ;;
     
-  nginx)
-    echo "🔧 Resolving nginx issues..."
+  traefik)
+    echo "🔧 Resolving Traefik issues..."
     
-    # Restart nginx service
-    ssh agent@localhost 'sudo systemctl restart nginx'
+    # Restart Traefik service
+    ssh agent@localhost 'sudo systemctl restart traefik'
     
-    # Check nginx configuration
-    ssh agent@localhost 'sudo nginx -t'
+    # Review Traefik logs for configuration errors
+    ssh agent@localhost 'journalctl -u traefik -n 50 --no-pager'
     
-    # Verify nginx is listening on expected ports
-    ssh agent@localhost 'netstat -tulpn | grep :3002'
+    # Verify Traefik is listening on expected ports
+    ssh agent@localhost 'ss -tulpn | grep :3002'
     ;;
     
   ssl)
@@ -337,8 +337,8 @@ case $ISSUE_TYPE in
     # Restart sops-nix for secret delivery
     ssh agent@localhost 'sudo systemctl restart sops-nix'
     
-    # Restart nginx to reload certificates
-    ssh agent@localhost 'sudo systemctl restart nginx'
+    # Restart Traefik to reload certificates
+    ssh agent@localhost 'sudo systemctl restart traefik'
     ;;
 esac
 
@@ -615,9 +615,9 @@ ssh agent@localhost 'journalctl -u webhook-dispatcher --since "1 hour ago" | tai
 echo "Checking webhook secret..."
 ssh agent@localhost 'ls -la /run/secrets/webhook-*'
 
-# Check nginx proxy configuration
-echo "Checking nginx webhook routing..."
-ssh agent@localhost 'curl -s http://localhost:3001/metrics' | grep webhook || echo "No webhook metrics"
+# Check Traefik proxy configuration
+echo "Checking Traefik webhook routing..."
+ssh agent@localhost 'journalctl -u traefik --since "30 minutes ago" | grep -i webhook | tail -20 || true'
 
 # Test internal webhook processing
 echo "Testing internal webhook processing..."
@@ -669,14 +669,14 @@ case $ISSUE_TYPE in
     ssh agent@localhost 'sudo systemctl restart webhook-dispatcher'
     ;;
     
-  nginx)
-    echo "🔧 Resolving nginx proxy issues..."
+  traefik)
+    echo "🔧 Resolving Traefik proxy issues..."
     
-    # Restart nginx
-    ssh agent@localhost 'sudo systemctl restart nginx'
+    # Restart Traefik
+    ssh agent@localhost 'sudo systemctl restart traefik'
     
-    # Test nginx configuration
-    ssh agent@localhost 'sudo nginx -t'
+    # Review Traefik logs for errors
+    ssh agent@localhost 'journalctl -u traefik -n 50 --no-pager'
     
     # Verify proxy routing
     curl -k -I https://localhost:3002/webhook
@@ -870,7 +870,7 @@ echo ""
 
 # Service CPU usage
 echo "Service CPU usage:"
-ssh agent@localhost 'systemd-cgtop --depth=2 -n 1 -b | grep -E "(prometheus|grafana|nginx|webhook)"'
+ssh agent@localhost 'systemd-cgtop --depth=2 -n 1 -b | grep -E "(prometheus|grafana|traefik|webhook)"'
 echo ""
 
 # CPU utilization per core
@@ -902,7 +902,7 @@ case $RESOLUTION_TYPE in
     ssh agent@localhost 'sudo systemctl set-property webhook-dispatcher.service CPUQuota=25%'
     
     # Apply nice values for priority adjustment
-    ssh agent@localhost 'sudo systemctl set-property nginx.service Nice=-5'  # Higher priority
+    ssh agent@localhost 'sudo systemctl set-property traefik.service Nice=-5'  # Higher priority
     ssh agent@localhost 'sudo systemctl set-property prometheus.service Nice=10'  # Lower priority
     
     # Reload configuration
@@ -988,9 +988,9 @@ echo "Verifying certificate chain..."
 echo | openssl s_client -connect localhost:3002 -showcerts 2>/dev/null | \
   grep -E "(BEGIN|END) CERTIFICATE"
 
-# Check nginx SSL configuration
-echo "Checking nginx SSL configuration..."
-ssh agent@localhost 'sudo nginx -T | grep -A5 -B5 ssl' 2>/dev/null || echo "Cannot check nginx config"
+# Check Traefik SSL configuration
+echo "Checking Traefik SSL configuration..."
+ssh agent@localhost 'journalctl -u traefik --since "30 minutes ago" | grep -i tls | tail -20 || true'
 ```
 
 **Certificate Resolution:**
@@ -1012,8 +1012,8 @@ case $RESOLUTION_TYPE in
     # Wait for secret delivery
     sleep 5
     
-    # Restart nginx to reload certificates
-    ssh agent@localhost 'sudo systemctl restart nginx'
+    # Restart Traefik to reload certificates
+    ssh agent@localhost 'sudo systemctl restart traefik'
     
     # Test certificate after refresh
     sleep 10
@@ -1046,11 +1046,11 @@ case $RESOLUTION_TYPE in
   disable-ssl)
     echo "🔧 Temporarily disabling SSL for debugging..."
     
-    # Configure nginx for HTTP only (emergency mode)
-    ssh agent@localhost 'sudo systemctl stop nginx'
+    # Configure Traefik for HTTP only (emergency mode)
+    ssh agent@localhost 'sudo systemctl stop traefik'
     
     echo "⚠️  SSL disabled - system running in insecure mode"
-    echo "⚠️  Manual nginx reconfiguration required for HTTP-only operation"
+    echo "⚠️  Manual Traefik reconfiguration required for HTTP-only operation"
     ;;
 esac
 ```
@@ -1221,7 +1221,7 @@ case $RECOVERY_TYPE in
     ssh agent@localhost 'sudo systemctl restart grafana' || true
     sleep 10
     ssh agent@localhost 'sudo systemctl restart webhook-dispatcher' || true
-    ssh agent@localhost 'sudo systemctl restart nginx' || true
+    ssh agent@localhost 'sudo systemctl restart traefik' || true
     ;;
     
   config-only)
@@ -1230,7 +1230,7 @@ case $RECOVERY_TYPE in
     # Redeploy configuration without rebuilding
     ssh agent@localhost 'sudo systemctl restart sops-nix'
     sleep 5
-    ssh agent@localhost 'sudo systemctl restart nginx grafana webhook-dispatcher'
+    ssh agent@localhost 'sudo systemctl restart traefik grafana webhook-dispatcher'
     ;;
 esac
 
@@ -1277,7 +1277,7 @@ echo ""
 
 # VM internal services
 echo "VM Internal Services:"
-ssh agent@localhost 'systemctl status nginx grafana prometheus webhook-dispatcher postgresql --no-pager' 2>/dev/null || \
+ssh agent@localhost 'systemctl status traefik grafana prometheus webhook-dispatcher postgresql --no-pager' 2>/dev/null || \
   echo "Cannot check internal services"
 echo ""
 
@@ -1371,7 +1371,7 @@ if [ "$disk_usage" -gt "$DISK_THRESHOLD" ]; then
 fi
 
 # Check service health
-services=("nginx" "grafana" "prometheus" "webhook-dispatcher")
+services=("traefik" "grafana" "prometheus" "webhook-dispatcher")
 for service in "${services[@]}"; do
   if ! ssh agent@localhost "systemctl is-active $service" >/dev/null 2>&1; then
     echo "⚠️  Service $service is not active - attempting restart"

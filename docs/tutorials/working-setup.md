@@ -86,7 +86,7 @@ python3 apps/cli/rave vm status my-company
 - **Grafana**: Monitoring dashboards
 - **Prometheus**: Metrics collection with exporters
 - **NATS**: High-performance messaging with JetStream
-- **nginx**: Reverse proxy with SSL termination
+- **Traefik**: Reverse proxy with SSL termination
 
 ### System Specs
 - **Memory**: 8GB allocated
@@ -126,7 +126,7 @@ rave vm build-image
 ```bash
 # SSH into VM and check services
 ssh -p 2224 root@localhost
-systemctl status nginx gitlab grafana prometheus
+systemctl status traefik gitlab grafana prometheus
 ```
 
 ## 🎯 What Works
@@ -137,7 +137,7 @@ systemctl status nginx gitlab grafana prometheus
 - VM image building process
 - VM launching and boot sequence
 - NixOS 24.11 boot to login prompt
-- Service startup (nginx, PostgreSQL, Redis, etc.)
+- Service startup (Traefik, PostgreSQL, Redis, etc.)
 - Port forwarding and network setup
 - SSL certificate generation
 - SSH daemon startup

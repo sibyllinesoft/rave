@@ -48,32 +48,56 @@ def _default_metadata() -> Dict[str, Any]:
                 "scope": ["systemd"],
             },
             {
+                "match": "etc/traefik/**",
+                "reload_units": ["traefik.service"],
+                "scope": ["file"],
+            },
+            {
+                "match": "etc/rave/overrides/traefik/**/*.yaml",
+                "reload_units": ["traefik.service"],
+                "scope": ["file"],
+            },
+            {
                 "match": "etc/nginx/**",
-                "reload_units": ["nginx.service"],
+                "reload_units": ["traefik.service"],
                 "scope": ["file"],
             },
             {
                 "match": "etc/rave/overrides/nginx/**/*.conf",
-                "reload_units": ["nginx.service"],
+                "reload_units": ["traefik.service"],
                 "scope": ["file"],
             },
         ],
     }
 
 
+TRAEFIK_PRESET = [
+    {
+        "match": "etc/traefik/**",
+        "reload_units": ["traefik.service"],
+        "scope": ["file"],
+    },
+    {
+        "match": "etc/rave/overrides/traefik/**/*.yaml",
+        "reload_units": ["traefik.service"],
+        "scope": ["file"],
+    },
+    {
+        "match": "etc/nginx/**",
+        "reload_units": ["traefik.service"],
+        "scope": ["file"],
+    },
+    {
+        "match": "etc/rave/overrides/nginx/**/*.conf",
+        "reload_units": ["traefik.service"],
+        "scope": ["file"],
+    },
+]
+
+
 METADATA_PRESETS: Dict[str, List[Dict[str, Any]]] = {
-    "nginx": [
-        {
-            "match": "etc/nginx/**",
-            "reload_units": ["nginx.service"],
-            "scope": ["file"],
-        },
-        {
-            "match": "etc/rave/overrides/nginx/**/*.conf",
-            "reload_units": ["nginx.service"],
-            "scope": ["file"],
-        },
-    ],
+    "traefik": TRAEFIK_PRESET,
+    "nginx": TRAEFIK_PRESET,
     "gitlab": [
         {
             "match": "etc/gitlab/**",
@@ -104,6 +128,19 @@ METADATA_PRESETS: Dict[str, List[Dict[str, Any]]] = {
             "restart_units": ["pomerium.service"],
             "scope": ["file"],
         }
+    ],
+    "authentik": [
+        {
+            "match": "etc/authentik/**",
+            "restart_units": ["authentik-server.service", "authentik-worker.service"],
+            "scope": ["file"],
+        },
+        {
+            "match": "etc/systemd/system/authentik-*.service",
+            "daemon_reload": True,
+            "restart_units": ["authentik-server.service", "authentik-worker.service"],
+            "scope": ["systemd"],
+        },
     ],
 }
 

@@ -266,7 +266,7 @@ test_service_security() {
     run_test "Service Security Configuration"
     
     # Check if services are running as non-root user
-    local services=("vibe-kanban" "claude-code-router" "nginx")
+    local services=("vibe-kanban" "claude-code-router" "traefik")
     
     for service in "${services[@]}"; do
         if ssh_exec "sudo systemctl is-active --quiet $service"; then

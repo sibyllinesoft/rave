@@ -11,6 +11,7 @@ let
   sharedRedisHost = redisPlatform.dockerHost or "host.docker.internal";
   sharedRedisPort = redisPlatform.port or 6379;
   sharedRedisDb = sharedAllocations.penpot or 10;
+  useLocalDatabase = config.services.rave.postgresql.enable or true;
 
   dbPasswordExpr = if cfg.database.passwordFile != null
     then "$(${pkgs.coreutils}/bin/cat ${cfg.database.passwordFile} | ${trimNewline})"
@@ -42,10 +43,11 @@ let
   redisPort = if cfg.redis.port != null then cfg.redis.port else defaultRedisPort;
   redisDatabase = if cfg.redis.database != null then cfg.redis.database else sharedRedisDb;
   redisUri = "redis://${redisHost}:${toString redisPort}/${toString redisDatabase}";
+  useSharedRedisUnit = cfg.redis.host == null && !cfg.managedRedis;
   redisDependencyUnits =
-    if cfg.managedRedis
-    then [ "redis-penpot.service" ]
-    else [ sharedRedisUnit ];
+    if cfg.managedRedis then [ "redis-penpot.service" ]
+    else (if useSharedRedisUnit then [ sharedRedisUnit ] else []);
+  dbDependencyUnits = if useLocalDatabase then [ "postgresql.service" ] else [];
 
   backendPortStr = toString cfg.backendPort;
   exporterPortStr = toString cfg.exporterPort;
@@ -97,7 +99,7 @@ in {
     host = mkOption {
       type = types.str;
       default = "localhost";
-      description = "Penpot hostname used by nginx";
+      description = "Penpot hostname used by the ingress proxy";
     };
 
     publicUrl = mkOption {
@@ -239,16 +241,19 @@ in {
     };
   };
 
-  config = mkIf cfg.enable {
-    services.postgresql.ensureDatabases = mkAfter [ cfg.database.name ];
-    services.postgresql.ensureUsers = mkAfter [
-      { name = cfg.database.username; ensureDBOwnership = true; }
-    ];
-    systemd.services.postgresql.postStart = mkAfter ''
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER ${cfg.database.username} PASSWORD '${dbPasswordExpr}';" || true
-    '';
+  config = mkIf cfg.enable (mkMerge [
+    (mkIf useLocalDatabase {
+      services.postgresql.ensureDatabases = mkAfter [ cfg.database.name ];
+      services.postgresql.ensureUsers = mkAfter [
+        { name = cfg.database.username; ensureDBOwnership = true; }
+      ];
+      systemd.services.postgresql.postStart = mkAfter ''
+        ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER ${cfg.database.username} PASSWORD '${dbPasswordExpr}';" || true
+      '';
+    })
 
-    services.redis.servers.penpot = mkIf cfg.managedRedis {
+    {
+      services.redis.servers.penpot = mkIf cfg.managedRedis {
       enable = true;
       port = redisPort;
       bind = "0.0.0.0";
@@ -310,8 +315,8 @@ in {
     systemd.services.penpot-backend = {
       description = "Penpot Backend";
       wantedBy = [ "multi-user.target" ];
-      after = [ "docker.service" "postgresql.service" "docker-pull-penpot-backend.service" ] ++ redisDependencyUnits;
-      requires = [ "docker.service" "postgresql.service" "docker-pull-penpot-backend.service" ] ++ redisDependencyUnits;
+      after = [ "docker.service" "docker-pull-penpot-backend.service" ] ++ dbDependencyUnits ++ redisDependencyUnits;
+      requires = [ "docker.service" "docker-pull-penpot-backend.service" ] ++ dbDependencyUnits ++ redisDependencyUnits;
 
       environment = {
         PENPOT_FLAGS = "enable-registration enable-login-with-oidc disable-email-verification enable-prepl-server";
@@ -466,5 +471,6 @@ PY
         ExecStop = "${pkgs.docker}/bin/docker stop penpot-exporter";
       };
     };
-  };
+  }
+  ]);
 }

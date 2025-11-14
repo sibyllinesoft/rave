@@ -310,10 +310,49 @@ in
           description = "Verify GitLab TLS certificates when calling the API.";
         };
       };
+
+      databaseSeedFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = ''
+          Optional SQL dump applied to the `gitlab` PostgreSQL database before GitLab's migrations run.
+          Populate this with a schema-only `pg_dump` from a previously migrated instance to skip the costly
+          first-boot migration step. When unset, the service falls back to the normal migration flow.
+        '';
+        example = ./artifacts/gitlab/schema.sql;
+      };
     };
   };
   
-  config = mkIf cfg.enable ({
+  config = mkIf cfg.enable (
+    let
+      seedWanted = cfg.databaseSeedFile != null;
+      gitlabSeedScript =
+        if !seedWanted then null else
+        pkgs.writeShellScript "gitlab-db-seed.sh" ''
+          set -euo pipefail
+
+          SEED_FILE=${lib.escapeShellArg cfg.databaseSeedFile}
+          if [ ! -s "$SEED_FILE" ]; then
+            echo "GitLab seed file missing or empty at $SEED_FILE" >&2
+            exit 1
+          fi
+
+          while ! ${pkgs.postgresql_15}/bin/pg_isready -d gitlab >/dev/null 2>&1; do
+            sleep 2
+          done
+
+          HAS_SCHEMA="$(${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -d gitlab -tAc "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'schema_migrations';" || true)"
+
+          if [ -n "$HAS_SCHEMA" ]; then
+            echo "GitLab schema already present; skipping seed import."
+            exit 0
+          fi
+
+          echo "📥 Importing GitLab schema from $SEED_FILE ..."
+          ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -f "$SEED_FILE"
+        '';
+    in {
     assertions = lib.optionals (cfg.oauth.enable) [
       {
         assertion = cfg.oauth.clientId != null;
@@ -613,25 +652,24 @@ in
     ];
     
     # Service resource limits from P3
-    systemd.services.gitlab = lib.mkMerge [
-      {
-        serviceConfig = {
-          MemoryMax = "8G";
-          CPUQuota = "50%";
-          OOMScoreAdjust = "50";
-        };
-        environment = {
-          RAILS_RELATIVE_URL_ROOT = "/gitlab";
-          GITLAB_OMNIAUTH_FULL_HOST = cfg.publicUrl;
-        };
-        after = mkAfter [ "postgresql.service" redisUnit "generate-localhost-certs.service" ];
-        requires = mkAfter [ "postgresql.service" redisUnit ];
-      }
-      (mkIf cfg.useSecrets {
-        after = mkAfter [ "gitlab-password-setup.service" ];
-        requires = mkAfter [ "gitlab-password-setup.service" ];
-      })
-    ];
+    systemd.services.gitlab = {
+      serviceConfig = {
+        MemoryMax = "8G";
+        CPUQuota = "50%";
+        OOMScoreAdjust = "50";
+      };
+      environment = {
+        RAILS_RELATIVE_URL_ROOT = "/gitlab";
+        GITLAB_OMNIAUTH_FULL_HOST = cfg.publicUrl;
+      };
+      after = mkAfter [
+        "postgresql.service"
+        redisUnit
+        "generate-localhost-certs.service"
+        "gitlab-password-setup.service"
+      ];
+      requires = mkAfter [ "postgresql.service" redisUnit "gitlab-password-setup.service" ];
+    };
     
     systemd.services.gitlab-runner.serviceConfig = mkIf config.services.rave.gitlab.runner.enable {
       MemoryMax = "4G";
@@ -639,12 +677,19 @@ in
       OOMScoreAdjust = "100";
     };
 
-    systemd.services."gitlab-db-config".unitConfig = mkMerge [
-      { OnSuccess = [ "gitlab-autostart.service" ]; }
-      (mkIf cfg.useSecrets {
-        ConditionPathExists = dbPasswordFile;
-      })
-    ];
+    systemd.services."gitlab-db-config" =
+      {
+        unitConfig = mkMerge [
+          { OnSuccess = [ "gitlab-autostart.service" ]; }
+          (mkIf cfg.useSecrets {
+            ConditionPathExists = dbPasswordFile;
+          })
+        ];
+      }
+      // (mkIf seedWanted {
+        after = mkAfter [ "gitlab-db-seed.service" ];
+        requires = mkAfter [ "gitlab-db-seed.service" ];
+      });
 
     systemd.services."gitlab-autostart" = {
       description = "Ensure GitLab starts after database configuration";
@@ -691,11 +736,11 @@ in
       };
     };
 
-    systemd.services.gitlab-password-setup = mkIf cfg.useSecrets {
+    systemd.services.gitlab-password-setup = {
       description = "Set GitLab database password from SOPS secret";
       wantedBy = [ "multi-user.target" ];
-      after = [ "postgresql.service" "sops-init.service" ];
-      requires = [ "postgresql.service" "sops-init.service" ];
+      after = [ "postgresql.service" ] ++ lib.optionals cfg.useSecrets [ "sops-init.service" ];
+      requires = [ "postgresql.service" ] ++ lib.optionals cfg.useSecrets [ "sops-init.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -737,6 +782,20 @@ in
     systemd.services.postgresql = {
       after = mkAfter [ "postgres-gitlab-group-fix.service" ];
       wants = mkAfter [ "postgres-gitlab-group-fix.service" ];
+    };
+    systemd.services.gitlab-db-seed = mkIf seedWanted {
+      description = "Preload GitLab database from seed file";
+      wantedBy = [ "gitlab-db-config.service" ];
+      before = [ "gitlab-db-config.service" ];
+      after =
+        [ "postgresql.service" "gitlab-password-setup.service" ]
+        ++ lib.optionals cfg.useSecrets [ "sops-init.service" ];
+      requires = [ "postgresql.service" "gitlab-password-setup.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = gitlabSeedScript;
+      };
     };
   });
 }

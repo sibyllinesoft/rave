@@ -42,10 +42,10 @@ class OverrideManagerTests(unittest.TestCase):
         manager.ensure_initialized()
 
         overrides_root = self.repo_root / "config" / "overrides" / "global"
-        files_dir = overrides_root / "files" / "etc" / "nginx"
+        files_dir = overrides_root / "files" / "etc" / "traefik"
         files_dir.mkdir(parents=True, exist_ok=True)
-        nginx_conf = files_dir / "nginx.conf"
-        nginx_conf.write_text("events {}")
+        traefik_conf = files_dir / "dynamic.yaml"
+        traefik_conf.write_text("http: {}")
 
         systemd_file = overrides_root / "systemd" / "custom.service"
         systemd_file.parent.mkdir(parents=True, exist_ok=True)
@@ -66,8 +66,8 @@ class OverrideManagerTests(unittest.TestCase):
             },
             "patterns": [
                 {
-                    "match": "etc/nginx/**",
-                    "restart_units": ["nginx.service"],
+                    "match": "etc/traefik/**",
+                    "restart_units": ["traefik.service"],
                 },
                 {
                     "match": "etc/systemd/system/**",
@@ -82,9 +82,9 @@ class OverrideManagerTests(unittest.TestCase):
         self.assertEqual(len(entries), 2)
 
         manifest_map = {entry["target_relpath"]: entry for entry in entries}
-        nginx_entry = manifest_map["etc/nginx/nginx.conf"]
-        self.assertIn("nginx.service", nginx_entry["restart_units"])
-        self.assertFalse(nginx_entry["daemon_reload"])
+        traefik_entry = manifest_map["etc/traefik/dynamic.yaml"]
+        self.assertIn("traefik.service", traefik_entry["restart_units"])
+        self.assertFalse(traefik_entry["daemon_reload"])
 
         systemd_entry = manifest_map["etc/systemd/system/custom.service"]
         self.assertTrue(systemd_entry["daemon_reload"])
@@ -93,7 +93,7 @@ class OverrideManagerTests(unittest.TestCase):
             names = tar.getnames()
 
         self.assertIn(".rave-manifest.json", names)
-        self.assertIn("files/etc/nginx/nginx.conf", names)
+        self.assertIn("files/etc/traefik/dynamic.yaml", names)
         self.assertIn("systemd/custom.service", names)
 
     def test_create_layer_with_priority_and_copy(self) -> None:
@@ -119,13 +119,24 @@ class OverrideManagerTests(unittest.TestCase):
         manager = OverrideManager(self.repo_root)
         manager.ensure_initialized()
 
-        result = manager.create_layer("preset-demo", presets=["nginx", "mattermost"])
-        self.assertEqual(result["presets"], ["nginx", "mattermost"])
+        result = manager.create_layer("preset-demo", presets=["traefik", "mattermost"])
+        self.assertEqual(result["presets"], ["traefik", "mattermost"])
 
         metadata = json.loads((self.repo_root / "config" / "overrides" / "preset-demo" / "metadata.json").read_text())
         matches = {pattern.get("match") for pattern in metadata.get("patterns", [])}
-        self.assertIn("etc/nginx/**", matches)
+        self.assertIn("etc/traefik/**", matches)
         self.assertIn("etc/mattermost/**", matches)
+
+    def test_nginx_preset_alias(self) -> None:
+        manager = OverrideManager(self.repo_root)
+        manager.ensure_initialized()
+
+        result = manager.create_layer("preset-alias", presets=["nginx"])
+        self.assertEqual(result["presets"], ["nginx"])
+
+        metadata = json.loads((self.repo_root / "config" / "overrides" / "preset-alias" / "metadata.json").read_text())
+        matches = {pattern.get("match") for pattern in metadata.get("patterns", [])}
+        self.assertIn("etc/traefik/**", matches)
 
     def test_create_layer_unknown_preset_raises(self) -> None:
         manager = OverrideManager(self.repo_root)

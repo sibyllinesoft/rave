@@ -3,7 +3,9 @@
 with lib;
 
 let
-  cfg = config.services.rave.nginx;
+  rawNginx = config.services.rave.nginx or {};
+  rawTraefik = config.services.rave.traefik or {};
+  cfg = if rawTraefik != {} then rawTraefik else rawNginx;
   behindPomerium = cfg.behindPomerium;
   backendPort = cfg.backendPort;
 
@@ -774,8 +776,8 @@ let
   };
 
 in
-{
-  options.services.rave.nginx = {
+let
+  commonOptions = {
     enable = mkEnableOption "Front-door nginx configuration for the RAVE environment";
 
     host = mkOption {
@@ -860,8 +862,12 @@ in
       systemd.services.nginx = {
         after = [ "generate-localhost-certs.service" ];
         requires = [ "generate-localhost-certs.service" ];
-      };
-    }
+  };
+in
+{
+  options.services.rave.nginx = commonOptions;
+  options.services.rave.traefik = commonOptions;
+};
     {
       services.nginx.virtualHosts."${host}" = primaryVirtualHost;
     }

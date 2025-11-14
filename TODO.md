@@ -347,9 +347,10 @@ You have now completed a major refactoring. To ensure everything is working:
 You now have a clean, stable, and maintainable repository that fully leverages the power of NixOS. The "Golden Path" is established. Your project is ready to go.
 
 ### ⚠️ Active Issue: nginx front-door vhost regression (November 2025)
+> Status: Front door now runs on Traefik. Revisit or remove this section once the Traefik module stabilizes.
 
 **What broke**
-- `infra/nixos/modules/services/nginx/default.nix` still assigns the entire `services.nginx.virtualHosts` attrset in one shot.
+- `infra/nixos/modules/services/traefik/default.nix` still assigns the entire `services.nginx.virtualHosts` attrset in one shot.
 - Other modules (notably `infra/nixos/modules/services/nats/default.nix`) assign to the same option later in the module list, so our primary `"${host}"` entry (dashboard + GitLab/Mattermost/etc.) gets overwritten. The resulting `/nix/store/*-nginx.conf` in the VM only exposes `/nginx_status` (and `/nats/` under `rave.local`).
 - Symptom: `https://localhost:28443/` never comes up because port 443 isn’t configured in the final nginx conf.
 
@@ -369,5 +370,5 @@ You now have a clean, stable, and maintainable repository that fully leverages t
 3. Rebuild (`nix build .#production`), recreate `prod-test`, and confirm `curl -k https://localhost:28443/` serves the new dashboard.
 
 **Helpful references**
-- The last known-good version of the module is available via `git show HEAD^:infra/nixos/modules/services/nginx/default.nix`.
+- The last known-good version of the module is available via `git show HEAD^:infra/nixos/modules/services/traefik/default.nix`.
 - Keep an eye on other modules that still assign to `services.nginx.virtualHosts` (NATS, legacy overlays) to ensure they merge cleanly after the refactor.

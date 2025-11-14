@@ -20,13 +20,13 @@ qemu-system-x86_64 \
 
 echo "VM started. Waiting for services..."
 
-# Wait for nginx to respond
+# Wait for Traefik to respond
 for i in {1..30}; do
     if curl -s --connect-timeout 3 http://localhost:8080/health > /dev/null 2>&1; then
-        echo "✅ nginx is responding!"
+        echo "✅ Traefik ingress is responding!"
         break
     fi
-    echo "Waiting for nginx... ($i/30)"
+    echo "Waiting for Traefik... ($i/30)"
     sleep 2
 done
 
@@ -34,7 +34,7 @@ echo ""
 echo "🎉 RAVE HTTPS Infrastructure Demo Ready!"
 echo ""
 echo "✅ Problem Solved: 'connection reset/closed' issue fixed"
-echo "✅ nginx running reliably with automated certificate generation"
+echo "✅ Traefik running reliably with automated certificate generation"
 echo "✅ Self-signed HTTPS certificates created automatically"
 echo ""
 echo "🌐 Access Points:"
@@ -44,7 +44,7 @@ echo "  HTTP Alt:    http://localhost:8081/"
 echo ""
 echo "📋 What This Demonstrates:"
 echo "  • Automated SSL certificate generation for local dev"
-echo "  • nginx configured with proper HTTPS support"  
+echo "  • Traefik configured with proper HTTPS support"  
 echo "  • Reliable service startup without connection resets"
 echo "  • Foundation for GitLab or any web application"
 echo ""

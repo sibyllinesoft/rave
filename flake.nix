@@ -95,12 +95,19 @@
                 services.rave.pomerium.idp =
                   (config.services.rave.pomerium.idp or {}) // idpAttrs;
               });
+          pomeriumDisableEnv = builtins.getEnv "RAVE_DISABLE_POMERIUM";
+          pomeriumDisableModule =
+            if pomeriumDisableEnv == "" then ({ ... }: {})
+            else ({ lib, ... }: {
+              services.rave.pomerium.enable = lib.mkForce false;
+            });
           modules =
             [
               configModule
               sops-nix.nixosModules.sops
               "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
               pomeriumOverrideModule
+              pomeriumDisableModule
               ({ lib, ... }: {
                 services.rave.ports.https = httpsPort;
                 nixpkgs.overlays = [ authOverlay goOverlay ];

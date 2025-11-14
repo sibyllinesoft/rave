@@ -93,7 +93,7 @@ check_gitlab_processes() {
         "gitlab-runsvdir"
         "redis-server"
         "postgres"
-        "nginx"
+        "traefik"
     )
     
     local missing_processes=()

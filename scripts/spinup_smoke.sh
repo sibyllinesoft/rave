@@ -969,7 +969,7 @@ generate_boot_transcript() {
     BOOT_TRANSCRIPT[overall_status]="$overall_status"
     
     # Create service health summary
-    BOOT_TRANSCRIPT[service_health]="{\"postgresql\":\"configured\",\"gitlab\":\"configured\",\"matrix\":\"configured\",\"grafana\":\"configured\",\"nginx\":\"configured\"}"
+    BOOT_TRANSCRIPT[service_health]="{\"postgresql\":\"configured\",\"gitlab\":\"configured\",\"matrix\":\"configured\",\"grafana\":\"configured\",\"traefik\":\"configured\"}"
     
     # Generate final transcript
     local transcript=$(cat << EOF

@@ -46,12 +46,6 @@ let
         static_configs = [{ targets = [ (targetStr cfg.exporters.node.port) ]; }];
       }
     ]
-    ++ optionals cfg.exporters.nginx.enable [
-      {
-        job_name = "nginx";
-        static_configs = [{ targets = [ (targetStr cfg.exporters.nginx.port) ]; }];
-      }
-    ]
     ++ optionals cfg.exporters.postgres.enable [
       {
         job_name = "postgres";
@@ -70,16 +64,6 @@ let
         static_configs = [{ targets = [ (targetStr cfg.nats.metricsPort) ]; }];
       }
     ];
-
-  grafanaHost = cfg.nginx.host;
-  nginxManagedByRave =
-    if config ? services && config.services ? rave && config.services.rave ? nginx && config.services.rave.nginx ? enable
-    then config.services.rave.nginx.enable
-    else false;
-  monitoringProxyEnabled = cfg.nginx.addProxyLocations && !nginxManagedByRave;
-
-  grafanaLocationAttr = grafanaLocation;
-  promLocationAttr = promLocation;
 
   fileProviderValue = path: "$__file{${path}}";
   postgresExporterNeedsSecret = cfg.exporters.postgres.enable && cfg.exporters.postgres.dsnEnvFile != null;
@@ -199,7 +183,7 @@ in
       publicPath = mkOption {
         type = types.str;
         default = "/prometheus/";
-        description = "Path Grafana/Prometheus are exposed under in nginx.";
+        description = "Path Grafana/Prometheus are exposed under in the ingress proxy.";
       };
 
       extraScrapeConfigs = mkOption {
@@ -225,19 +209,6 @@ in
           type = types.listOf types.str;
           default = [ "systemd" "processes" "cpu" "meminfo" "diskstats" "filesystem" ];
           description = "Collectors to enable for node exporter.";
-        };
-      };
-
-      nginx = {
-        enable = mkOption {
-          type = types.bool;
-          default = true;
-          description = "Enable nginx exporter scrape target.";
-        };
-        port = mkOption {
-          type = types.int;
-          default = 9113;
-          description = "Nginx exporter port.";
         };
       };
 
@@ -291,18 +262,6 @@ in
       };
     };
 
-    nginx = {
-      host = mkOption {
-        type = types.str;
-        default = "localhost";
-        description = "Virtual host key to augment with /grafana and /prometheus locations.";
-      };
-      addProxyLocations = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Whether to inject nginx proxy locations for Grafana and Prometheus.";
-      };
-    };
   };
 
   config = mkIf cfg.enable {
@@ -321,11 +280,6 @@ in
       enable = true;
       port = cfg.exporters.node.port;
       enabledCollectors = cfg.exporters.node.collectors;
-    };
-
-    services.prometheus.exporters.nginx = mkIf cfg.exporters.nginx.enable {
-      enable = true;
-      port = cfg.exporters.nginx.port;
     };
 
     services.prometheus.exporters.postgres = mkIf cfg.exporters.postgres.enable (

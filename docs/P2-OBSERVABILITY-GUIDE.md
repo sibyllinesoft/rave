@@ -16,13 +16,13 @@ Phase P2 implements comprehensive CI/CD automation and observability for RAVE, b
 ### P2.2: NixOS VM Tests ✅
 - **Test Framework**: `tests/rave-vm.nix` using NixOS test driver
 - **Comprehensive Coverage**: 12 test suites covering system, security, and integration
-- **Service Health**: Validates all systemd services (nginx, grafana, postgresql, etc.)
+- **Service Health**: Validates all systemd services (Traefik, grafana, postgresql, etc.)
 - **HTTP Endpoints**: Tests all service endpoints with proper response validation
 - **Security Validation**: TLS, SSH, firewall, and secrets management verification
 
 ### P2.3: Prometheus + Grafana + Metrics ✅
 - **Prometheus Stack**: 30-day retention, memory-limited (512MB max)
-- **Exporters**: Node, nginx, PostgreSQL, and custom webhook metrics
+- **Exporters**: Node, PostgreSQL, and custom webhook metrics (Traefik monitored via journald)
 - **Dashboards**: 3 comprehensive monitoring dashboards (JSON format)
 - **OpenTelemetry**: Tracing integration with task_id correlation
 - **Pushgateway**: Agent job metrics collection endpoint
@@ -49,7 +49,7 @@ Phase P2 implements comprehensive CI/CD automation and observability for RAVE, b
 ├─────────────────────────────────────────────────────────────┤
 │  Enhanced Services (from P1)                               │
 │  ├── Webhook Dispatcher (now with metrics)                │
-│  ├── nginx (with monitoring endpoints)                    │
+│  ├── Traefik (ingress with dashboard + TLS)               │
 │  ├── Grafana (OIDC + provisioned dashboards)             │
 │  └── PostgreSQL (with metrics export)                     │
 └─────────────────────────────────────────────────────────────┘
@@ -66,7 +66,7 @@ Phase P2 implements comprehensive CI/CD automation and observability for RAVE, b
 - Alert status and network activity
 
 **Key Metrics**:
-- `up{job=~"node|nginx|grafana|webhook-dispatcher"}` - Service availability
+- `up{job=~"node|grafana|webhook-dispatcher"}` - Service availability
 - `(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100` - Memory usage
 - `rate(webhook_events_processed_total[5m])` - Event processing rate
 
@@ -210,7 +210,7 @@ webhook_events_deduplicated_total - Deduplicated events
 webhook_dispatcher_uptime_seconds - Service uptime gauge
 ```
 
-### Service Metrics (nginx, PostgreSQL, Grafana)
+### Service Metrics (Traefik ingress, PostgreSQL, Grafana)
 - HTTP request rates and response times
 - Database connection counts and query performance  
 - Grafana user sessions and dashboard usage
@@ -263,7 +263,7 @@ nix run .#p2-production  # Full observability + P1 security
 
 ### Network Ports
 - **22**: SSH (key-only authentication)
-- **3002**: HTTPS (nginx with all services)
+- **3002**: HTTPS (Traefik with all services)
 - **9090**: Prometheus (internal access only)
 - **9100**: Node Exporter (metrics collection)
 

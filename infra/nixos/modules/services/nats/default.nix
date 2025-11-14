@@ -6,8 +6,6 @@ with lib;
 
 let
   cfg = config.services.rave.nats;
-  nginxCfg = config.services.rave.nginx or {};
-  nginxHost = nginxCfg.host or "localhost";
   
   natsConfig = pkgs.writeText "nats-server.conf" ''
     # Server configuration
@@ -308,19 +306,5 @@ in {
       };
     };
     }
-    (mkIf (nginxCfg.enable or false) {
-      services.nginx.virtualHosts."${nginxHost}".locations."/nats/" = {
-        proxyPass = "http://127.0.0.1:${toString cfg.httpPort}/";
-        extraConfig = ''
-          proxy_set_header Host $host;
-          proxy_set_header X-Real-IP $remote_addr;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          
-          # Add NATS monitoring headers
-          proxy_set_header NATS-Server "${cfg.serverName}";
-        '';
-      };
-    })
   ]);
 }

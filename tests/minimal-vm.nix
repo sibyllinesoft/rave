@@ -40,7 +40,7 @@ testLib.runTest {
 
     machine.wait_until_succeeds("systemctl is-active gitlab.service", timeout=600)
     machine.wait_until_succeeds("systemctl is-active postgresql.service", timeout=300)
-    machine.wait_until_succeeds("systemctl is-active nginx.service", timeout=300)
+    machine.wait_until_succeeds("systemctl is-active traefik.service", timeout=300)
 
     machine.wait_until_succeeds(
       "curl -k -sSf --max-time 45 https://localhost/gitlab/-/health",

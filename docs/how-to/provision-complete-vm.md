@@ -59,6 +59,9 @@ Pick the profile that matches your use case:
 | Demo | `nix build .#demo` | Lightweight showcase build (observability/productivity extras disabled). |
 | Production (custom port) | `nix build '.#productionWithPort.override { httpsPort = 9443; }'` | Same as production but with a baked-in HTTPS port override. |
 
+Optional toggles:
+- `RAVE_DISABLE_POMERIUM=1` – skip the Pomerium proxy so Traefik (and Authentik) terminate TLS directly.
+
 Each build drops a qcow2 under `result/`. Copy it into the releases bucket so future commands can discover it automatically:
 ```bash
 STAMP="rave-${PROFILE}-$(date +%Y%m%d).qcow2"
@@ -125,6 +128,9 @@ This wraps the same flake output, writes the stamped qcow to `artifacts/qcow/rel
 3. Record the build metadata (flake revision, commit SHA, secret set) in `docs/refactor/notes.md` or a release note.
 4. Run `scripts/repo/hygiene-check.sh` to ensure the artifact path remains untracked.
 
+> 💡 GitLab taking too long on first boot? Follow `docs/how-to/gitlab-schema-seed.md` to capture
+> a schema-only dump and set `services.rave.gitlab.databaseSeedFile`, which skips the heavy migration step on subsequent builds.
+
 ## Troubleshooting
 | Symptom | Fix |
 | --- | --- |
@@ -137,3 +143,4 @@ This wraps the same flake output, writes the stamped qcow to `artifacts/qcow/rel
 - `docs/tutorials/working-setup.md` – end-to-end walkthrough for local devs.
 - `PRODUCTION-SECRETS-GUIDE.md` (legacy) – historical context on secret hardening.
 - `COMPLETE-BUILD.md` (legacy) – architecture deep dive for the full VM.
+- `docs/how-to/authentik.md` – enable the optional Authentik IdP layer and disable Pomerium when you only need Traefik.

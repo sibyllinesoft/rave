@@ -9,7 +9,7 @@ TIMEOUT_SECONDS=10
 EXTERNAL_TEST_HOSTS=("8.8.8.8" "1.1.1.1")
 INTERNAL_SERVICES=(
     "localhost:22"      # SSH
-    "localhost:3002"    # HTTPS nginx
+    "localhost:3002"    # HTTPS Traefik
     "localhost:5432"    # PostgreSQL
     "localhost:3030"    # Grafana
     "localhost:9090"    # Prometheus
