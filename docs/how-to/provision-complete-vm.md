@@ -17,7 +17,7 @@ This how-to combines the old "COMPLETE-BUILD" and "PRODUCTION-SECRETS-GUIDE" pla
    ```
 2. Ensure CLI requirements are installed (only needs to be done once per host):
    ```bash
-   cd cli && pip install -r requirements.txt && cd -
+   cd apps/cli && pip install -r requirements.txt && cd -
    ```
 3. Export your Age key so `sops` and Nix builds can decrypt secrets:
    ```bash
@@ -59,29 +59,47 @@ Pick the profile that matches your use case:
 | Demo | `nix build .#demo` | Lightweight showcase build (observability/productivity extras disabled). |
 | Production (custom port) | `nix build '.#productionWithPort.override { httpsPort = 9443; }'` | Same as production but with a baked-in HTTPS port override. |
 
-Each build drops a qcow2 under `result/`. Copy it to `artifacts/` (gitignored) with a meaningful name:
+Each build drops a qcow2 under `result/`. Copy it into the releases bucket so future commands can discover it automatically:
 ```bash
-cp result/nixos.qcow2 artifacts/rave-${PROFILE}-$(date +%Y%m%d).qcow2
+STAMP="rave-${PROFILE}-$(date +%Y%m%d).qcow2"
+mkdir -p artifacts/qcow/releases
+cp result/nixos.qcow2 "artifacts/qcow/releases/${STAMP}"
+```
+Update (or create) the per-profile symlink so `rave vm create`/`launch-local` can reuse it:
+```bash
+mkdir -p "artifacts/qcow/${PROFILE}"
+ln -sf "../releases/${STAMP}" "artifacts/qcow/${PROFILE}/rave-${PROFILE}-localhost.qcow2"
 ```
 
-Prefer the CLI? Run `rave vm build-image --profile development` (or omit `--profile` for production) so the images land alongside the usual stamped filenames.
-Use `rave vm list-profiles` any time you need to see the current set of supported profiles/attributes.
+Prefer the CLI? Run `rave vm build-image --profile development` (or omit `--profile` for production). It now performs the copy + symlink update for you and stores everything under `artifacts/qcow/`. Use `rave vm list-profiles` any time you need to see the current set of supported profiles/attributes.
 
-When iterating quickly you can reuse the previously stamped qcow without kicking off another `nix build` by passing `--skip-build` to `rave vm create`. The command will copy the symlinked profile image (e.g., `rave-production-localhost.qcow2`) and continue without emitting the “⚠️ Build failed” fallback messages.
+When you need Pomerium fronted by Google instead of GitLab, pass the new IdP options so the build picks up the correct OAuth metadata:
+
+```bash
+rave vm build-image \
+  --profile production \
+  --idp-provider google \
+  --idp-client-id "$GOOGLE_OAUTH_CLIENT_ID" \
+  --idp-client-secret "$GOOGLE_OAUTH_CLIENT_SECRET"
+```
+
+If the credentials already live in SOPS, swap `--idp-client-secret` for `--idp-secret-selector '["pomerium"]["google-client-secret"]'`. See `docs/how-to/oauth-google.md` for the end‑to‑end IdP flow.
+
+When iterating quickly you can reuse the previously stamped qcow without kicking off another `nix build` by passing `--skip-build` to `rave vm create`. The command will copy the symlinked profile image (e.g., `artifacts/qcow/production/rave-production-localhost.qcow2`) and continue without emitting the “⚠️ Build failed” fallback messages.
 
 ### Option B: CLI helper
 ```bash
 rave vm build-image --profile production
 ```
-This wraps the same flake output and drops the qcow2 under `run/`.
+This wraps the same flake output, writes the stamped qcow to `artifacts/qcow/releases/`, and refreshes `artifacts/qcow/production/rave-production-localhost.qcow2`.
 
 ## Step 4 – Launch & Verify
 1. Start the VM (CLI preferred):
    ```bash
    rave vm launch-local \
      --profile production \
-     --image artifacts/rave-production-YYYYMMDD.qcow2 \
-     --https-port 18221 --ssh-port 2224
+     --image artifacts/qcow/releases/rave-production-YYYYMMDD.qcow2 \
+     --https-port 8443 --ssh-port 2224
    ```
    For the lightweight image, use `--profile development` (and the matching qcow2 path). This profile omits Penpot, Outline, and n8n to keep resource usage low.
 2. Wait for GitLab to finish first-boot migrations (≈5–7 minutes). Watch logs with:
@@ -89,11 +107,11 @@ This wraps the same flake output and drops the qcow2 under `run/`.
    rave vm logs localhost gitlab --follow
    ```
 3. Confirm core endpoints:
-   - Dashboard: `https://localhost:18221/`
-   - GitLab: `https://localhost:18221/gitlab/`
-   - Mattermost: `https://localhost:18221/mattermost/`
-   - Grafana: `https://localhost:18221/grafana/`
-   - Prometheus: `https://localhost:18221/prometheus/`
+   - Dashboard: `https://localhost:8443/`
+   - GitLab: `https://localhost:8443/gitlab/`
+   - Mattermost: `https://localhost:8443/mattermost/`
+   - Grafana: `https://localhost:8443/grafana/`
+   - Prometheus: `https://localhost:8443/prometheus/`
 
 4. SSH for deeper checks:
    ```bash
@@ -112,7 +130,7 @@ This wraps the same flake output and drops the qcow2 under `run/`.
 | --- | --- |
 | `sops` fails during build | Confirm `SOPS_AGE_KEY_FILE` points to the private key and that the key contains the recipient listed in `config/secrets.yaml`. |
 | GitLab stuck migrating | SSH in and inspect `journalctl -u gitlab.service -f`; verify the database password secret exists under `/run/secrets/gitlab/db-password`. |
-| Ports already in use | Stop other VMs or override host ports via `rave vm launch-local --https-port 19xxx`. |
+| Ports already in use | Stop other VMs or override host ports via `rave vm launch-local --https-port 9443`. |
 | Large qcow2 accidentally staged | Delete the staged file, add it to `artifacts/`, rerun the hygiene script, and recommit. |
 
 ## Related Docs

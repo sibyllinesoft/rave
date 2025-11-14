@@ -4,7 +4,7 @@ This guide explains how to wire external OAuth/OIDC providers (Google or GitHub)
 
 ## Prerequisites
 
-- RAVE CLI installed and on your `PATH` (`pip install -r cli/requirements.txt`).
+- RAVE CLI installed and on your `PATH` (`pip install -r apps/cli/requirements.txt`).
 - VM(s) already created via `rave vm create` and currently running (`rave vm start <company>`).
 - `sops` available with access to the age key that can decrypt `config/secrets.yaml`.
 - For Google Cloud: the `gcloud` CLI authenticated against the project that will host the OAuth client.
@@ -54,7 +54,7 @@ If you do not want loopback addresses, add `--no-loopback` to the command.
    ```
 
 5. For long-term persistence, update the NixOS config so future rebuilds embed the correct client ID:
-   - Edit `nixos/configs/complete-production.nix` and set `services.rave.gitlab.oauth.clientId = "<client-id>";`.
+   - Edit `infra/nixos/configs/complete-production.nix` and set `services.rave.gitlab.oauth.clientId = "<client-id>";`.
    - Commit the change so future builds pick up the ID.
 
 ### GitHub
@@ -113,11 +113,11 @@ Example mapping (your ports may differ):
 
 | Company           | HTTPS Port |
 |-------------------|------------|
-| mattermost-final  | 8221       |
-| demo-company      | 8111       |
-| rave-cli-test     | 8181       |
+| mattermost-final  | 8443       |
+| demo-company      | 9443       |
+| rave-cli-test     | 8743       |
 
-Use these ports when constructing production callback URLs (e.g., `https://gitlab.example.com:8221`).
+Use these ports when constructing production callback URLs (e.g., `https://gitlab.example.com:8443`).
 
 ## 6. CLI Reference
 

@@ -6,10 +6,15 @@ set -euo pipefail
 echo "🧪 Testing GitLab-Mattermost Integration"
 echo "======================================="
 
+HTTPS_PORT="${HTTPS_PORT:-8443}"
+BASE_URL="https://localhost:${HTTPS_PORT}"
+MATTERMOST_URL="${BASE_URL}/mattermost/"
+GITLAB_URL="${BASE_URL}/gitlab/"
+
 # Check if VM is running
 if ! curl -s -f http://localhost:8889/ > /dev/null 2>&1; then
     echo "❌ VM is not accessible at localhost:8889"
-    echo "Please start the VM first using: ./cli/rave vm start <project-name>"
+    echo "Please start the VM first using: ./apps/cli/rave vm start <project-name>"
     exit 1
 fi
 
@@ -17,16 +22,16 @@ echo "✅ VM is accessible"
 
 # Test GitLab accessibility
 echo "🦊 Testing GitLab..."
-if curl -k -s -f https://localhost:18221/gitlab/ > /dev/null 2>&1; then
-    echo "✅ GitLab is accessible at https://localhost:18221/gitlab/"
+if curl -k -s -f "$GITLAB_URL" > /dev/null 2>&1; then
+    echo "✅ GitLab is accessible at $GITLAB_URL"
 else
     echo "⚠️  GitLab may still be starting up"
 fi
 
 # Test Mattermost accessibility  
 echo "💬 Testing Mattermost..."
-if curl -k -s -f https://localhost:18231/mattermost/ > /dev/null 2>&1; then
-    echo "✅ Mattermost is accessible at https://localhost:18231/mattermost/"
+if curl -k -s -f "$MATTERMOST_URL" > /dev/null 2>&1; then
+    echo "✅ Mattermost is accessible at $MATTERMOST_URL"
 else
     echo "⚠️  Mattermost may still be starting up"
 fi
@@ -77,8 +82,8 @@ echo ""
 echo "🎯 Integration Test Complete!"
 echo ""
 echo "💡 To test the integration:"
-echo "1. Visit GitLab: https://localhost:18221/gitlab/"  
-echo "2. Visit Mattermost: https://localhost:18231/mattermost/"
+echo "1. Visit GitLab: $GITLAB_URL"  
+echo "2. Visit Mattermost: $MATTERMOST_URL"
 echo "3. Sign into Mattermost using GitLab OAuth"
 echo "4. Check the 'builds' channel for CI notifications"
 echo "5. Create a project in GitLab and push commits to trigger CI"

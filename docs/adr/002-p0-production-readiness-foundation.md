@@ -263,7 +263,7 @@ services.penpot = {
 
 - [ADR-001: VM Build System Selection](./001-vm-build-system.md)
 - [RAVE Production Readiness Plan](../../TODO.md)
-- [NixOS Manual - Security](https://nixos.org/manual/nixos/stable/index.html#ch-security)
+- [NixOS Manual - Security](https://nixos.org/manual/infra/nixos/stable/index.html#ch-security)
 - [OIDC Specification](https://openid.net/connect/)
 - [ACME Protocol](https://tools.ietf.org/html/rfc8555)
 

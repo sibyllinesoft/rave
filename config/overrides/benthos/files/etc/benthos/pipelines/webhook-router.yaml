@@ -1,0 +1,55 @@
+input:
+  http_server:
+    address: 0.0.0.0:4195
+    path: /hooks/{source}
+    timeout: 15s
+    allowed_verbs: [ POST ]
+    ws_path_disabled: true
+    cors:
+      enabled: true
+      allowed_origins:
+        - "*"
+
+pipeline:
+  processors:
+    - bloblang: |
+        let raw_path = meta("http_server_request_path").catch("/hooks/generic")
+        let source = match(raw_path, '/hooks/(?P<source>[^/]+)').source.or(meta("http_header:X-Webhook-Source")).or("generic")
+        let parsed = this.parse_json().catch(this.parse_yaml().catch(null))
+        let normalized = parsed ?? { "raw": content().string() }
+        let subject_prefix = "webhooks"
+        root = {
+          "source": source,
+          "received_at": now(),
+          "path": raw_path,
+          "method": meta("http_server_request_verb"),
+          "headers": meta_prefix("http_header").mapping_each(k -> @.get(k)),
+          "body": normalized,
+        }
+        meta nats_subject = subject_prefix + "." + source
+    - catch:
+        - log:
+            level: ERROR
+            fields:
+              error: ${!error()}
+              body: ${!content()}
+            message: "failed to normalize webhook payload"
+
+output:
+  broker:
+    pattern: fan_out
+    outputs:
+      - nats:
+          urls:
+            - nats://127.0.0.1:4222
+          subject: ${! meta("nats_subject") }
+          max_in_flight: 64
+          jetstream:
+            stream: webhooks
+            max_inflight: 64
+      - http_client:
+          url: http://127.0.0.1:5678/webhook/benthos
+          verb: POST
+          headers:
+            Content-Type: application/json
+          timeout: 10s

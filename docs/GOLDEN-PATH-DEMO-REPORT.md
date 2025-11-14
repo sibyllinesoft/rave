@@ -8,13 +8,13 @@ Successfully built and launched the newly refactored "Golden Path" NixOS system,
 ## 📋 Phase 1: Build Success ✅
 - **Command Used**: `nix build .#development`
 - **Result**: Successfully built 5.86GB NixOS VM image
-- **Configuration**: `nixos/configs/development.nix` using new modular structure
+- **Configuration**: `infra/nixos/configs/development.nix` using new modular structure
 - **Build Time**: ~4 minutes with cached dependencies
 - **Output**: `result/nixos.qcow2` - Ready-to-run VM image
 
 ### Modular Architecture Highlights
 ```
-nixos/
+infra/nixos/
 ├── configs/
 │   ├── development.nix    ← HTTP-only, minimal security
 │   ├── production.nix     ← Full security hardening

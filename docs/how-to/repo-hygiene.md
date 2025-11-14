@@ -20,5 +20,6 @@ scripts/repo/hygiene-check.sh
 
 ## Follow‑up Actions
 - Move flagged binaries into `artifacts/` (ignored) or publish them as release assets.
+- Keep per-profile qcow symlinks under `artifacts/qcow/<profile>/` and store stamped images in `artifacts/qcow/releases/` so the CLI can find them.
 - Update `.gitignore` if a new scratch directory is meant to stay local.
 - If a file must remain tracked, document the reason in `docs/refactor/notes.md` so future hygiene passes know it is intentional.

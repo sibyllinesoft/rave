@@ -225,9 +225,9 @@ phase1_configuration_validation() {
     # Test 1.4: Required service modules
     log_info "Checking required service modules..."
     local required_modules=(
-        "nixos/gitlab.nix"
-        "nixos/prometheus.nix"
-        "nixos/grafana.nix"
+        "infra/nixos/gitlab.nix"
+        "infra/nixos/prometheus.nix"
+        "infra/nixos/grafana.nix"
         "services/matrix-bridge"
     )
     
@@ -426,7 +426,7 @@ phase5_oidc_authentication_validation() {
     
     # Test 5.3: Grafana OIDC integration
     log_info "Validating Grafana OIDC integration..."
-    if grep -r "oauth" "$PROJECT_DIR/nixos/grafana.nix" >/dev/null 2>&1; then
+    if grep -r "oauth" "$PROJECT_DIR/infra/nixos/grafana.nix" >/dev/null 2>&1; then
         test_result "Grafana OIDC integration" "PASS" "OAuth configuration found in Grafana config"
     else
         test_result "Grafana OIDC integration" "WARN" "Grafana OAuth configuration needs verification"

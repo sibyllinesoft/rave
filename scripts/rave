@@ -249,7 +249,7 @@ cert_real() {
     
     # This would require rebuilding the VM with ACME settings
     echo -e "${YELLOW}💡 To use real certificates:${NC}"
-    echo "1. Update nixos/configs/development.nix:"
+    echo "1. Update infra/nixos/configs/development.nix:"
     echo "   rave.certificates.useACME = true;"
     echo "   rave.certificates.domain = \"$domain\";"
     echo "   rave.certificates.email = \"$email\";"

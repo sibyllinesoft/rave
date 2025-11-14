@@ -122,6 +122,6 @@ flake.nix, flake.lock            # Nix flake definition and lock file
 ## References
 
 - [TODO.md Production Readiness Plan](/TODO.md)
-- [NixOS Manual](https://nixos.org/manual/nixos/stable/)
+- [NixOS Manual](https://nixos.org/manual/infra/nixos/stable/)
 - [nixos-generators Documentation](https://github.com/nix-community/nixos-generators)
 - Current NixOS configuration: `simple-ai-config.nix`

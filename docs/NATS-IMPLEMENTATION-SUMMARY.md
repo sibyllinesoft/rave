@@ -9,20 +9,20 @@
 **What Was Delivered:**
 
 1. **Native NixOS Service Module**
-   - 📁 `nixos/modules/services/nats/default.nix` - Complete service definition
+   - 📁 `infra/nixos/modules/services/nats/default.nix` - Complete service definition
    - 🔧 Configurable options for development and production
    - 🛡️ SystemD security hardening built-in
    - 📊 Integrated monitoring and health checks
 
 2. **Development Configuration**
-   - 📝 Updated `nixos/configs/modular-development.nix`
+   - 📝 Updated `infra/nixos/configs/modular-development.nix`
    - 🚀 Server: `rave-dev-nats` on port 4222
    - 🐛 Debug logging enabled for development
    - 🔓 No authentication (simplified development)
    - 💾 JetStream: 128MB memory, 512MB storage
 
 3. **Production Configuration**
-   - 📝 Updated `nixos/configs/modular-production.nix`
+   - 📝 Updated `infra/nixos/configs/modular-production.nix`
    - 🏭 Server: `rave-prod-nats` with high availability settings
    - 🔐 Authentication with role-based users (gitlab, matrix, monitoring)
    - 🎯 Resource limits: 512MB memory limit, 50% CPU quota
@@ -126,7 +126,7 @@
 ### Immediate Usage
 ```bash
 # Build development VM with NATS
-nix-build '<nixpkgs/nixos>' -A config.system.build.vm -I nixos-config=nixos/configs/modular-development.nix
+nix-build '<nixpkgs/nixos>' -A config.system.build.vm -I nixos-config=infra/nixos/configs/modular-development.nix
 
 # Start VM
 ./result/bin/run-*-vm
@@ -198,9 +198,9 @@ for await (const msg of sub) {
 
 ## 🔗 Quick Reference
 
-- **Configuration**: `nixos/modules/services/nats/default.nix`
-- **Development VM**: `nixos/configs/modular-development.nix`
-- **Production VM**: `nixos/configs/modular-production.nix`  
+- **Configuration**: `infra/nixos/modules/services/nats/default.nix`
+- **Development VM**: `infra/nixos/configs/modular-development.nix`
+- **Production VM**: `infra/nixos/configs/modular-production.nix`  
 - **Test Scripts**: `scripts/test-nats-config.sh`, `scripts/nats-jetstream-demo.sh`
 - **Documentation**: `docs/P7-NATS-JETSTREAM-SETUP.md`
 - **Client Port**: `rave.local:4222`

@@ -4,14 +4,14 @@ Your RAVE development environment now includes a complete integrated stack of de
 
 ## 🚀 Single Command Startup
 
-The `cli/rave` tool is the single supported entry point for building and running the integrated stack.
+The `apps/cli/rave` tool is the single supported entry point for building and running the integrated stack.
 
 ```bash
 # Build (or refresh) the QCOW image for the full environment
-./cli/rave vm build-image --profile production
+./apps/cli/rave vm build-image --profile production
 
 # Launch the VM locally with forwarded ports and secrets
-./cli/rave vm launch-local --profile production --name local-stack
+./apps/cli/rave vm launch-local --profile production --name local-stack
 ```
 
 Once launched, use the remaining `rave vm …` commands to manage the VM by name (`local-stack` in this example).
@@ -38,23 +38,23 @@ Once launched, use the remaining `rave vm …` commands to manage the VM by name
 
 ```bash
 # Build/update image (safe to run multiple times)
-./cli/rave vm build-image --profile production
+./apps/cli/rave vm build-image --profile production
 
 # Launch a disposable local VM
-./cli/rave vm launch-local --profile production --name local-stack
+./apps/cli/rave vm launch-local --profile production --name local-stack
 
 # Manage an existing VM definition
-./cli/rave vm start local-stack
-./cli/rave vm stop local-stack
-./cli/rave vm status local-stack
-./cli/rave vm logs local-stack --service nginx --follow
-./cli/rave vm ssh local-stack
+./apps/cli/rave vm start local-stack
+./apps/cli/rave vm stop local-stack
+./apps/cli/rave vm status local-stack
+./apps/cli/rave vm logs local-stack --service nginx --follow
+./apps/cli/rave vm ssh local-stack
 ```
 
 To inspect a specific service such as Penpot:
 
 ```bash
-./cli/rave vm logs local-stack --service penpot-backend --follow
+./apps/cli/rave vm logs local-stack --service penpot-backend --follow
 ```
 
 ## 🔗 Workflow Integration

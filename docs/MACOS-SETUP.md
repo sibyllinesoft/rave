@@ -51,7 +51,7 @@ nix develop
 
 3. **Check prerequisites:**
 ```bash
-./cli/rave prerequisites
+./apps/cli/rave prerequisites
 ```
 
 This will verify all required tools are available and show any warnings or missing components.
@@ -75,25 +75,25 @@ This will verify all required tools are available and show any warnings or missi
 
 ```bash
 # Check system compatibility
-./cli/rave prerequisites
+./apps/cli/rave prerequisites
 
 # Create SSH keypair (if needed)
 ssh-keygen -t ed25519 -f ~/.ssh/rave-key
 
 # Create company development VM  
-./cli/rave vm create my-company --keypair ~/.ssh/rave-key
+./apps/cli/rave vm create my-company --keypair ~/.ssh/rave-key
 
 # Start the VM
-./cli/rave vm start my-company
+./apps/cli/rave vm start my-company
 
 # Check VM status
-./cli/rave vm status my-company
+./apps/cli/rave vm status my-company
 
 # SSH into the VM
-./cli/rave vm ssh my-company
+./apps/cli/rave vm ssh my-company
 
 # Stop the VM
-./cli/rave vm stop my-company
+./apps/cli/rave vm stop my-company
 ```
 
 ### Port Forwarding
@@ -141,7 +141,7 @@ Access your VM services:
 
 **6. Port conflicts**
 - Solution: RAVE automatically assigns unique ports per VM
-- Check: `./cli/rave vm status --all` to see port assignments
+- Check: `./apps/cli/rave vm status --all` to see port assignments
 
 ### Performance Optimization
 
@@ -161,7 +161,7 @@ Access your VM services:
 2. **Use SSH keys for passwordless access**
 3. **Access services via port forwarding**
 4. **VM state is persistent** - stops/starts preserve data
-5. **Reset VM** when needed: `./cli/rave vm reset company-name`
+5. **Reset VM** when needed: `./apps/cli/rave vm reset company-name`
 
 ## Security Notes
 
@@ -172,8 +172,8 @@ Access your VM services:
 
 ## Getting Help
 
-- Check prerequisites: `./cli/rave prerequisites`
-- View VM logs: `./cli/rave vm logs company-name`
+- Check prerequisites: `./apps/cli/rave prerequisites`
+- View VM logs: `./apps/cli/rave vm logs company-name`
 - GitHub Issues: [Report problems here]
 
 ---

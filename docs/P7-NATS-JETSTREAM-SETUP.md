@@ -328,7 +328,7 @@ sudo systemctl status nats
 
 ```bash
 # 1. Update NixOS configuration
-sudo nano /etc/nixos/configuration.nix
+sudo nano /etc/infra/nixos/configuration.nix
 
 # 2. Rebuild system
 sudo nixos-rebuild switch
@@ -479,7 +479,7 @@ Security:
 ## 📚 Further Reading
 
 - [NATS JetStream Documentation](https://docs.nats.io/nats-concepts/jetstream)
-- [NixOS Service Configuration](https://nixos.org/manual/nixos/stable/#sec-writing-modules)
+- [NixOS Service Configuration](https://nixos.org/manual/infra/nixos/stable/#sec-writing-modules)
 - [SystemD Security Features](https://www.freedesktop.org/software/systemd/man/systemd.exec.html#Security)
 
 ## 🎯 Success Criteria: ✅ ACHIEVED

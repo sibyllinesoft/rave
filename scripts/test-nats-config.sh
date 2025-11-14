@@ -12,7 +12,7 @@ echo "📋 Testing NATS Module Syntax..."
 cd /home/nathan/Projects/rave
 
 # Check NATS module syntax
-if nix-instantiate --parse nixos/modules/services/nats/default.nix > /dev/null 2>&1; then
+if nix-instantiate --parse infra/nixos/modules/services/nats/default.nix > /dev/null 2>&1; then
     echo "✅ NATS module syntax is valid"
 else
     echo "❌ NATS module has syntax errors"
@@ -23,14 +23,14 @@ fi
 echo ""
 echo "📋 Testing Configuration File Syntax..."
 
-if nix-instantiate --parse nixos/configs/modular-development.nix > /dev/null 2>&1; then
+if nix-instantiate --parse infra/nixos/configs/modular-development.nix > /dev/null 2>&1; then
     echo "✅ Development config syntax is valid"
 else
     echo "❌ Development config has syntax errors"
     exit 1
 fi
 
-if nix-instantiate --parse nixos/configs/modular-production.nix > /dev/null 2>&1; then
+if nix-instantiate --parse infra/nixos/configs/modular-production.nix > /dev/null 2>&1; then
     echo "✅ Production config syntax is valid"
 else
     echo "❌ Production config has syntax errors"
@@ -93,7 +93,7 @@ echo ""
 echo "✅ NATS JetStream configuration validation complete!"
 echo ""
 echo "🚀 Next Steps:"
-echo "  1. Build VM with: nix-build nixos/configs/modular-development.nix"
+echo "  1. Build VM with: nix-build infra/nixos/configs/modular-development.nix"
 echo "  2. Start VM and verify NATS is running: systemctl status nats"
 echo "  3. Check NATS monitoring: curl http://rave.local/nats/healthz"
 echo "  4. Test JetStream: nats stream create test-stream"

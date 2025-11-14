@@ -1,6 +1,9 @@
 #!/bin/bash
 # Monitor VM boot progress
 
+HTTPS_PORT="${HTTPS_PORT:-8443}"
+BASE_URL="https://localhost:${HTTPS_PORT}"
+
 echo "🔍 Monitoring VM Boot Progress"
 echo "=============================="
 
@@ -21,7 +24,7 @@ for i in {1..20}; do
         " 2>/dev/null
         
         # Test GitLab response
-        response=$(curl -k -s -o /dev/null -w "%{http_code}" https://localhost:18221/gitlab/ 2>/dev/null)
+        response=$(curl -k -s -o /dev/null -w "%{http_code}" "${BASE_URL}/gitlab/" 2>/dev/null)
         echo "🌐 GitLab HTTP Response: $response"
         
         if [ "$response" = "200" ] || [ "$response" = "302" ]; then
@@ -38,4 +41,4 @@ for i in {1..20}; do
 done
 
 echo "⚠️  Boot monitoring complete. GitLab may still be initializing."
-echo "💡 Try accessing GitLab at: https://localhost:18221/gitlab/"
+echo "💡 Try accessing GitLab at: ${BASE_URL}/gitlab/"

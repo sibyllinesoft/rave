@@ -322,7 +322,7 @@ test_system_security() {
     run_test "System Security Basics"
     
     # Check if automatic security updates are enabled
-    if ssh_exec "sudo systemctl is-enabled --quiet nixos-upgrade || test -f /etc/nixos/configuration.nix"; then
+    if ssh_exec "sudo systemctl is-enabled --quiet nixos-upgrade || test -f /etc/infra/nixos/configuration.nix"; then
         test_pass "System uses NixOS declarative configuration"
     else
         test_warn "System configuration management unclear"

@@ -1,0 +1,12 @@
+[Unit]
+Description=Sample override service managed by RAVE
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env bash -c 'echo "Hello from RAVE override"; sleep infinity'
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

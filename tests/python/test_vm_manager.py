@@ -6,9 +6,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Dict, Optional
 from unittest import mock
 
-CLI_DIR = Path(__file__).resolve().parents[2] / "cli"
+CLI_DIR = Path(__file__).resolve().parents[2] / "apps" / "cli"
 if str(CLI_DIR) not in sys.path:
     sys.path.insert(0, str(CLI_DIR))
 
@@ -124,11 +125,22 @@ class VMManagerCreateTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmpdir.cleanup()
 
-    def _run_create(self, *, build_success: bool = True, age_key: bool = True, skip_build: bool = False) -> tuple[dict, dict]:
+    def _run_create(
+        self,
+        *,
+        build_success: bool = True,
+        age_key: bool = True,
+        skip_build: bool = False,
+        profile: str = "development",
+        profile_attr: str = "development",
+        custom_ports: Optional[Dict[str, int]] = None,
+    ) -> tuple[dict, dict]:
         age_key_path = None
         if age_key:
             age_key_path = self.workdir / "age.txt"
             age_key_path.write_text("AGE-KEY")
+
+        port_overrides = custom_ports or {"http": 9000}
 
         build_payload = {"success": build_success}
         if build_success:
@@ -148,11 +160,11 @@ class VMManagerCreateTests(unittest.TestCase):
             result = self.manager.create_vm(
                 company_name="acme",
                 keypair_path=str(self.private_key),
-                profile="development",
-                profile_attr="development",
+                profile=profile,
+                profile_attr=profile_attr,
                 default_image_path=self.default_image,
                 age_key_path=age_key_path,
-                custom_ports={"http": 9000},
+                custom_ports=port_overrides,
                 skip_build=skip_build,
             )
 
@@ -164,7 +176,7 @@ class VMManagerCreateTests(unittest.TestCase):
         config_path = self.manager._get_vm_config_path("acme")
         self.assertTrue(config_path.exists())
         data = json.loads(config_path.read_text())
-        self.assertEqual(data["profile"], "development")
+        self.assertEqual(data["profile"], profile)
         self.assertEqual(data["ports"]["http"], 9000)
         # Verify injected path matches target copy
         target = Path(data["image_path"])
@@ -190,6 +202,26 @@ class VMManagerCreateTests(unittest.TestCase):
         result, data = self._run_create(build_success=True, age_key=False, skip_build=True)
         target = Path(data["image_path"])
         self.assertEqual(target.read_bytes(), self.default_image.read_bytes())
+
+    def test_dataplane_ports_forwarded_by_default(self) -> None:
+        _, data = self._run_create(profile="dataPlane", profile_attr="dataPlane")
+        self.assertEqual(
+            data["ports"]["postgres"], self.manager.DATA_PLANE_PORT_DEFAULTS["postgres"]
+        )
+        self.assertEqual(
+            data["ports"]["redis"], self.manager.DATA_PLANE_PORT_DEFAULTS["redis"]
+        )
+
+    def test_dataplane_ports_honor_custom_overrides(self) -> None:
+        overrides = {"postgres": 40000, "redis": 40010}
+        merged = {"http": 9000, **overrides}
+        _, data = self._run_create(
+            profile="dataPlane",
+            profile_attr="dataPlane",
+            custom_ports=merged,
+        )
+        self.assertEqual(data["ports"]["postgres"], overrides["postgres"])
+        self.assertEqual(data["ports"]["redis"], overrides["redis"])
 
     def test_create_vm_errors_when_no_image_available(self) -> None:
         # Remove default image to force failure when build fails

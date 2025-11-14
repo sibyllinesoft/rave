@@ -35,7 +35,10 @@
   outputs = { self, nixpkgs, nixos-generators, sops-nix, ... }:
     let
       system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ authOverlay goOverlay ];
+      };
       lib = nixpkgs.lib;
       
       goOverlay =
@@ -43,7 +46,7 @@
           let
             unstable = import (builtins.fetchTarball {
               url = "https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz";
-              sha256 = "1vlmhgh1zdr00afxzsd7kfaynkc9zif0kwmbjmzvb1nqrwj05x3z";
+              sha256 = "04h7cq8rp8815xb4zglkah4w6p2r5lqp7xanv89yxzbmnv29np2a";
             }) {
               inherit system;
               config = prev.config;
@@ -56,7 +59,7 @@
       mkAuthManager = pkgs: pkgs.buildGoModule {
         pname = "auth-manager";
         version = "0.1.0";
-        src = ./auth-manager;
+        src = ./apps/auth-manager;
         subPackages = [ "cmd/auth-manager" ];
         vendorHash = "sha256-xj6jSxUiSAYNbIITOY50KoCyGcABvWSCFhXA9ytrX3M=";
       };
@@ -72,11 +75,32 @@
         , extraModules ? []
         }:
         let
+          pomeriumConfigEnv = builtins.getEnv "RAVE_POMERIUM_CONFIG_JSON";
+          pomeriumOverrideModule =
+            if pomeriumConfigEnv == "" then ({ ... }: {})
+            else
+              let
+                parsed = builtins.fromJSON pomeriumConfigEnv;
+                get = name: if builtins.hasAttr name parsed then parsed.${name} else null;
+                idpAttrs = lib.filterAttrs (_: v: v != null) {
+                  provider = get "provider";
+                  providerUrl = get "providerUrl";
+                  clientId = get "clientId";
+                  clientSecret = get "clientSecret";
+                  clientSecretFile = get "clientSecretFile";
+                  scopes = get "scopes";
+                };
+              in
+              ({ config, ... }: {
+                services.rave.pomerium.idp =
+                  (config.services.rave.pomerium.idp or {}) // idpAttrs;
+              });
           modules =
             [
               configModule
               sops-nix.nixosModules.sops
               "${nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
+              pomeriumOverrideModule
               ({ lib, ... }: {
                 services.rave.ports.https = httpsPort;
                 nixpkgs.overlays = [ authOverlay goOverlay ];
@@ -92,7 +116,7 @@
 
           formatArgs =
             if format == "qcow"
-            then { customFormats.qcow.imports = [ ./nixos/modules/formats/qcow-large.nix ]; }
+            then { customFormats.qcow.imports = [ ./infra/nixos/modules/formats/qcow-large.nix ]; }
             else {};
         in
           nixos-generators.nixosGenerate ({
@@ -103,10 +127,12 @@
         minimal-vm = import ./tests/minimal-vm.nix {
           inherit pkgs;
           sopsModule = sops-nix.nixosModules.sops;
+          overlays = [ authOverlay goOverlay ];
         };
         full-stack = import ./tests/full-stack.nix {
           inherit pkgs;
           sopsModule = sops-nix.nixosModules.sops;
+          overlays = [ authOverlay goOverlay ];
         };
       };
 
@@ -117,15 +143,17 @@
 
     # VM image packages exposed via meaningful profile names
     packages.${system} = rec {
-      production = mkImage { configModule = ./nixos/configs/production.nix; };
-      development = mkImage { configModule = ./nixos/configs/development.nix; };
-      demo = mkImage { configModule = ./nixos/configs/demo.nix; };
+      production = mkImage { configModule = ./infra/nixos/configs/production.nix; };
+      dataPlane = mkImage { configModule = ./infra/nixos/configs/data-plane.nix; };
+      appsPlane = mkImage { configModule = ./infra/nixos/configs/apps-plane.nix; };
+      development = mkImage { configModule = ./infra/nixos/configs/development.nix; };
+      demo = mkImage { configModule = ./infra/nixos/configs/demo.nix; };
 
       productionWithPort =
         let
           makeOverridableImage = args:
             let
-              result = mkImage ({ configModule = ./nixos/configs/production.nix; } // args);
+              result = mkImage ({ configModule = ./infra/nixos/configs/production.nix; } // args);
             in
               result // {
                 override = moreArgs: makeOverridableImage (args // moreArgs);
@@ -134,19 +162,19 @@
           makeOverridableImage {};
 
       virtualbox = mkImage {
-        configModule = ./nixos/configs/production.nix;
+        configModule = ./infra/nixos/configs/production.nix;
         format = "virtualbox";
       };
       vmware = mkImage {
-        configModule = ./nixos/configs/production.nix;
+        configModule = ./infra/nixos/configs/production.nix;
         format = "vmware";
       };
       raw = mkImage {
-        configModule = ./nixos/configs/production.nix;
+        configModule = ./infra/nixos/configs/production.nix;
         format = "raw";
       };
       iso = mkImage {
-        configModule = ./nixos/configs/production.nix;
+        configModule = ./infra/nixos/configs/production.nix;
         format = "iso";
       };
 
@@ -161,7 +189,7 @@
       rave-cli = pkgs.writeShellScriptBin "rave" ''
         export PATH="${pkgs.python3.withPackages (ps: [ ps.click ])}/bin:$PATH"
         cd ${./.}
-        exec python3 cli/rave "$@"
+        exec python3 apps/cli/rave "$@"
       '';
 
       auth-manager = mkAuthManager pkgs;
@@ -171,7 +199,29 @@
       production = {
         attr = "production";
         description = "Full stack (GitLab, Mattermost, Penpot, Outline, n8n, observability)";
-        defaultImage = "rave-production-localhost.qcow2";
+        defaultImage = "artifacts/qcow/production/rave-production-localhost.qcow2";
+        features = {
+          penpot = true;
+          outline = true;
+          n8n = true;
+          monitoring = true;
+        };
+      };
+      dataPlane = {
+        attr = "dataPlane";
+        description = "Data plane only (PostgreSQL + Redis, SSH, SOPS secrets)";
+        defaultImage = "artifacts/qcow/data-plane/rave-data-plane.qcow2";
+        features = {
+          penpot = false;
+          outline = false;
+          n8n = false;
+          monitoring = false;
+        };
+      };
+      appsPlane = {
+        attr = "appsPlane";
+        description = "Application plane (GitLab/Mattermost/etc.) targeting external data services";
+        defaultImage = "artifacts/qcow/apps-plane/rave-apps-plane.qcow2";
         features = {
           penpot = true;
           outline = true;
@@ -182,7 +232,7 @@
       development = {
         attr = "development";
         description = "Slimmer build (Penpot/Outline/n8n disabled, lower RAM/disk)";
-        defaultImage = "rave-development-localhost.qcow2";
+        defaultImage = "artifacts/qcow/development/rave-development-localhost.qcow2";
         features = {
           penpot = false;
           outline = false;
@@ -193,7 +243,7 @@
       demo = {
         attr = "demo";
         description = "Demo-friendly stack (observability + optional apps disabled)";
-        defaultImage = "rave-demo-localhost.qcow2";
+        defaultImage = "artifacts/qcow/demo/rave-demo-localhost.qcow2";
         features = {
           penpot = false;
           outline = false;
@@ -210,12 +260,21 @@
         python3Packages.click
         qemu
         nix
+        go_1_24
       ];
-      
+
       shellHook = ''
-        export PATH="$PATH:$(pwd)/cli"
+        # Ensure local GOPATH/GOROOT don't point at stale system installs
+        unset GOROOT
+        if [ -z "''${GOPATH:-}" ] || [ "''${GOPATH}" = "$HOME/go" ]; then
+          export GOPATH="$(pwd)/.gopath"
+        fi
+        mkdir -p "$GOPATH"
+
+        export PATH="$PATH:$(pwd)/apps/cli"
         echo "🚀 RAVE Development Environment"
-        echo "CLI available at: $(pwd)/cli/rave"
+        echo "CLI available at: $(pwd)/apps/cli/rave"
+        go version 2>/dev/null || true
       '';
     };
   };

@@ -1,0 +1,18 @@
+[Unit]
+Description=Benthos webhook bridge → NATS
+After=network-online.target nats.service
+Requires=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/run/current-system/sw/bin/benthos -c /etc/benthos/pipelines/webhook-router.yaml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+WorkingDirectory=/etc/benthos
+# Run as root by default; override via drop-in if you manage a dedicated user
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

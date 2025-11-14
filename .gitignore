@@ -106,6 +106,7 @@ yarn-debug.log*
 yarn-error.log*
 .npm
 .node_repl_history
+.gopath/
 
 # -----------------------------------------------------------------------------
 # Backup & Archive Files

@@ -181,4 +181,4 @@ P2 will build on this security foundation with:
 - [NIST Cybersecurity Framework](https://www.nist.gov/cyberframework)
 - [sops-nix Documentation](https://github.com/Mic92/sops-nix)
 - [Trivy Security Scanner](https://trivy.dev/)
-- [NixOS Security Hardening](https://nixos.org/manual/nixos/stable/index.html#sec-hardening)
+- [NixOS Security Hardening](https://nixos.org/manual/infra/nixos/stable/index.html#sec-hardening)

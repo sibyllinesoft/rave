@@ -31,17 +31,17 @@ This repository contains a **consolidated NixOS VM** for the RAVE project. There
 
 ## 🔐 **RAVE CLI MANDATORY POLICY**
 
-**ALL VM operations MUST be performed through the RAVE CLI (`./cli/rave`)**
+**ALL VM operations MUST be performed through the RAVE CLI (`./apps/cli/rave`)**
 
 ### ✅ **Supported Operations:**
-- `./cli/rave vm create <name> --keypair <path>` - Create new VM
-- `./cli/rave vm start <name>` - Start VM
-- `./cli/rave vm stop <name>` - Stop VM  
-- `./cli/rave vm status <name>` - Check VM status
-- `./cli/rave vm status --all` - List all VMs
-- `./cli/rave vm ssh <name>` - SSH into VM
-- `./cli/rave vm logs <name>` - View VM logs
-- `./cli/rave vm reset <name>` - Reset VM to clean state
+- `./apps/cli/rave vm create <name> --keypair <path>` - Create new VM
+- `./apps/cli/rave vm start <name>` - Start VM
+- `./apps/cli/rave vm stop <name>` - Stop VM  
+- `./apps/cli/rave vm status <name>` - Check VM status
+- `./apps/cli/rave vm status --all` - List all VMs
+- `./apps/cli/rave vm ssh <name>` - SSH into VM
+- `./apps/cli/rave vm logs <name>` - View VM logs
+- `./apps/cli/rave vm reset <name>` - Reset VM to clean state
 
 ### 🚫 **Forbidden Direct Operations:**
 - Manual `qemu-system-x86_64` commands
@@ -109,77 +109,77 @@ Host System (Ubuntu)
 ### Prerequisites Check (**MANDATORY FIRST STEP**)
 ```bash
 # Check system requirements first - MUST RUN BEFORE ANYTHING
-./cli/rave prerequisites
+./apps/cli/rave prerequisites
 ```
 
 ### VM Management (**REQUIRED WORKFLOW**)
 ```bash
 # Create a company development environment
-./cli/rave vm create my-company --keypair ~/.ssh/id_rsa
+./apps/cli/rave vm create my-company --keypair ~/.ssh/id_rsa
 
 # Start VM
-./cli/rave vm start my-company
+./apps/cli/rave vm start my-company
 
 # Check VM status
-./cli/rave vm status my-company
-./cli/rave vm status --all  # Show all VMs
+./apps/cli/rave vm status my-company
+./apps/cli/rave vm status --all  # Show all VMs
 
 # SSH into VM
-./cli/rave vm ssh my-company
+./apps/cli/rave vm ssh my-company
 
 # View service logs  
-./cli/rave vm logs my-company nginx
-./cli/rave vm logs my-company --follow
-./cli/rave vm logs my-company --all
+./apps/cli/rave vm logs my-company nginx
+./apps/cli/rave vm logs my-company --follow
+./apps/cli/rave vm logs my-company --all
 
 # Stop VM
-./cli/rave vm stop my-company
+./apps/cli/rave vm stop my-company
 
 # Reset VM to clean state
-./cli/rave vm reset my-company
+./apps/cli/rave vm reset my-company
 ```
 
 ### User Management
 ```bash
 # Add user via GitLab OAuth
-./cli/rave user add user@company.com --oauth-id 12345 --access developer --company my-company
+./apps/cli/rave user add user@company.com --oauth-id 12345 --access developer --company my-company
 
 # List users
-./cli/rave user list
-./cli/rave user list --company my-company
+./apps/cli/rave user list
+./apps/cli/rave user list --company my-company
 
 # Show user details
-./cli/rave user show user@company.com
+./apps/cli/rave user show user@company.com
 
 # Configure user access level
-./cli/rave user config user@company.com --access admin
+./apps/cli/rave user config user@company.com --access admin
 
 # Remove user
-./cli/rave user remove user@company.com
+./apps/cli/rave user remove user@company.com
 
 # Bulk add users from CSV/JSON
-./cli/rave user bulk-add users.csv --company my-company
+./apps/cli/rave user bulk-add users.csv --company my-company
 
 # Export users
-./cli/rave user export users.csv --format csv --company my-company
+./apps/cli/rave user export users.csv --format csv --company my-company
 
 # Sync with GitLab
-./cli/rave user sync
+./apps/cli/rave user sync
 
 # View user activity and permissions
-./cli/rave user activity user@company.com
-./cli/rave user permissions user@company.com
+./apps/cli/rave user activity user@company.com
+./apps/cli/rave user permissions user@company.com
 ```
 
 ### OAuth Configuration
 ```bash
 # Configure OAuth for services
-./cli/rave oauth config penpot --provider gitlab --client-id CLIENT_ID --client-secret CLIENT_SECRET
-./cli/rave oauth config element --provider gitlab --client-id CLIENT_ID --client-secret CLIENT_SECRET
+./apps/cli/rave oauth config penpot --provider gitlab --client-id CLIENT_ID --client-secret CLIENT_SECRET
+./apps/cli/rave oauth config element --provider gitlab --client-id CLIENT_ID --client-secret CLIENT_SECRET
 
 # Check OAuth status
-./cli/rave oauth status
-./cli/rave oauth status penpot
+./apps/cli/rave oauth status
+./apps/cli/rave oauth status penpot
 ```
 
 ## 🔧 ENVIRONMENT CONFIGURATION
@@ -225,8 +225,8 @@ GITHUB_OAUTH_CLIENT_SECRET=your-github-oauth-client-secret
 nix build
 
 # Launch VM using RAVE CLI (RECOMMENDED)
-./cli/rave vm create my-project --keypair ~/.ssh/your-key
-./cli/rave vm start my-project
+./apps/cli/rave vm create my-project --keypair ~/.ssh/your-key
+./apps/cli/rave vm start my-project
 ```
 
 ### Custom Port Build Options
@@ -246,7 +246,7 @@ nix build  # or nix build .#production
 ### ❌ **DEPRECATED: Manual QEMU Launch (DO NOT USE)**
 ```bash
 # ❌ FORBIDDEN: Manual VM operations are NOT SUPPORTED
-# Use RAVE CLI instead: ./cli/rave vm create <name>
+# Use RAVE CLI instead: ./apps/cli/rave vm create <name>
 
 # This section is kept for reference only - DO NOT USE THESE COMMANDS
 # cp result/nixos.qcow2 rave-complete.qcow2 && chmod 644 rave-complete.qcow2
@@ -259,7 +259,7 @@ nix build  # or nix build .#production
 - Missing SOPS key mounting
 - Improper cleanup on failure
 
-**✅ ALWAYS USE**: `./cli/rave vm create` and `./cli/rave vm start` instead.
+**✅ ALWAYS USE**: `./apps/cli/rave vm create` and `./apps/cli/rave vm start` instead.
 
 ### 🚨 DEPRECATED BUILD COMMANDS (DO NOT USE)
 ❌ `nix build .#development` - Old scattered configuration
@@ -405,16 +405,16 @@ sshpass -p 'debug123' ssh root@localhost -p 2224 \
 ### **MANDATORY WORKFLOW** - Use RAVE CLI:
 ```bash
 # 1. Check prerequisites (REQUIRED FIRST)
-./cli/rave prerequisites
+./apps/cli/rave prerequisites
 
 # 2. Create development environment (REQUIRED)
-./cli/rave vm create my-project --keypair ~/.ssh/your-key
+./apps/cli/rave vm create my-project --keypair ~/.ssh/your-key
 
 # 3. Start VM (REQUIRED)
-./cli/rave vm start my-project
+./apps/cli/rave vm start my-project
 
 # 4. Check status (RECOMMENDED)
-./cli/rave vm status my-project
+./apps/cli/rave vm status my-project
 
 # 5. Access services at https://localhost:8443/
 ```
@@ -436,7 +436,7 @@ nix build
 2. **Build for CLI**: `nix build` creates images that RAVE CLI uses automatically
 3. **No manual QEMU**: Direct QEMU launching is forbidden and unsupported
 4. **Wait for services**: VM boot takes 2-3 minutes for all services to start
-5. **Use CLI for SSH**: `./cli/rave vm ssh my-project` instead of manual SSH
+5. **Use CLI for SSH**: `./apps/cli/rave vm ssh my-project` instead of manual SSH
 
 ### When to Rebuild:
 - Configuration changes in `nixos/configs/complete-production.nix`
@@ -493,7 +493,7 @@ The VM includes an elegant dashboard at the root HTTPS URL:
 
 ## CLI Configuration
 
-The RAVE CLI is located at `./cli/rave` and provides comprehensive management:
+The RAVE CLI is located at `./apps/cli/rave` and provides comprehensive management:
 - **VM Management**: Multi-company VM lifecycle management
 - **User Management**: GitLab OAuth integration with bulk operations
 - **OAuth Configuration**: Service-specific OAuth setup
@@ -527,11 +527,11 @@ The CLI requires these Python packages (see `cli/requirements.txt`):
 - **Monitoring**: Enhanced Grafana dashboards and alerting
 
 ### 🚨 **MANDATORY** RULES FOR FUTURE CLAUDE SESSIONS:
-- **MUST ALWAYS USE**: RAVE CLI (`./cli/rave vm`) for ALL VM operations
+- **MUST ALWAYS USE**: RAVE CLI (`./apps/cli/rave vm`) for ALL VM operations
 - **FORBIDDEN**: Manual QEMU commands
 - **Build system**: `nix build` (complete configuration) - for VM image creation only
 - **Primary file**: `nixos/configs/complete-production.nix`
-- **VM access**: Use `./cli/rave vm ssh project-name` instead of manual SSH
+- **VM access**: Use `./apps/cli/rave vm ssh project-name` instead of manual SSH
 - **Service URLs**: https://localhost:8443/ (dashboard shows all services)
 - **No scattered builds**: Consolidation phase is COMPLETE
-- **CLI FIRST**: Always check `./cli/rave vm status --all` before any operations
+- **CLI FIRST**: Always check `./apps/cli/rave vm status --all` before any operations

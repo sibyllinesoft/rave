@@ -5,7 +5,7 @@ pkgs.nixosTest {
 
   nodes.machine = { lib, ... }: {
     imports = [
-      ../nixos/configs/production.nix
+      ../infra/nixos/configs/production.nix
       ({ lib, ... }: {
         services.rave.gitlab.enable = lib.mkForce false;
         services.rave.gitlab.useSecrets = lib.mkForce false;

@@ -251,7 +251,7 @@ Track these security metrics:
 - [sops-nix Documentation](https://github.com/Mic92/sops-nix)
 - [Age Encryption Specification](https://age-encryption.org/)
 - [OWASP Application Security Verification Standard](https://owasp.org/www-project-application-security-verification-standard/)
-- [NixOS Security Hardening Guide](https://nixos.org/manual/nixos/stable/index.html#sec-hardening)
+- [NixOS Security Hardening Guide](https://nixos.org/manual/infra/nixos/stable/index.html#sec-hardening)
 
 ## 🔄 Maintenance Schedule
 

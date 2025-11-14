@@ -1,0 +1,3266 @@
+#!/usr/bin/env python3
+"""
+RAVE CLI - Reproducible AI Virtual Environment Management
+Comprehensive CLI for managing company development environments, users, and OAuth integration.
+"""
+
+import os
+import sys
+import json
+import shlex
+import shutil
+import socket
+import subprocess
+import tempfile
+import textwrap
+import builtins
+import hashlib
+import datetime
+import re
+import click
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+# Add the cli directory to Python path for imports
+CLI_DIR = Path(__file__).resolve().parent
+REPO_ROOT = CLI_DIR.parent
+if REPO_ROOT.name == "apps":
+    REPO_ROOT = REPO_ROOT.parent
+sys.path.insert(0, str(CLI_DIR))
+
+from vm_manager import VMManager
+from user_manager import UserManager
+from oauth_manager import OAuthManager
+from platform_utils import PlatformManager
+from override_manager import (
+    DEFAULT_LAYER_PRIORITY,
+    METADATA_PRESETS,
+    OverrideManager,
+    OverrideManagerError,
+)
+
+# Constants for secrets management
+DEFAULT_AGE_KEY_PATH = Path.home() / ".config" / "sops" / "age" / "keys.txt"
+DEFAULT_SECRETS_FILE = Path("config/secrets.yaml")
+
+_DEFAULT_PROFILE_METADATA: Dict[str, Dict[str, Any]] = {
+    "production": {
+        "attr": "production",
+        "description": "Full stack (GitLab, Mattermost, Penpot, Outline, n8n, observability)",
+        "default_image": "artifacts/qcow/production/rave-production-localhost.qcow2",
+        "features": {"penpot": True, "outline": True, "n8n": True, "monitoring": True},
+    },
+    "development": {
+        "attr": "development",
+        "description": "Slimmer build (Penpot/Outline/n8n disabled, lower RAM/disk)",
+        "default_image": "artifacts/qcow/development/rave-development-localhost.qcow2",
+        "features": {"penpot": False, "outline": False, "n8n": False, "monitoring": True},
+    },
+    "demo": {
+        "attr": "demo",
+        "description": "Demo-friendly stack (observability + optional apps disabled, smaller footprint)",
+        "default_image": "artifacts/qcow/demo/rave-demo-localhost.qcow2",
+        "features": {"penpot": False, "outline": False, "n8n": False, "monitoring": False},
+    },
+}
+
+
+def _load_profile_metadata_from_flake() -> Optional[Dict[str, Dict[str, Any]]]:
+    nix_path = shutil.which("nix")
+    if not nix_path:
+        return None
+
+    repo_root = REPO_ROOT
+    try:
+        result = subprocess.run(
+            [nix_path, "eval", "--json", ".#profileMetadata"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    normalized = {}
+    for name, meta in data.items():
+        if not isinstance(meta, dict):
+            continue
+        normalized[name] = {
+            "attr": meta.get("attr", name),
+            "description": meta.get("description", ""),
+            "default_image": meta.get(
+                "defaultImage", f"rave-{name}-localhost.qcow2"
+            ),
+            "features": meta.get("features", {}),
+        }
+    return normalized or None
+
+
+PROFILE_METADATA = _load_profile_metadata_from_flake() or _DEFAULT_PROFILE_METADATA
+
+PROFILE_ATTRS = {name: meta["attr"] for name, meta in PROFILE_METADATA.items()}
+
+
+def _profile_feature(profile: str, feature: str) -> bool:
+    return PROFILE_METADATA.get(profile, {}).get("features", {}).get(feature, False)
+
+
+POMERIUM_PROVIDER_PRESETS: Dict[str, Dict[str, Any]] = {
+    "google": {
+        "provider": "google",
+        "provider_url": "https://accounts.google.com",
+        "scopes": ["openid", "profile", "email"],
+        "client_id_env": "GOOGLE_OAUTH_CLIENT_ID",
+        "client_secret_env": "GOOGLE_OAUTH_CLIENT_SECRET",
+    }
+}
+
+
+def _resolve_pomerium_idp(
+    provider: str,
+    client_id: Optional[str],
+    client_secret: Optional[str],
+    client_secret_file: Optional[str],
+    secret_selector: Optional[str],
+    provider_url: Optional[str],
+    scopes: Tuple[str, ...],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    provider_key = provider or "google"
+    preset = POMERIUM_PROVIDER_PRESETS.get(provider_key, {})
+    env_data = _load_root_env()
+
+    resolved_provider_url = provider_url or preset.get("provider_url")
+    if not resolved_provider_url:
+        raise click.ClickException(
+            f"No provider URL specified for IdP '{provider_key}'. Use --idp-provider-url to set one."
+        )
+
+    resolved_client_id = client_id or env_data.get(preset.get("client_id_env", ""))
+    if not resolved_client_id:
+        raise click.ClickException(
+            "Missing IdP client ID. Provide --idp-client-id or set GOOGLE_OAUTH_CLIENT_ID in .env/.environment."
+        )
+
+    resolved_scopes = list(scopes) if scopes else list(preset.get("scopes", ["openid", "profile", "email"]))
+
+    resolved_secret_file = client_secret_file or (
+        _selector_to_secret_path(secret_selector) if secret_selector else None
+    )
+    resolved_secret = client_secret or env_data.get(preset.get("client_secret_env", ""))
+    if resolved_secret_file:
+        resolved_secret = None
+    if not resolved_secret_file and not resolved_secret:
+        raise click.ClickException(
+            "Missing IdP client secret. Provide --idp-client-secret, --idp-client-secret-file, or set GOOGLE_OAUTH_CLIENT_SECRET."
+        )
+
+    build_payload: Dict[str, Any] = {
+        "provider": provider_key,
+        "providerUrl": resolved_provider_url,
+        "clientId": resolved_client_id,
+        "scopes": resolved_scopes,
+    }
+    if resolved_secret_file:
+        build_payload["clientSecretFile"] = resolved_secret_file
+    elif resolved_secret is not None:
+        build_payload["clientSecret"] = resolved_secret
+
+    metadata: Dict[str, Any] = {
+        "provider": provider_key,
+        "providerUrl": resolved_provider_url,
+        "clientId": resolved_client_id,
+        "scopes": resolved_scopes,
+        "secretSource": "file" if resolved_secret_file else "inline",
+    }
+    if resolved_secret_file:
+        metadata["clientSecretFile"] = resolved_secret_file
+    else:
+        metadata["secretEnv"] = preset.get("client_secret_env", "") or "env"
+
+    return build_payload, metadata
+
+
+def _apply_pomerium_idp_options(func):
+    options = [
+        click.option(
+            "--idp-provider",
+            default="google",
+            show_default=True,
+            help="Identity provider preset to use for Pomerium (e.g., google)",
+        ),
+        click.option("--idp-client-id", default=None, help="OAuth client ID registered with the provider"),
+        click.option(
+            "--idp-client-secret",
+            default=None,
+            help="OAuth client secret (defaults to GOOGLE_OAUTH_CLIENT_SECRET env)",
+        ),
+        click.option(
+            "--idp-client-secret-file",
+            default=None,
+            help="Path to a file containing the client secret (preferred for SOPS-managed installs)",
+        ),
+        click.option(
+            "--idp-secret-selector",
+            default=None,
+            help="SOPS selector (e.g., [\"pomerium\"][\"google-client-secret\"]) used to derive /run/secrets path",
+        ),
+        click.option(
+            "--idp-provider-url",
+            default=None,
+            help="Override the IdP issuer URL (defaults per provider preset)",
+        ),
+        click.option(
+            "--idp-scope",
+            multiple=True,
+            help="Additional OIDC scopes to request (repeat the flag for multiples)",
+        ),
+    ]
+    for option in reversed(options):
+        func = option(func)
+    return func
+
+
+def _parse_env_file(path: Path) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    data: Dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip()] = value.strip().strip("'\"")
+    return data
+
+
+def _load_root_env() -> Dict[str, str]:
+    env = dict(os.environ)
+    env.update(_parse_env_file(REPO_ROOT / ".env"))
+    return env
+
+
+def _relative_repo_path(path: Path) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _render_override_summary(layer_name: str, summary: Dict[str, Any], *, preview: bool) -> None:
+    changed = summary.get('changed', []) or []
+    removed = summary.get('removed', []) or []
+    verb = "Would update" if preview else "Updated"
+    remove_verb = "Would remove" if preview else "Removed"
+    click.echo(
+        f"   {verb} {len(changed)} file(s); {remove_verb} {len(removed)} file(s)."
+    )
+
+    if summary.get('daemon_reload'):
+        action = "Would run" if preview else "Ran"
+        click.echo(f"   {action}: systemctl daemon-reload")
+
+    restart_units = summary.get('restart_units') or []
+    if restart_units:
+        action = "Would restart" if preview else "Restarted"
+        click.echo(f"   {action}: {', '.join(restart_units)}")
+
+    reload_units = summary.get('reload_units') or []
+    if reload_units:
+        action = "Would reload" if preview else "Reloaded"
+        click.echo(f"   {action}: {', '.join(reload_units)}")
+
+    commands = summary.get('commands') or []
+    if commands:
+        action = "Would run" if preview else "Ran"
+        click.echo(f"   {action} custom commands: {'; '.join(commands)}")
+
+
+def _run_local_command(command: str, description: str) -> None:
+    parts = shlex.split(command)
+    if not parts:
+        raise click.ClickException(f"{description} command is empty")
+    try:
+        result = subprocess.run(
+            parts,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise click.ClickException(f"Failed to run {description}: {exc}")
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        stdout = result.stdout.strip()
+        details = stderr or stdout or f"exit code {result.returncode}"
+        raise click.ClickException(f"{description} failed: {details}")
+
+
+_SELECTOR_RE = re.compile(r'\["([^\"]+)"\]')
+
+
+def _selector_to_secret_path(selector: str) -> str:
+    if not selector:
+        return ""
+    selector = selector.strip()
+    if selector.startswith("/"):
+        return selector
+    bracket_parts = _SELECTOR_RE.findall(selector)
+    if bracket_parts:
+        parts = bracket_parts
+    else:
+        parts = [segment for segment in selector.split("/") if segment]
+    if not parts:
+        raise click.ClickException(f"Invalid secret selector: {selector}")
+    return "/run/secrets/" + "/".join(parts)
+
+PROVIDER_META = {
+    "google": {
+        "slug": "google_oauth2",
+        "label": "Google",
+        "scopes": ["openid", "email", "profile"],
+        "args": {
+            "access_type": "offline",
+            "prompt": "select_account consent",
+            "scope": "email,profile",
+        },
+    },
+    "github": {
+        "slug": "github",
+        "label": "GitHub",
+        "scopes": ["read:user", "user:email"],
+        "args": {
+            "scope": "user:email",
+        },
+    },
+}
+
+SLUG_TO_PROVIDER = {meta["slug"]: key for key, meta in PROVIDER_META.items()}
+
+PROVIDER_ALIASES = {
+    "google": PROVIDER_META["google"]["slug"],
+    "google_oauth2": PROVIDER_META["google"]["slug"],
+    "github": PROVIDER_META["github"]["slug"],
+}
+
+DEFAULT_PROVIDER_SLUG = PROVIDER_META["google"]["slug"]
+
+PROVIDER_ENV_VARS: Dict[str, Tuple[str, str]] = {
+    "google": ("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"),
+    "google_oauth2": ("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"),
+    "github": ("GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_SECRET"),
+}
+
+_ENV_LOADED = False
+_ENV_SOURCES: List[str] = []
+
+
+def _clean_env_value(raw_value: str) -> str:
+    value = raw_value.strip()
+    if not value:
+        return ""
+
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+
+    for marker in (" #", "\t#"):
+        marker_index = value.find(marker)
+        if marker_index != -1:
+            value = value[:marker_index].rstrip()
+            break
+
+    return value.replace("\\n", "\n")
+
+
+def _parse_env_line(line: str) -> Optional[Tuple[str, str]]:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+
+    if stripped.startswith("export "):
+        stripped = stripped[len("export "):].lstrip()
+
+    if "=" not in stripped:
+        return None
+
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+
+    return key, _clean_env_value(value)
+
+
+def _apply_env_file(path: Path) -> int:
+    try:
+        lines = path.read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return 0
+
+    loaded = 0
+    for raw_line in lines:
+        entry = _parse_env_line(raw_line)
+        if not entry:
+            continue
+        key, value = entry
+        if key in os.environ:
+            continue
+        os.environ[key] = value
+        loaded += 1
+    return loaded
+
+
+def _load_env_files() -> List[str]:
+    global _ENV_LOADED, _ENV_SOURCES
+    if _ENV_LOADED:
+        return list(_ENV_SOURCES)
+
+    candidates = [
+        Path.cwd() / ".env",
+        CLI_DIR.parent / ".env",
+        Path.home() / ".config" / "rave" / ".env",
+    ]
+
+    seen: set = set()
+    loaded_sources: List[str] = []
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except FileNotFoundError:
+            resolved = candidate
+
+        if resolved in seen or not resolved.exists():
+            continue
+
+        if _apply_env_file(resolved):
+            loaded_sources.append(str(resolved))
+
+        seen.add(resolved)
+
+    _ENV_LOADED = True
+    _ENV_SOURCES = loaded_sources
+    return list(_ENV_SOURCES)
+
+_INIT_ENV_SOURCES = _load_env_files()
+
+
+def _normalize_provider_choice(value: Optional[str], default: str) -> str:
+    if value is None:
+        return default
+    key = value.strip().lower()
+    if not key:
+        return default
+    if key in PROVIDER_ALIASES:
+        return PROVIDER_ALIASES[key]
+    raise click.BadParameter("Unsupported provider. Choose from: google, github")
+
+
+def _get_default_provider(ctx) -> str:
+    config = ctx.obj.get('config', {})
+    raw = config.get('oauth_provider')
+    if raw:
+        return _normalize_provider_choice(raw, DEFAULT_PROVIDER_SLUG)
+    return DEFAULT_PROVIDER_SLUG
+PLACEHOLDER_KEY = "age1exampleexampleexampleexampleexampleexampleexampleexample"
+
+
+def _parse_metadata(pairs: List[str]) -> Dict[str, str]:
+    """Convert CLI --meta key=value entries into a dict."""
+
+    metadata: Dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise click.BadParameter(
+                f"Metadata entry '{pair}' must be in key=value format"
+            )
+        key, value = pair.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            raise click.BadParameter(
+                f"Metadata entry '{pair}' must include non-empty key and value"
+            )
+        metadata[key] = value
+    return metadata
+
+
+def _parse_metadata_option(value: Optional[str]) -> Dict[str, str]:
+    """Parse metadata supplied via CLI option.
+
+    Accepts either a JSON object string or comma-separated key=value pairs.
+    """
+
+    if not value:
+        return {}
+
+    text = value.strip()
+    if not text:
+        return {}
+
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise click.BadParameter(
+                f"Invalid metadata JSON: {exc.msg}"
+            )
+        if not isinstance(parsed, dict):
+            raise click.BadParameter("Metadata JSON must decode to an object")
+        return {str(k): str(v) for k, v in parsed.items() if str(v).strip()}
+
+    entries = [segment.strip() for segment in text.split(",") if segment.strip()]
+    if not entries:
+        return {}
+    return _parse_metadata(entries)
+
+
+def _provider_meta_from_slug(slug: str) -> Dict[str, any]:
+    provider_key = SLUG_TO_PROVIDER.get(slug)
+    if not provider_key:
+        raise click.ClickException(f"Unknown provider slug '{slug}'")
+    return PROVIDER_META[provider_key]
+
+
+def _provider_meta_from_input(value: Optional[str], default_slug: str) -> Dict[str, any]:
+    slug = _normalize_provider_choice(value, default_slug)
+    return _provider_meta_from_slug(slug)
+
+
+def _provider_label_from_slug(slug: str) -> str:
+    return _provider_meta_from_slug(slug)["label"]
+
+
+def _list_company_names() -> List[str]:
+    ensure_config_dir()
+    return sorted(path.stem for path in VMS_DIR.glob("*.json"))
+
+
+def _load_company_config_or_exit(vm_manager: VMManager, company_name: str) -> Dict:
+    config = vm_manager._load_vm_config(company_name)
+    if not config:
+        raise click.ClickException(f"VM '{company_name}' not found. Run 'rave vm list' to confirm the name.")
+    return config
+
+
+def _normalize_host_entry(entry: str, https_port: int) -> Optional[str]:
+    raw = entry.strip()
+    if not raw:
+        return None
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw.rstrip("/")
+    host = raw
+    port = https_port
+    if ":" in raw:
+        host_part, port_part = raw.split(":", 1)
+        host = host_part or "localhost"
+        port = port_part or https_port
+        return f"https://{host}:{port}".rstrip("/")
+    return f"https://{host}:{https_port}"
+
+
+def _build_redirect_hosts_and_uris(
+    slug: str,
+    https_port: int,
+    extra_hosts: List[str],
+    *,
+    include_loopback: bool = True,
+) -> tuple[List[str], List[str]]:
+    hosts: List[str] = []
+    if include_loopback:
+        hosts.extend([
+            f"https://localhost:{https_port}",
+            f"https://127.0.0.1:{https_port}",
+        ])
+    for host in extra_hosts:
+        normalized = _normalize_host_entry(host, https_port)
+        if normalized:
+            hosts.append(normalized)
+    uris: List[str] = []
+    for host in hosts:
+        base = host.rstrip("/")
+        uri = f"{base}/gitlab/users/auth/{slug}/callback"
+        if uri not in uris:
+            uris.append(uri)
+    unique_hosts: List[str] = []
+    for host in hosts:
+        if host not in unique_hosts:
+            unique_hosts.append(host)
+    return unique_hosts, uris
+
+
+def _render_gcloud_command(
+    project: Optional[str],
+    client_name: str,
+    display_name: str,
+    redirect_uris: List[str],
+    scopes: List[str],
+) -> str:
+    scopes_value = ",".join(scopes)
+    header = ["gcloud"]
+    if project:
+        header.extend(["--project", project])
+    header.extend(["alpha", "iam", "oauth-clients", "create", client_name])
+
+    lines = [" ".join(shlex.quote(part) for part in header) + " \\"]
+    lines.append("  --location=global \\")
+    lines.append("  --client-type=confidential-client \\")
+    lines.append(f"  --display-name={shlex.quote(display_name)} \\")
+    lines.append("  --allowed-grant-types=authorization-code-grant,refresh-token-grant \\")
+    if scopes:
+        lines.append(f"  --allowed-scopes={shlex.quote(scopes_value)} \\")
+    for index, uri in enumerate(redirect_uris):
+        suffix = " \\" if index < len(redirect_uris) - 1 else ""
+        lines.append(f"  --allowed-redirect-uris={shlex.quote(uri)}{suffix}")
+    return "\n".join(lines)
+
+
+# Global configuration
+CONFIG_DIR = Path.home() / ".config" / "rave"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+VMS_DIR = CONFIG_DIR / "vms"
+
+def ensure_config_dir():
+    """Ensure configuration directory exists."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    VMS_DIR.mkdir(parents=True, exist_ok=True)
+
+def load_config() -> Dict:
+    """Load RAVE configuration."""
+    if not CONFIG_FILE.exists():
+        return {}
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
+
+def save_config(config: Dict):
+    """Save RAVE configuration."""
+    ensure_config_dir()
+    CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+@click.group()
+@click.version_option(version="1.0.0")
+@click.pass_context
+def cli(ctx):
+    """RAVE - Reproducible AI Virtual Environment Management
+    
+    Manage company development environments, users, and OAuth integration.
+    """
+    ensure_config_dir()
+    ctx.ensure_object(dict)
+    config = load_config()
+    ctx.obj['config'] = config
+    
+    # Extract port configuration from config file
+    port_config = config.get('default_ports', {})
+    ctx.obj['vm_manager'] = VMManager(VMS_DIR, port_config)
+    ctx.obj['user_manager'] = UserManager()
+    ctx.obj['oauth_manager'] = OAuthManager()
+    ctx.obj['platform'] = PlatformManager()
+    ctx.obj['override_manager'] = OverrideManager(REPO_ROOT)
+
+    default_provider = _get_default_provider(ctx)
+    ctx.obj['user_manager'].set_default_provider(default_provider)
+
+# Secrets management commands
+@cli.group()
+@click.pass_context
+def secrets(ctx):
+    """Secrets management helpers."""
+    ctx.ensure_object(dict)
+
+
+@cli.group()
+@click.pass_context
+def tls(ctx):
+    """Trusted TLS helpers."""
+    ctx.ensure_object(dict)
+
+
+@cli.group()
+@click.pass_context
+def overrides(ctx):
+    """Git-backed override layers for live systems."""
+    ctx.ensure_object(dict)
+
+
+@overrides.command('init')
+@click.pass_context
+def overrides_init(ctx):
+    """Bootstrap the default override directory structure."""
+    manager: OverrideManager = ctx.obj['override_manager']
+    result = manager.ensure_initialized()
+    raw_path = Path(result.get('path', ''))
+    try:
+        display_path = raw_path.relative_to(REPO_ROOT)
+    except ValueError:
+        display_path = raw_path
+
+    if result.get('created'):
+        click.echo(f"✅ Initialized overrides under {display_path}")
+    else:
+        click.echo(f"ℹ️ Overrides already initialized at {display_path}")
+
+
+@overrides.command('status')
+@click.pass_context
+def overrides_status(ctx):
+    """Show known layers and the files they manage."""
+    manager: OverrideManager = ctx.obj['override_manager']
+    stats = manager.layer_stats()
+
+    if not stats:
+        click.echo("No override layers found. Run 'rave overrides init' to create the global layer.")
+        return
+
+    click.echo("📁 Override layers (low → high priority):")
+    for item in stats:
+        description = item.get('description') or ''
+        click.echo(
+            f" • {item['name']} (priority {item['priority']}, {item['file_count']} file(s)) → {item['path']}"
+        )
+        if description:
+            click.echo(f"   {description}")
+
+
+@overrides.command('create-layer')
+@click.argument('name')
+@click.option('--priority', default=DEFAULT_LAYER_PRIORITY, show_default=True, type=int)
+@click.option('--description', default='', help='Layer description stored in layer.json')
+@click.option('--copy-from', default=None, help='Copy metadata patterns from an existing layer')
+@click.option(
+    '--preset', 'presets', multiple=True,
+    type=click.Choice(sorted(METADATA_PRESETS.keys())),
+    help='Apply metadata presets (nginx/gitlab/mattermost/pomerium) to the new layer',
+)
+@click.pass_context
+def overrides_create_layer(
+    ctx,
+    name: str,
+    priority: int,
+    description: str,
+    copy_from: Optional[str],
+    presets: Sequence[str],
+):
+    """Create a new override layer directory scaffold."""
+
+    manager: OverrideManager = ctx.obj['override_manager']
+    try:
+        result = manager.create_layer(
+            name,
+            priority=priority,
+            description=description,
+            copy_from=copy_from,
+            presets=list(presets),
+        )
+    except OverrideManagerError as exc:
+        raise click.ClickException(str(exc))
+
+    rel_path = _relative_repo_path(result['path'])
+    click.echo(
+        f"✅ Created layer '{result['name']}' (priority {result['priority']}) under {rel_path}"
+    )
+
+
+@overrides.command('apply')
+@click.argument('company')
+@click.option('--layer', 'layer_filter', multiple=True, help='Only apply the specified layer(s)')
+@click.option('--dry-run', is_flag=True, help='Validate packaging without touching the VM')
+@click.option('--no-restart', is_flag=True, help='Skip automatic daemon-reload/restart calls')
+@click.option(
+    '--skip-nix-check', is_flag=True, default=False,
+    help='Skip running a local nix check before a --dry-run preview'
+)
+@click.option(
+    '--nix-check-cmd', default='nix flake check', show_default=True,
+    help='Command to run locally before --dry-run (ignored when applying)'
+)
+@click.option(
+    '--preflight-cmd', multiple=True,
+    help='Additional local command(s) to run before --dry-run. Use {company} and {layers} placeholders.'
+)
+@click.option('--json-output', is_flag=True, help='Emit a machine-readable JSON summary at the end')
+@click.pass_context
+def overrides_apply(
+    ctx,
+    company: str,
+    layer_filter: tuple,
+    dry_run: bool,
+    no_restart: bool,
+    skip_nix_check: bool,
+    nix_check_cmd: str,
+    preflight_cmd: Sequence[str],
+    json_output: bool,
+):
+    """Sync override layers into a running VM."""
+
+    manager: OverrideManager = ctx.obj['override_manager']
+    vm_manager: VMManager = ctx.obj['vm_manager']
+
+    try:
+        layers = manager.list_layers()
+    except OverrideManagerError as exc:
+        raise click.ClickException(str(exc))
+
+    if not layers:
+        raise click.ClickException("No override layers defined. Run 'rave overrides init' first.")
+
+    if layer_filter:
+        selected = []
+        missing = []
+        for name in layer_filter:
+            match = next((layer for layer in layers if layer.name == name), None)
+            if match:
+                selected.append(match)
+            else:
+                missing.append(name)
+        if missing:
+            raise click.ClickException(f"Unknown override layer(s): {', '.join(missing)}")
+    else:
+        selected = layers
+
+    selected = sorted(selected, key=lambda layer: layer.priority)
+
+    packages = []
+    for layer in selected:
+        try:
+            package = manager.build_layer_package(layer.name)
+        except OverrideManagerError as exc:
+            raise click.ClickException(str(exc))
+        packages.append(package)
+
+    if not packages:
+        click.echo("No files matched the selected layers; nothing to do.")
+        if json_output:
+            payload = {
+                "company": company,
+                "dry_run": dry_run,
+                "results": [],
+            }
+            click.echo(json.dumps(payload, indent=2))
+        return
+
+    layer_names = [package.layer.name for package in packages]
+    layer_results: List[Dict[str, Any]] = []
+
+    if dry_run:
+        if not skip_nix_check:
+            click.echo(f"🧪 Running '{nix_check_cmd}' before remote preview…")
+            _run_local_command(nix_check_cmd, "nix check")
+        if preflight_cmd:
+            for raw_cmd in preflight_cmd:
+                rendered = raw_cmd.format(company=company, layers=",".join(layer_names))
+                click.echo(f"🧪 Running preflight: {rendered}")
+                _run_local_command(rendered, "preflight command")
+        click.echo("🔎 Remote dry-run preview (no changes will be made):")
+        for package in packages:
+            entry_count = len(package.manifest.get('entries', []))
+            display_root = _relative_repo_path(package.layer.root)
+            click.echo(
+                f"🔍 Layer {package.layer.name}: {entry_count} file(s) staged from {display_root}"
+            )
+            result = vm_manager.apply_override_layer(
+                company,
+                layer_name=package.layer.name,
+                archive_bytes=package.archive,
+                apply_restarts=False,
+                preview_only=True,
+            )
+
+            if not result.get('success'):
+                stderr = result.get('stderr')
+                error = result.get('error', 'Failed to preview overrides')
+                if stderr:
+                    error = f"{error}: {stderr.strip()}"
+                raise click.ClickException(error)
+
+            summary = result.get('summary', {})
+            _render_override_summary(package.layer.name, summary, preview=True)
+            layer_results.append(
+                {
+                    "layer": package.layer.name,
+                    "preview": True,
+                    "changed": summary.get('changed', []),
+                    "removed": summary.get('removed', []),
+                    "restart_units": summary.get('restart_units', []),
+                    "reload_units": summary.get('reload_units', []),
+                    "commands": summary.get('commands', []),
+                    "daemon_reload": summary.get('daemon_reload', False),
+                }
+            )
+
+        click.echo("✅ Dry run complete. Re-run without --dry-run to apply.")
+        if json_output:
+            payload = {
+                "company": company,
+                "dry_run": True,
+                "results": layer_results,
+            }
+            click.echo(json.dumps(payload, indent=2))
+        return
+
+    for package in packages:
+        entry_count = len(package.manifest.get('entries', []))
+        click.echo(f"⬆️  Applying layer {package.layer.name} ({entry_count} file(s)) to {company}…")
+        result = vm_manager.apply_override_layer(
+            company,
+            layer_name=package.layer.name,
+            archive_bytes=package.archive,
+            apply_restarts=not no_restart,
+        )
+
+        if not result.get('success'):
+            stderr = result.get('stderr')
+            error = result.get('error', 'Failed to apply overrides')
+            if stderr:
+                error = f"{error}: {stderr.strip()}"
+            raise click.ClickException(error)
+
+        summary = result.get('summary', {})
+        _render_override_summary(package.layer.name, summary, preview=False)
+        layer_results.append(
+            {
+                "layer": package.layer.name,
+                "preview": False,
+                "changed": summary.get('changed', []),
+                "removed": summary.get('removed', []),
+                "restart_units": summary.get('restart_units', []),
+                "reload_units": summary.get('reload_units', []),
+                "commands": summary.get('commands', []),
+                "daemon_reload": summary.get('daemon_reload', False),
+            }
+        )
+
+    if json_output:
+        payload = {
+            "company": company,
+            "dry_run": False,
+            "results": layer_results,
+        }
+        click.echo(json.dumps(payload, indent=2))
+
+@cli.command('set-oauth-provider')
+@click.argument('provider', type=click.Choice(['google', 'github'], case_sensitive=False))
+@click.pass_context
+def set_oauth_provider(ctx, provider: str):
+    """Persist the default OAuth provider used for GitLab user management."""
+    normalized = _normalize_provider_choice(provider, PROVIDER_ALIASES['google'])
+
+    config = ctx.obj.get('config', {})
+    config['oauth_provider'] = normalized
+    save_config(config)
+
+    ctx.obj['config'] = config
+
+    ctx.obj['user_manager'].set_default_provider(normalized)
+    click.echo(f"🔐 Default OAuth provider set to {provider.capitalize()} ({normalized}).")
+
+
+@tls.command()
+@click.pass_context
+def bootstrap(ctx):
+    """Install mkcert and trust the local development CA on the host."""
+    platform: PlatformManager = ctx.obj['platform']
+
+    click.echo("🔐 Preparing mkcert on the host…")
+    result = platform.ensure_mkcert_installed()
+    if not result.get("success"):
+        click.echo(f"❌ {result.get('error', 'Failed to install mkcert')}")
+        hint = result.get("hint")
+        if hint:
+            click.echo(f"   → {hint}")
+        sys.exit(1)
+
+    if result.get("installed"):
+        click.echo("✅ mkcert installed successfully")
+    else:
+        click.echo("ℹ️  mkcert already present")
+
+    try:
+        subprocess.run(["mkcert", "-install"], check=True)
+    except subprocess.CalledProcessError as exc:
+        click.echo("❌ mkcert failed to install the local CA")
+        if exc.stderr:
+            click.echo(f"   → {exc.stderr.strip()}")
+        sys.exit(1)
+
+    caroot = platform.mkcert_caroot()
+    if caroot:
+        click.echo(f"📁 mkcert CA root: {caroot}")
+    click.echo("✅ Host trust store updated (you may need to restart browsers).")
+
+
+@tls.command()
+@click.argument('company_name')
+@click.option(
+    '--domain', 'domains', multiple=True,
+    help='Hostname to include in the certificate (repeat for multiple).'
+)
+@click.pass_context
+def issue(ctx, company_name: str, domains: List[str]):
+    """Mint a trusted TLS certificate for a VM and install it."""
+
+    vm_manager: VMManager = ctx.obj['vm_manager']
+    platform: PlatformManager = ctx.obj['platform']
+
+    default_domains = ["localhost", "127.0.0.1", "::1", "chat.localtest.me"]
+    if not domains:
+        domains = default_domains
+    else:
+        domains = [d.strip() for d in domains if d.strip()]
+        if not domains:
+            click.echo("❌ No valid domain names provided")
+            sys.exit(1)
+
+    if shutil.which("mkcert") is None:
+        click.echo("❌ mkcert is not installed. Run 'rave tls bootstrap' first.")
+        sys.exit(1)
+
+    click.echo(f"🔏 Issuing certificate for: {', '.join(domains)}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        cert_path = tmp_path / "cert.pem"
+        key_path = tmp_path / "key.pem"
+        mkcert_cmd = [
+            "mkcert",
+            "-cert-file", str(cert_path),
+            "-key-file", str(key_path),
+            *domains,
+        ]
+
+        try:
+            subprocess.run(mkcert_cmd, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else exc.stderr
+            click.echo("❌ mkcert failed to issue the certificate")
+            if stderr:
+                click.echo(f"   → {stderr.strip()}")
+            sys.exit(1)
+
+        caroot = platform.mkcert_caroot()
+        if not caroot:
+            click.echo("❌ Unable to locate mkcert CA root. Run 'rave tls bootstrap' again.")
+            sys.exit(1)
+
+        ca_path = caroot / "rootCA.pem"
+        if not ca_path.exists():
+            click.echo(f"❌ mkcert CA file not found at {ca_path}")
+            sys.exit(1)
+
+        cert_pem = cert_path.read_text()
+        key_pem = key_path.read_text()
+        ca_pem = ca_path.read_text()
+        fullchain_pem = cert_pem + ca_pem
+
+    result = vm_manager.install_tls_certificate(
+        company_name,
+        cert_pem=cert_pem,
+        fullchain_pem=fullchain_pem,
+        key_pem=key_pem,
+        ca_pem=ca_pem,
+    )
+
+    if not result.get("success"):
+        click.echo(f"❌ Failed to install certificate: {result.get('error')}")
+        sys.exit(1)
+
+    vm_manager.record_tls_metadata(company_name, {
+        "domains": domains,
+    })
+
+    click.echo("✅ Installed certificate under /var/lib/acme/localhost on the VM")
+    click.echo("🔁 nginx restarted to pick up the new TLS material")
+    root_info = platform.mkcert_caroot()
+    if root_info:
+        click.echo(f"ℹ️  If other devices need trust, share {root_info / 'rootCA.pem'}")
+
+
+def _ensure_binary(name: str, install_hint: str) -> bool:
+    """Check if a binary is available; emit guidance if missing."""
+    if shutil.which(name):
+        return True
+    click.echo(f"❌ Missing dependency: {name}")
+    click.echo(f"   → {install_hint}")
+    return False
+
+
+def _extract_public_key(key_path: Path) -> Optional[str]:
+    """Return the Age public key for a private key file."""
+    try:
+        output = subprocess.check_output(
+            ["age-keygen", "-y", str(key_path)],
+            text=True
+        ).strip()
+    except subprocess.CalledProcessError as exc:
+        click.echo("❌ Failed to derive Age public key")
+        click.echo(f"   {exc}")
+        return None
+
+    if "Public key:" in output:
+        return output.split(":", 1)[1].strip()
+    return output
+
+
+def _update_sops_yaml(public_key: str, sops_path: Path) -> bool:
+    """Ensure the Age key is referenced inside .sops.yaml."""
+    if not sops_path.exists():
+        click.echo(f"❌ {sops_path} not found; please create it before proceeding.")
+        return False
+
+    content = sops_path.read_text()
+    if public_key in content:
+        return True
+
+    lines = content.splitlines()
+    updated = False
+
+    for idx, line in enumerate(lines):
+        if PLACEHOLDER_KEY in line:
+            cleaned = line.lstrip("#").strip()
+            prefix = line[: len(line) - len(line.lstrip())]
+            replacement = cleaned.replace(PLACEHOLDER_KEY, public_key, 1)
+            lines[idx] = prefix + replacement
+            updated = True
+            break
+
+    if not updated:
+        # Try to insert after the keys: stanza
+        for idx, line in enumerate(lines):
+            if line.strip().startswith("keys:"):
+                insertion = f"  - &team_key_cli {public_key}  # Added by 'rave secrets init'"
+                lines.insert(idx + 1, insertion)
+                updated = True
+                break
+
+    if not updated:
+        click.echo("⚠️ Unable to automatically modify .sops.yaml. Please add the key manually:")
+        click.echo(f"   Age public key: {public_key}")
+        return False
+
+    sops_path.write_text("\n".join(lines) + "\n")
+    click.echo(f"✅ Added Age public key to {sops_path}")
+    return True
+
+
+@secrets.command()
+@click.option(
+    "--key-file",
+    default=str(DEFAULT_AGE_KEY_PATH),
+    show_default=True,
+    help="Location for the Age private key"
+)
+@click.option(
+    "--secrets-file",
+    default=str(DEFAULT_SECRETS_FILE),
+    show_default=True,
+    help="Path to the encrypted secrets file"
+)
+def init(key_file: str, secrets_file: str):
+    """Guide through SOPS + Age bootstrap."""
+
+    click.echo("🔐 RAVE secrets bootstrap")
+
+    sops_ok = _ensure_binary(
+        "sops",
+        "Install from https://github.com/getsops/sops/releases"
+    )
+    age_ok = _ensure_binary(
+        "age-keygen",
+        "Install age (https://github.com/FiloSottile/age/releases) so age-keygen is available"
+    )
+
+    if not (sops_ok and age_ok):
+        sys.exit(1)
+
+    key_path = Path(key_file).expanduser()
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not key_path.exists():
+        click.echo(f"🗝️  Generating Age key at {key_path}")
+        try:
+            subprocess.run([
+                "age-keygen",
+                "-o",
+                str(key_path)
+            ], check=True)
+        except subprocess.CalledProcessError as exc:
+            click.echo("❌ Failed to generate Age key")
+            click.echo(f"   {exc}")
+            sys.exit(1)
+        key_path.chmod(0o600)
+    else:
+        click.echo(f"ℹ️  Reusing existing Age key at {key_path}")
+
+    public_key = _extract_public_key(key_path)
+    if not public_key:
+        sys.exit(1)
+
+    sops_path = Path(".sops.yaml")
+    _update_sops_yaml(public_key, sops_path)
+
+    click.echo("📌 Export this before running Nix builds:")
+    click.echo(f"   export SOPS_AGE_KEY_FILE={key_path}")
+
+    secrets_path = Path(secrets_file)
+    if not secrets_path.exists():
+        click.echo(f"❌ {secrets_path} does not exist yet. Create it before editing with sops.")
+    else:
+        if click.confirm("Open secrets file with sops now?", default=True):
+            env = os.environ.copy()
+            env["SOPS_AGE_KEY_FILE"] = str(key_path)
+            try:
+                subprocess.run([
+                    "sops",
+                    str(secrets_path)
+                ], check=True, env=env)
+            except subprocess.CalledProcessError as exc:
+                click.echo("❌ sops exited with an error")
+                click.echo(f"   {exc}")
+
+    guidance = textwrap.dedent(
+        f"""
+        Next steps:
+          • After a VM boots, run 'rave secrets install <company>' (or otherwise place {key_path} at /var/lib/sops-nix/key.txt) so sops-nix can decrypt secrets.
+          • Keep the Age private key backed up securely; losing it means secrets cannot be decrypted.
+          • Re-run this command if you rotate keys or onboard new operators.
+        """
+    ).strip()
+    click.echo(guidance)
+
+
+def _load_decrypted_secrets(secrets_path: Path, age_key_path: Path) -> Optional[Dict]:
+    env = os.environ.copy()
+    env.setdefault("SOPS_AGE_KEY_FILE", str(age_key_path))
+
+    try:
+        output = subprocess.check_output(
+            [
+                "sops",
+                "-d",
+                "--output-type",
+                "json",
+                str(secrets_path),
+            ],
+            text=True,
+            env=env,
+        )
+        return json.loads(output)
+    except subprocess.CalledProcessError as exc:
+        click.echo("⚠️ Unable to decrypt secrets file")
+        click.echo(f"   {exc}")
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        click.echo("⚠️ Failed to load secrets metadata")
+        click.echo(f"   {exc}")
+    return None
+
+
+def _prepare_secret_entries(
+    secrets_data: Dict[str, Any],
+    secrets_path: Path,
+) -> Dict[str, Any]:
+    """Normalize decrypted secrets into installable entries and warnings."""
+
+    warnings: List[str] = []
+
+    mattermost_raw = secrets_data.get("mattermost", {}) or {}
+    gitlab = secrets_data.get("gitlab", {}) or {}
+    oidc = secrets_data.get("oidc", {}) or {}
+    grafana = secrets_data.get("grafana", {}) or {}
+    database_creds = secrets_data.get("database", {}) or {}
+
+    mattermost = dict(mattermost_raw)
+    datasource_password = database_creds.get("mattermost-password") or ""
+
+    def _derive_hex(base_value: Optional[str], label: str) -> str:
+        seed = (base_value or label).encode("utf-8")
+        return hashlib.sha256(seed).hexdigest()
+
+    gitlab_secret_key_base = gitlab.get("secret-key-base")
+    gitlab_db_key_base = gitlab.get("db-key-base") or _derive_hex(
+        gitlab_secret_key_base or gitlab.get("db-password"),
+        "gitlab-db",
+    )
+    gitlab_otp_key_base = gitlab.get("otp-key-base") or _derive_hex(
+        gitlab.get("root-password") or gitlab_secret_key_base,
+        "gitlab-otp",
+    )
+    gitlab_jws_key_base = (
+        gitlab.get("jws-key-base")
+        or gitlab.get("jwt-signing-key")
+        or _derive_hex(gitlab_secret_key_base, "gitlab-jws")
+    )
+
+    def _warn_missing(secret_key: str, description: str, value: Optional[str]):
+        if not value:
+            warnings.append(
+                f"Secret '{secret_key}' missing in {secrets_path}; {description} will not be installed."
+            )
+
+    required_db_secrets = [
+        ("grafana/db-password", "Grafana DB password", grafana.get("db-password")),
+        ("database/grafana-password", "Grafana admin password", database_creds.get("grafana-password")),
+        ("grafana/secret-key", "Grafana session secret", grafana.get("secret-key")),
+        ("database/mattermost-password", "Mattermost DB password", database_creds.get("mattermost-password")),
+        ("database/penpot-password", "Penpot DB password", database_creds.get("penpot-password")),
+        ("database/n8n-password", "n8n DB password", database_creds.get("n8n-password")),
+        ("database/prometheus-password", "Prometheus exporter DB password", database_creds.get("prometheus-password")),
+    ]
+    for key, description, value in required_db_secrets:
+        _warn_missing(key, description, value)
+
+    secret_items = [
+        ("mattermost/admin-username", mattermost.get("admin-username"), "root", "root", "0400", None),
+        ("mattermost/admin-email", mattermost.get("admin-email"), "root", "root", "0400", None),
+        ("mattermost/admin-password", mattermost.get("admin-password"), "root", "root", "0400", None),
+        ("oidc/chat-control-client-secret", oidc.get("chat-control-client-secret"), "root", "root", "0400", None),
+        ("gitlab/api-token", gitlab.get("api-token"), "gitlab", "gitlab", "0400", None),
+        ("gitlab/oauth-provider-client-secret", gitlab.get("oauth-provider-client-secret"), "gitlab", "gitlab", "0400", None),
+        ("gitlab/root-password", gitlab.get("root-password"), "gitlab", "gitlab", "0400", None),
+        ("gitlab/db-password", gitlab.get("db-password"), "postgres", "gitlab", "0440", None),
+        ("gitlab/secret-key-base", gitlab_secret_key_base, "gitlab", "gitlab", "0400", None),
+        ("gitlab/db-key-base", gitlab_db_key_base, "gitlab", "gitlab", "0400", None),
+        ("gitlab/otp-key-base", gitlab_otp_key_base, "gitlab", "gitlab", "0400", None),
+        ("gitlab/jws-key-base", gitlab_jws_key_base, "gitlab", "gitlab", "0400", None),
+        ("database/mattermost-password", database_creds.get("mattermost-password"), "root", "postgres", "0440", None),
+        ("database/penpot-password", database_creds.get("penpot-password"), "root", "postgres", "0440", None),
+        ("database/n8n-password", database_creds.get("n8n-password"), "root", "postgres", "0440", None),
+        ("database/prometheus-password", database_creds.get("prometheus-password"), "root", "postgres", "0440", None),
+        ("grafana/secret-key", grafana.get("secret-key"), "grafana", "grafana", "0400", None),
+        ("grafana/db-password", grafana.get("db-password"), "grafana", "grafana", "0400", None),
+        ("grafana/admin-password", database_creds.get("grafana-password"), "grafana", "grafana", "0400", None),
+    ]
+
+    entries: List[Dict[str, str]] = []
+    for name, content, owner, group, mode, remote_path in secret_items:
+        if not content:
+            continue
+        target_path = remote_path or f"/run/secrets/{name}"
+        entries.append(
+            {
+                "name": name,
+                "remote_path": target_path,
+                "content": content,
+                "owner": owner,
+                "group": group,
+                "mode": mode,
+            }
+        )
+
+    return {
+        "entries": entries,
+        "warnings": warnings,
+        "mattermost": mattermost,
+        "gitlab": gitlab,
+        "grafana": grafana,
+        "database": database_creds,
+        "datasource_password": datasource_password,
+    }
+
+
+def _sync_vm_secrets(
+    vm_manager: VMManager,
+    company_name: str,
+    key_file: Path,
+    secrets_file: Path,
+    *,
+    restart_db: bool,
+) -> Dict[str, any]:
+    """Install the Age key and push decrypted secrets into the VM."""
+
+    key_path = Path(key_file).expanduser()
+    secrets_path = Path(secrets_file)
+
+    if not key_path.exists():
+        return {
+            "success": False,
+            "error": f"Age key not found at {key_path}"
+        }
+
+    age_result = vm_manager.install_age_key(company_name, key_path)
+    if not age_result.get("success"):
+        return {
+            "success": False,
+            "error": age_result.get("error", "Failed to install Age key")
+        }
+
+    age_remote_path = age_result.get("path", "/var/lib/sops-nix/key.txt")
+    messages: List[str] = []
+    warnings: List[str] = []
+    installed_secrets: List[str] = []
+
+    secrets_data: Optional[Dict] = None
+    if secrets_path.exists():
+        secrets_data = _load_decrypted_secrets(secrets_path, key_path)
+        if secrets_data is None:
+            warnings.append(
+                f"Unable to decrypt {secrets_path}; skipped secret sync"
+            )
+    else:
+        warnings.append(
+            f"Secrets file not found at {secrets_path}; skipped secret sync"
+        )
+
+    plan: Optional[Dict[str, Any]] = None
+
+    if secrets_data:
+        plan = _prepare_secret_entries(secrets_data, secrets_path)
+        warnings.extend(plan["warnings"])
+        entries = plan["entries"]
+        mattermost = plan["mattermost"]
+        gitlab = plan["gitlab"]
+        grafana = plan["grafana"]
+        database_creds = plan["database"]
+        datasource_password = plan["datasource_password"]
+    
+        if entries:
+            secret_result = vm_manager.install_secret_files(company_name, entries)
+            if not secret_result.get("success"):
+                return {
+                    "success": False,
+                    "error": secret_result.get("error", "Failed to install secrets"),
+                    "age_remote_path": age_remote_path,
+                }
+
+            installed_secrets = [entry["name"] for entry in entries]
+
+        if restart_db and plan:
+            db_password = database_creds.get("mattermost-password") or datasource_password
+            if db_password:
+                db_result = vm_manager.ensure_mattermost_database(
+                    company_name, db_password
+                )
+                if db_result.get("success"):
+                    messages.append("Mattermost database credentials refreshed")
+                else:
+                    warnings.append(
+                        f"Mattermost database reset failed: {db_result.get('error')}"
+                    )
+            gitlab_db_password = gitlab.get("db-password")
+            if gitlab_db_password:
+                gitlab_db_result = vm_manager.ensure_gitlab_database_password(
+                    company_name, gitlab_db_password
+                )
+                if gitlab_db_result.get("success"):
+                    messages.append("GitLab database password refreshed")
+                else:
+                    warnings.append(
+                        f"GitLab database password refresh failed: {gitlab_db_result.get('error')}"
+                    )
+
+            grafana_db_password = grafana.get("db-password")
+            if grafana_db_password:
+                grafana_db_result = vm_manager.ensure_grafana_database_password(
+                    company_name, grafana_db_password
+                )
+                if grafana_db_result.get("success"):
+                    messages.append("Grafana database password refreshed")
+                else:
+                    warnings.append(
+                        f"Grafana database password refresh failed: {grafana_db_result.get('error')}"
+                    )
+
+            penpot_db_password = database_creds.get("penpot-password")
+            if penpot_db_password:
+                penpot_db_result = vm_manager.ensure_penpot_database_password(
+                    company_name, penpot_db_password
+                )
+                if penpot_db_result.get("success"):
+                    messages.append("Penpot database password refreshed")
+                else:
+                    warnings.append(
+                        f"Penpot database password refresh failed: {penpot_db_result.get('error')}"
+                    )
+
+            n8n_db_password = database_creds.get("n8n-password")
+            if n8n_db_password:
+                n8n_db_result = vm_manager.ensure_n8n_database_password(
+                    company_name, n8n_db_password
+                )
+                if n8n_db_result.get("success"):
+                    messages.append("n8n database password refreshed")
+                else:
+                    warnings.append(
+                        f"n8n database password refresh failed: {n8n_db_result.get('error')}"
+                    )
+
+            prometheus_db_password = database_creds.get("prometheus-password")
+            if prometheus_db_password:
+                prometheus_db_result = vm_manager.ensure_prometheus_database_password(
+                    company_name, prometheus_db_password
+                )
+                if prometheus_db_result.get("success"):
+                    messages.append("Prometheus exporter database password refreshed")
+                else:
+                    warnings.append(
+                        f"Prometheus database password refresh failed: {prometheus_db_result.get('error')}"
+                    )
+
+    return {
+        "success": True,
+        "age_remote_path": age_remote_path,
+        "messages": messages,
+        "warnings": warnings,
+        "installed_secrets": installed_secrets,
+    }
+
+@secrets.command(name="install")
+@click.argument("company_name")
+@click.option(
+    "--key-file",
+    default=str(DEFAULT_AGE_KEY_PATH),
+    show_default=True,
+    help="Age private key to copy into the VM"
+)
+@click.option(
+    "--remote-path",
+    default="/var/lib/sops-nix/key.txt",
+    show_default=True,
+    help="Destination path inside the VM"
+)
+@click.pass_context
+@click.option(
+    "--secrets-file",
+    default=str(DEFAULT_SECRETS_FILE),
+    show_default=True,
+    help="Path to the encrypted secrets file"
+)
+def install_key(ctx, company_name: str, key_file: str, remote_path: str, secrets_file: str):
+    """Copy the Age key into a running VM for sops-nix."""
+
+    vm_manager = ctx.obj['vm_manager']
+    sync_result = _sync_vm_secrets(
+        vm_manager,
+        company_name,
+        Path(key_file),
+        Path(secrets_file),
+        restart_db=True,
+    )
+
+    if not sync_result.get("success"):
+        click.echo(f"❌ {sync_result.get('error', 'Failed to install Age key')}" )
+        sys.exit(1)
+
+    age_remote_path = sync_result.get("age_remote_path", remote_path)
+    click.echo(
+        f"✅ Age key installed for '{company_name}' at {age_remote_path}"
+    )
+
+    installed = sync_result.get("installed_secrets", [])
+    if installed:
+        click.echo(f"   • Installed secrets: {', '.join(installed)}")
+
+    for message in sync_result.get("messages", []):
+        click.echo(f"   • {message}")
+
+    for warning in sync_result.get("warnings", []):
+        click.echo(f"⚠️ {warning}")
+
+
+@secrets.command(name="diff")
+@click.option(
+    "--key-file",
+    default=str(DEFAULT_AGE_KEY_PATH),
+    show_default=True,
+    help="Age private key used to decrypt secrets",
+)
+@click.option(
+    "--secrets-file",
+    default=str(DEFAULT_SECRETS_FILE),
+    show_default=True,
+    help="Path to the encrypted secrets file",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    show_default=True,
+    help="Output format for the dry-run report",
+)
+def secrets_diff(key_file: str, secrets_file: str, output_format: str) -> None:
+    """Show which secret files would be installed without touching a VM."""
+
+    secrets_path = Path(secrets_file)
+    if not secrets_path.exists():
+        click.echo(f"❌ Secrets file not found at {secrets_path}")
+        sys.exit(1)
+
+    key_path = Path(key_file).expanduser()
+    secrets_data = _load_decrypted_secrets(secrets_path, key_path)
+    if not secrets_data:
+        click.echo("❌ Unable to load secrets; aborting diff")
+        sys.exit(1)
+
+    plan = _prepare_secret_entries(secrets_data, secrets_path)
+    entries = plan["entries"]
+    if plan["warnings"]:
+        for warning in plan["warnings"]:
+            click.echo(f"⚠️ {warning}")
+
+    if not entries:
+        click.echo("ℹ️  No secrets entries would be installed based on the current payload.")
+        return
+
+    def _entry_snapshot(entry: Dict[str, str]) -> Dict[str, Any]:
+        return {
+            "name": entry["name"],
+            "remote_path": entry["remote_path"],
+            "owner": entry["owner"],
+            "group": entry["group"],
+            "mode": entry["mode"],
+            "sha256": hashlib.sha256(entry["content"].encode()).hexdigest(),
+            "size": len(entry["content"]),
+        }
+
+    snapshots = [_entry_snapshot(entry) for entry in entries]
+
+    if output_format == "json":
+        click.echo(json.dumps(snapshots, indent=2))
+        return
+
+    columns = ["Secret", "Remote Path", "Owner", "Mode", "Bytes", "SHA256"]
+    rows = [
+        (
+            snap["name"],
+            snap["remote_path"],
+            f"{snap['owner']}:{snap['group']}",
+            snap["mode"],
+            str(snap["size"]),
+            snap["sha256"][:12],
+        )
+        for snap in snapshots
+    ]
+
+    widths = [len(col) for col in columns]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(cell))
+
+    def _format_row(items: Tuple[str, ...]) -> str:
+        return "  ".join(cell.ljust(widths[idx]) for idx, cell in enumerate(items))
+
+    click.echo("Planned secret file writes:")
+    click.echo(_format_row(tuple(columns)))
+    click.echo(_format_row(tuple("-" * w for w in widths)))
+    for row in rows:
+        click.echo(_format_row(row))
+    click.echo("\n🔍 Dry run only – run 'rave secrets install <company>' to apply these changes.")
+
+# System Commands
+@cli.command()
+@click.pass_context
+def prerequisites(ctx):
+    """Check system prerequisites for RAVE operations."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    click.echo("🔍 Checking RAVE system prerequisites...")
+    
+    result = vm_manager.check_prerequisites()
+    
+    if result['success']:
+        click.echo("✅ All prerequisites satisfied!")
+    else:
+        click.echo("❌ Missing prerequisites:")
+        for item in result['missing']:
+            click.echo(f"   • {item}")
+    
+    if result['warnings']:
+        click.echo("⚠️  Warnings:")
+        for warning in result['warnings']:
+            click.echo(f"   • {warning}")
+    
+    if not result['success']:
+        click.echo("\n📖 See docs/MACOS-SETUP.md for installation instructions")
+        sys.exit(1)
+
+# VM Management Commands
+@cli.group()
+def vm():
+    """Virtual Machine management commands."""
+    pass
+
+
+@vm.command(name="list-profiles")
+def list_profiles():
+    """List available VM build profiles and their flake attributes."""
+    click.echo("Available VM profiles:\n")
+    for name in sorted(PROFILE_METADATA.keys()):
+        meta = PROFILE_METADATA[name]
+        click.echo(f"• {name}: {meta['attr']} — {meta['description']}")
+    click.echo("\nUse `rave vm build-image --profile <name>` or pass --attr for custom builds.")
+
+
+def _check_port_available(port: int) -> bool:
+    """Return True if the port is free on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+@vm.command(name="build-image")
+@_apply_pomerium_idp_options
+@click.option(
+    "--profile",
+    type=click.Choice(sorted(PROFILE_ATTRS.keys())),
+    default="production",
+    show_default=True,
+    help="Named VM profile to build (ignored if --attr is provided)",
+)
+@click.option(
+    "--attr",
+    default=None,
+    show_default=False,
+    help="Custom Nix flake attribute to build (overrides --profile)",
+)
+@click.option(
+    "--output",
+    default=None,
+    show_default=False,
+    help="Symlink path that points at the latest image (defaults per profile)",
+)
+@click.option(
+    "--skip-symlink",
+    is_flag=True,
+    default=False,
+    help="Do not update the symlink after copying the image",
+)
+@click.option(
+    "--key-file",
+    default=str(DEFAULT_AGE_KEY_PATH),
+    show_default=True,
+    help="Age private key to embed into the qcow image for sops-nix",
+)
+@click.option(
+    "--embed-age-key/--no-embed-age-key",
+    default=True,
+    show_default=True,
+    help="Embed the Age key into the generated image so secrets decrypt on first boot",
+)
+@click.pass_context
+def build_image(
+    ctx,
+    profile: str,
+    attr: str,
+    output: str,
+    skip_symlink: bool,
+    key_file: str,
+    embed_age_key: bool,
+    idp_provider: str,
+    idp_client_id: Optional[str],
+    idp_client_secret: Optional[str],
+    idp_client_secret_file: Optional[str],
+    idp_secret_selector: Optional[str],
+    idp_provider_url: Optional[str],
+    idp_scope: Tuple[str, ...],
+):
+    """Build the local development qcow2 image."""
+    platform: PlatformManager = ctx.obj["platform"]
+    vm_manager: VMManager = ctx.obj["vm_manager"]
+    repo_root = Path.cwd()
+
+    if shutil.which("nix") is None:
+        click.echo("❌ Nix is not installed or not on PATH. See README for setup steps.")
+        sys.exit(1)
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d")
+    if output is None:
+        output = PROFILE_METADATA[profile]["default_image"]
+    output_path = repo_root / output
+    if attr is None and profile == "production":
+        stamp_prefix = "rave-complete"
+    elif attr is None:
+        stamp_prefix = f"rave-{profile}"
+    else:
+        stamp_prefix = "rave-custom"
+    stamp_name = f"{stamp_prefix}-{timestamp}.qcow2"
+    releases_dir = repo_root / "artifacts" / "qcow" / "releases"
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    stamped_path = releases_dir / stamp_name
+
+    selected_attr = attr or PROFILE_ATTRS[profile]
+
+    idp_payload, _ = _resolve_pomerium_idp(
+        idp_provider,
+        idp_client_id,
+        idp_client_secret,
+        idp_client_secret_file,
+        idp_secret_selector,
+        idp_provider_url,
+        idp_scope,
+    )
+
+    click.echo(
+        f"🛠️  Building qcow2 image via Nix ({selected_attr}) with IdP '{idp_payload['provider']}'..."
+    )
+    build_cmd = platform.get_nix_build_command()
+    build_cmd.extend(["--show-trace", f".#{selected_attr}"])
+    env = os.environ.copy()
+    env["RAVE_POMERIUM_CONFIG_JSON"] = json.dumps(idp_payload)
+    result = subprocess.run(build_cmd, cwd=repo_root, env=env)
+    if result.returncode != 0:
+        click.echo("❌ nix build failed. Scroll up for details.")
+        sys.exit(result.returncode)
+
+    image_src = repo_root / "result" / "nixos.qcow2"
+    if not image_src.exists():
+        click.echo("❌ Build succeeded but result/nixos.qcow2 is missing.")
+        sys.exit(1)
+
+    if stamped_path.exists() or stamped_path.is_symlink():
+        stamped_path.unlink()
+
+    click.echo(f"💾 Copying image to {stamped_path.name}...")
+    temp_path = stamped_path.with_suffix(stamped_path.suffix + ".tmp")
+    if temp_path.exists() or temp_path.is_symlink():
+        temp_path.unlink()
+    shutil.copy2(image_src, temp_path)
+    temp_path.replace(stamped_path)
+    stamped_path.chmod(0o644)
+    if stamped_path.is_symlink():
+        click.echo(f"⚠️  Warning: stamped image {stamped_path.name} is a symlink after copy")
+
+    age_key_path = Path(key_file).expanduser()
+    if embed_age_key:
+        if not age_key_path.exists():
+            click.echo(f"⚠️  Age key not found at {age_key_path}; skipping embed step.")
+        else:
+            embed_result = vm_manager._install_age_key_into_image(
+                str(stamped_path),
+                age_key_path,
+            )
+            if embed_result.get("success"):
+                click.echo("🔐 Embedded Age key for sops-nix into the qcow image.")
+            else:
+                click.echo(
+                    f"⚠️  Failed to embed Age key ({embed_result.get('error', 'unknown error')}). "
+                    "Secrets will need to be installed manually after boot."
+                )
+
+    if not skip_symlink:
+        click.echo(f"🔗 Updating {output} -> {stamped_path.name}")
+        if output_path.exists() or output_path.is_symlink():
+            output_path.unlink()
+        # Use a relative symlink when the paths share a directory
+        try:
+            relative_target = stamped_path.relative_to(output_path.parent.resolve())
+        except ValueError:
+            relative_target = stamped_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.symlink_to(relative_target)
+
+    click.echo("✅ Image build complete.")
+
+@vm.command(name="launch-local")
+@click.option(
+    "--profile",
+    type=click.Choice(sorted(PROFILE_ATTRS.keys())),
+    default="production",
+    show_default=True,
+    help="Named VM profile; controls default image and service list",
+)
+@click.option(
+    "--image",
+    default=None,
+    show_default=False,
+    help="qcow2 image to boot (defaults per profile)",
+)
+@click.option("--memory", default="8G", show_default=True, help="Guest memory allocation")
+@click.option("--cpus", default=4, show_default=True, help="Guest vCPU count")
+@click.option("--name", default="local-dev", show_default=True, help="VM name")
+@click.option(
+    "--http-port",
+    default=8081,
+    show_default=True,
+    help="Primary host port forwarded to guest :80",
+)
+@click.option(
+    "--https-port",
+    default=8443,
+    show_default=True,
+    help="Primary host port forwarded to guest :443",
+)
+@click.option("--ssh-port", default=2224, show_default=True, help="Forward host port to guest :22")
+@click.option("--status-port", default=8889, show_default=True, help="Forward host port to guest :8080")
+@click.option("--no-backup", is_flag=True, default=False, help="Skip creating the initial image backup")
+@click.pass_context
+def launch_local(
+    ctx,
+    profile: str,
+    image: str,
+    memory: str,
+    cpus: int,
+    name: str,
+    http_port: int,
+    https_port: int,
+    ssh_port: int,
+    status_port: int,
+    no_backup: bool,
+):
+    """Boot the development VM image locally with QEMU."""
+    platform: PlatformManager = ctx.obj["platform"]
+    repo_root = Path.cwd()
+
+    if image is None:
+        image = PROFILE_METADATA[profile]["default_image"]
+    image_path = Path(image)
+    if not image_path.is_absolute():
+        image_path = repo_root / image_path
+    if not image_path.exists():
+        click.echo(f"❌ VM image not found: {image_path}")
+        sys.exit(1)
+
+    port_forwards = [
+        (http_port, 80),
+        (https_port, 443),
+        (ssh_port, 22),
+        (status_port, 8080),
+    ]
+
+    required_legacy_ports = {
+    }
+    optional_legacy_ports = {
+    }
+
+    click.echo("🔍 Checking port availability...")
+    unavailable = [
+        host_port for host_port, _ in port_forwards if not _check_port_available(host_port)
+    ]
+    if unavailable:
+        for port in sorted(set(unavailable)):
+            click.echo(f"❌ Host port {port} is already in use.")
+        sys.exit(1)
+
+    forwarded_hosts = {host_port for host_port, _ in port_forwards}
+
+    for host_port, guest_port in required_legacy_ports.items():
+        if host_port in forwarded_hosts:
+            continue
+        if not _check_port_available(host_port):
+            click.echo(
+                f"❌ Host port {host_port} is already in use; required for documented HTTPS access."
+            )
+            sys.exit(1)
+        port_forwards.append((host_port, guest_port))
+        forwarded_hosts.add(host_port)
+
+    for host_port, guest_port in optional_legacy_ports.items():
+        if host_port in forwarded_hosts:
+            continue
+        if not _check_port_available(host_port):
+            continue
+        port_forwards.append((host_port, guest_port))
+        forwarded_hosts.add(host_port)
+
+    qemu_binary = platform.get_qemu_binary()
+    if not qemu_binary:
+        click.echo("❌ Unable to locate qemu-system-x86_64. Install QEMU first.")
+        sys.exit(1)
+
+    pidfile = Path(f"/tmp/rave-{name}.pid")
+    try:
+        if pidfile.exists() or pidfile.is_symlink():
+            pidfile.unlink()
+        pidfile.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    backup_path = image_path.with_suffix(image_path.suffix + ".backup")
+    if not no_backup and not backup_path.exists():
+        click.echo(f"💾 Creating backup at {backup_path}")
+        shutil.copy2(image_path, backup_path)
+
+    click.echo("🖥️  Launching RAVE VM...")
+    click.echo(f"   Image : {image_path}")
+    click.echo(f"   Memory: {memory}")
+    click.echo(f"   CPUs  : {cpus}")
+    click.echo(f"   Profile: {profile}")
+    click.echo("")
+    primary_https_port = https_port
+    click.echo("📊 Service URLs (available after boot):")
+    click.echo(f"   🌐 Dashboard:  https://localhost:{primary_https_port}/")
+    click.echo(f"   🦊 GitLab:     https://localhost:{primary_https_port}/gitlab/")
+    click.echo(f"   💬 Mattermost: https://localhost:{primary_https_port}/mattermost/")
+    if _profile_feature(profile, "penpot"):
+        click.echo(f"   🎨 Penpot:     https://localhost:{primary_https_port}/penpot/")
+    if _profile_feature(profile, "outline"):
+        click.echo(f"   📚 Outline:    https://localhost:{primary_https_port}/outline/")
+    if _profile_feature(profile, "n8n"):
+        click.echo(f"   🧠 n8n:        https://localhost:{primary_https_port}/n8n/")
+    click.echo("")
+    click.echo(f"🔑 SSH Access: ssh -p {ssh_port} root@localhost (password: debug123)")
+    click.echo("🔴 To stop: press Ctrl+C in this terminal or kill the QEMU process.")
+    click.echo("")
+
+    hostfwd_rules = [
+        f"hostfwd=tcp::{host_port}-:{guest_port}"
+        for host_port, guest_port in port_forwards
+    ]
+    netdev = f"user,id=net0,{','.join(hostfwd_rules)}"
+
+    cmd = [
+        qemu_binary,
+        "-drive",
+        f"file={image_path},format=qcow2",
+        "-m",
+        memory,
+        "-smp",
+        str(cpus),
+        "-netdev",
+        netdev,
+        "-device",
+        "virtio-net-pci,netdev=net0",
+        "-pidfile",
+        str(pidfile),
+        "-display",
+        "none",
+        "-serial",
+        "stdio",
+        "-name",
+        name,
+    ]
+
+    try:
+        os.execvp(qemu_binary, cmd)
+    except FileNotFoundError:
+        click.echo(f"❌ Failed to execute QEMU binary: {qemu_binary}")
+        sys.exit(1)
+    except OSError as exc:
+        click.echo(f"❌ Unable to launch VM: {exc}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.option(
+    '--profile',
+    type=click.Choice(sorted(PROFILE_METADATA.keys())),
+    default='development',
+    show_default=True,
+    help='VM profile to build (matches flake outputs)',
+)
+@click.option('--keypair', required=True, help='Path to SSH keypair for VM access')
+@click.option('--http-port', type=int, help='HTTP port (default: 8081)')
+@click.option('--https-port', type=int, help='HTTPS port (default: 8443)')
+@click.option('--ssh-port', type=int, help='SSH port (default: 2224)')
+@click.option('--test-port', type=int, help='Test page port (default: 8889)')
+@click.option('--postgres-port', type=int, help='Host port forwarded to guest :5432 (dataPlane only)')
+@click.option('--redis-port', type=int, help='Host port forwarded to guest :6379 (dataPlane only)')
+@click.option(
+    '--skip-build',
+    is_flag=True,
+    help='Skip the nix build step and reuse the existing profile image',
+)
+@_apply_pomerium_idp_options
+@click.pass_context
+def create(ctx, company_name: str, profile: str, keypair: str, http_port: Optional[int], https_port: Optional[int], 
+           ssh_port: Optional[int], test_port: Optional[int], postgres_port: Optional[int], redis_port: Optional[int], skip_build: bool,
+           idp_provider: str, idp_client_id: Optional[str], idp_client_secret: Optional[str],
+           idp_client_secret_file: Optional[str], idp_secret_selector: Optional[str],
+           idp_provider_url: Optional[str], idp_scope: Tuple[str, ...]):
+    """Create a new company development environment VM."""
+    vm_manager = ctx.obj['vm_manager']
+    repo_root = REPO_ROOT
+    profile_attr = PROFILE_ATTRS[profile]
+    default_image_name = PROFILE_METADATA[profile]["default_image"]
+    default_image_path = (
+        Path(default_image_name)
+        if Path(default_image_name).is_absolute()
+        else repo_root / default_image_name
+    )
+
+    click.echo(f"🚀 Creating development environment for {company_name}...")
+    click.echo(f"🔑 Using SSH keypair: {keypair}")
+    click.echo(f"🧩 Profile: {profile} ({profile_attr})")
+
+    age_key_path = DEFAULT_AGE_KEY_PATH
+    secrets_path = DEFAULT_SECRETS_FILE
+    age_key_ready = age_key_path.exists()
+    secrets_file_ready = secrets_path.exists()
+    bootstrap_skipped = False
+
+    if not age_key_ready or not secrets_file_ready:
+        click.echo("⚠️  Secrets prerequisites missing:")
+        if not age_key_ready:
+            click.echo(f"   • Age key ({age_key_path})")
+        if not secrets_file_ready:
+            click.echo(f"   • Secrets file ({secrets_path})")
+
+        if click.confirm("Run 'rave secrets init' now?", default=True):
+            ctx.invoke(init, key_file=str(age_key_path), secrets_file=str(secrets_path))
+            age_key_ready = age_key_path.exists()
+            secrets_file_ready = secrets_path.exists()
+        else:
+            click.echo("ℹ️  Skipping secrets bootstrap for now.")
+            if not click.confirm(
+                "Continue without installing secrets? (You can sync later with 'rave secrets install')",
+                default=False,
+            ):
+                click.echo("❌ VM creation cancelled.")
+                return
+            bootstrap_skipped = True
+
+    if not age_key_ready:
+        click.echo(
+            f"⚠️  Age key not available at {age_key_path}. "
+            "Secrets will need to be installed after creation."
+        )
+    elif not secrets_file_ready:
+        click.echo(
+            f"⚠️  Secrets file still missing at {secrets_path}. "
+            "VM will be created with the current encrypted defaults."
+        )
+
+    # Build custom port configuration from command line options
+    custom_ports = {}
+    if http_port is not None:
+        custom_ports["http"] = http_port
+    if https_port is not None:
+        custom_ports["https"] = https_port
+    if ssh_port is not None:
+        custom_ports["ssh"] = ssh_port
+    if test_port is not None:
+        custom_ports["test"] = test_port
+    if postgres_port is not None:
+        custom_ports["postgres"] = postgres_port
+    if redis_port is not None:
+        custom_ports["redis"] = redis_port
+    
+    if custom_ports:
+        click.echo(f"🔌 Using custom ports: {', '.join(f'{k}:{v}' for k, v in custom_ports.items())}")
+
+    idp_payload, idp_metadata = _resolve_pomerium_idp(
+        idp_provider,
+        idp_client_id,
+        idp_client_secret,
+        idp_client_secret_file,
+        idp_secret_selector,
+        idp_provider_url,
+        idp_scope,
+    )
+
+    try:
+        age_key_for_install = age_key_path if age_key_ready else None
+        result = vm_manager.create_vm(
+            company_name=company_name,
+            keypair_path=keypair,
+            profile=profile,
+            profile_attr=profile_attr,
+            default_image_path=default_image_path,
+            age_key_path=age_key_for_install,
+            custom_ports=custom_ports if custom_ports else None,
+            skip_build=skip_build,
+            pomerium_config=idp_payload,
+            pomerium_metadata=idp_metadata,
+        )
+        if result['success']:
+            click.echo(f"✅ VM '{company_name}' created successfully!")
+            warnings = result.get('warnings', [])
+            if warnings:
+                for warning in warnings:
+                    click.echo(f"⚠️  {warning}")
+            elif not age_key_ready:
+                click.echo(
+                    f"⚠️  Secrets were not embedded. Run 'rave secrets install {company_name}' before first boot."
+                )
+            elif bootstrap_skipped or not secrets_file_ready:
+                click.echo(
+                    f"ℹ️  Update secrets in {secrets_path} and run 'rave secrets install {company_name}' when ready."
+                )
+            click.echo(
+                f"   IdP   : {idp_metadata['provider']} (client ID {idp_metadata['clientId']})"
+            )
+            click.echo(f"   SSH access: rave vm ssh {company_name}")
+            click.echo(f"   Status: rave vm status {company_name}")
+        else:
+            click.echo(f"❌ Failed to create VM: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error creating VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.pass_context
+def start(ctx, company_name: str):
+    """Start a company VM."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    click.echo(f"▶️  Starting VM '{company_name}'...")
+    try:
+        result = vm_manager.start_vm(company_name)
+        if result['success']:
+            click.echo(f"✅ VM '{company_name}' started successfully!")
+
+            sync_result = _sync_vm_secrets(
+                vm_manager,
+                company_name,
+                DEFAULT_AGE_KEY_PATH,
+                DEFAULT_SECRETS_FILE,
+                restart_db=False,
+            )
+
+            if sync_result.get("success"):
+                age_remote_path = sync_result.get(
+                    "age_remote_path", "/var/lib/sops-nix/key.txt"
+                )
+                click.echo(f"   • SOPS Age key synced to {age_remote_path}")
+
+                installed = sync_result.get("installed_secrets", [])
+                if installed:
+                    click.echo(
+                        f"   • Deployed secrets: {', '.join(installed)}"
+                    )
+
+                for message in sync_result.get("messages", []):
+                    click.echo(f"   • {message}")
+
+                for warning in sync_result.get("warnings", []):
+                    click.echo(f"   ⚠️  {warning}")
+            else:
+                click.echo(
+                    f"⚠️  Secrets not synced automatically: {sync_result.get('error')}"
+                )
+                click.echo(
+                    f"   Run 'rave secrets install {company_name}' after the key is available."
+                )
+        else:
+            click.echo(f"❌ Failed to start VM: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error starting VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.pass_context
+def stop(ctx, company_name: str):
+    """Stop a company VM."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    click.echo(f"⏹️  Stopping VM '{company_name}'...")
+    try:
+        result = vm_manager.stop_vm(company_name)
+        if result['success']:
+            click.echo(f"✅ VM '{company_name}' stopped successfully!")
+        else:
+            click.echo(f"❌ Failed to stop VM: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error stopping VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name', required=False)
+@click.option('--all', is_flag=True, help='Show status of all VMs')
+@click.pass_context
+def status(ctx, company_name: Optional[str], all: bool):
+    """Show VM status."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    try:
+        if all or not company_name:
+            results = vm_manager.status_all_vms()
+            if not results:
+                click.echo("No VMs found.")
+                return
+                
+            click.echo("🖥️  VM Status Overview:")
+            for vm_name, status in results.items():
+                status_icon = "🟢" if status['running'] else "🔴"
+                click.echo(f"   {status_icon} {vm_name}: {status['status']}")
+        else:
+            result = vm_manager.status_vm(company_name)
+            if result['success']:
+                status_icon = "🟢" if result['running'] else "🔴"
+                click.echo(f"{status_icon} VM '{company_name}': {result['status']}")
+                if result['running']:
+                    click.echo(f"   SSH: rave vm ssh {company_name}")
+                    click.echo(f"   Logs: rave vm logs {company_name}")
+            else:
+                click.echo(f"❌ VM '{company_name}' not found")
+                sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting VM status: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.pass_context
+def reset(ctx, company_name: str):
+    """Reset VM to clean default state."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    click.echo(f"🔄 Resetting VM '{company_name}' to default state...")
+    if not click.confirm("This will reset all data in the VM. Continue?"):
+        click.echo("Reset cancelled.")
+        return
+    
+    try:
+        result = vm_manager.reset_vm(company_name)
+        if result['success']:
+            click.echo(f"✅ VM '{company_name}' reset successfully!")
+            warning = result.get('warning')
+            if warning:
+                click.echo(f"⚠️  {warning}")
+        else:
+            click.echo(f"❌ Failed to reset VM: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error resetting VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.pass_context
+def ssh(ctx, company_name: str):
+    """SSH into company VM."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    try:
+        result = vm_manager.ssh_vm(company_name)
+        if not result['success']:
+            click.echo(f"❌ {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error connecting to VM: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.argument('company_name')
+@click.argument('service', required=False)
+@click.option('--follow', '-f', is_flag=True, help='Follow log output')
+@click.option('--tail', '-t', default=50, help='Number of lines to show')
+@click.option('--since', '-s', help='Show logs since time (e.g., 1h, 30m)')
+@click.option('--all', is_flag=True, help='Show logs from all services')
+@click.pass_context
+def logs(ctx, company_name: str, service: Optional[str], follow: bool, tail: int, since: Optional[str], all: bool):
+    """View VM service logs."""
+    vm_manager = ctx.obj['vm_manager']
+    
+    try:
+        result = vm_manager.get_logs(
+            company_name, 
+            service=service, 
+            follow=follow, 
+            tail=tail, 
+            since=since, 
+            all_services=all
+        )
+        if not result['success']:
+            click.echo(f"❌ {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting logs: {e}")
+        sys.exit(1)
+
+@vm.command()
+@click.option('--show', is_flag=True, help='Show current port configuration')
+@click.option('--set-http-port', type=int, help='Set default HTTP port')
+@click.option('--set-https-port', type=int, help='Set default HTTPS port')
+@click.option('--set-ssh-port', type=int, help='Set default SSH port')
+@click.option('--set-test-port', type=int, help='Set default test port')
+@click.option('--reset', is_flag=True, help='Reset to built-in defaults')
+@click.pass_context
+def config(ctx, show: bool, set_http_port: Optional[int], set_https_port: Optional[int], 
+           set_ssh_port: Optional[int], set_test_port: Optional[int], reset: bool):
+    """Configure default VM ports."""
+    config = ctx.obj['config']
+    vm_manager = ctx.obj['vm_manager']
+    
+    if show or (not any([set_http_port, set_https_port, set_ssh_port, set_test_port, reset])):
+        click.echo("📊 Current port configuration:")
+        current_ports = vm_manager.port_config
+        click.echo(f"   HTTP:  {current_ports['http']}")
+        click.echo(f"   HTTPS: {current_ports['https']}")
+        click.echo(f"   SSH:   {current_ports['ssh']}")
+        click.echo(f"   Test:  {current_ports['test']}")
+        return
+    
+    if reset:
+        if 'default_ports' in config:
+            del config['default_ports']
+        save_config(config)
+        click.echo("✅ Port configuration reset to built-in defaults")
+        click.echo("   Restart CLI for changes to take effect")
+        return
+    
+    # Update configuration
+    if 'default_ports' not in config:
+        config['default_ports'] = {}
+    
+    updates = []
+    if set_http_port is not None:
+        config['default_ports']['http'] = set_http_port
+        updates.append(f"HTTP: {set_http_port}")
+    if set_https_port is not None:
+        config['default_ports']['https'] = set_https_port
+        updates.append(f"HTTPS: {set_https_port}")
+    if set_ssh_port is not None:
+        config['default_ports']['ssh'] = set_ssh_port
+        updates.append(f"SSH: {set_ssh_port}")
+    if set_test_port is not None:
+        config['default_ports']['test'] = set_test_port
+        updates.append(f"Test: {set_test_port}")
+    
+    if updates:
+        save_config(config)
+        click.echo(f"✅ Updated default ports: {', '.join(updates)}")
+        click.echo("   Restart CLI for changes to take effect")
+
+# User Management Commands
+@cli.group()
+def user():
+    """User management commands."""
+    pass
+
+@user.command()
+@click.argument('email')
+@click.option('--oauth-id', required=True, help='GitLab OAuth ID')
+@click.option('--access', default='developer', help='Access level (admin/developer/guest)')
+@click.option('--company', help='Company name')
+@click.option('--name', help='Display name')
+@click.option(
+    '--metadata',
+    help='User metadata (JSON object or comma-separated key=value pairs)',
+)
+@click.option(
+    '--provider',
+    help='OAuth provider (google or github). Defaults to configured provider.',
+)
+@click.pass_context
+def add(
+    ctx,
+    email: str,
+    oauth_id: str,
+    access: str,
+    company: Optional[str],
+    name: Optional[str],
+    metadata: Optional[str],
+    provider: Optional[str],
+):
+    """Add a new user via GitLab OAuth."""
+    user_manager = ctx.obj['user_manager']
+    metadata_dict = _parse_metadata_option(metadata)
+
+    default_provider = _get_default_provider(ctx)
+    normalized_provider = _normalize_provider_choice(provider, default_provider)
+    user_manager.set_default_provider(normalized_provider)
+
+    provider_label = user_manager._provider_label(normalized_provider)
+    click.echo(f"👤 Adding user {email} (OAuth ID: {oauth_id}) via {provider_label}...")
+    try:
+        result = user_manager.add_user(
+            email,
+            oauth_id,
+            access,
+            company,
+            name=name,
+            metadata=metadata_dict,
+            provider=normalized_provider,
+        )
+        if result['success']:
+            click.echo(f"✅ User {email} added successfully!")
+        else:
+            click.echo(f"❌ Failed to add user: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error adding user: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.pass_context
+def remove(ctx, email: str):
+    """Remove a user."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"🗑️  Removing user {email}...")
+    if not click.confirm(f"Remove user {email}?"):
+        click.echo("User removal cancelled.")
+        return
+    
+    try:
+        result = user_manager.remove_user(email)
+        if result['success']:
+            click.echo(f"✅ User {email} removed successfully!")
+        else:
+            click.echo(f"❌ Failed to remove user: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error removing user: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.option('--company', help='Filter by company')
+@click.pass_context
+def list(ctx, company: Optional[str]):
+    """List all users."""
+    user_manager = ctx.obj['user_manager']
+    
+    user_manager.set_default_provider(_get_default_provider(ctx))
+
+    try:
+        result = user_manager.list_users(company)
+        if result['success']:
+            users = result['users']
+            if not users:
+                click.echo("No users found.")
+                return
+                
+            click.echo("👥 Users:")
+            for user in users:
+                company_info = f" ({user['company']})" if user.get('company') else ""
+                display_name = f"{user.get('name')} " if user.get('name') else ""
+                provider_label = user_manager._provider_label(user.get('provider'))
+                provider_text = f" [{provider_label}]" if provider_label else ""
+                click.echo(
+                    f"   • {display_name}{user['email']}{company_info} - {user['access']}{provider_text}"
+                )
+        else:
+            click.echo(f"❌ Failed to list users: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error listing users: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.option('--access', help='New access level (admin/developer/guest)')
+@click.pass_context
+def config(ctx, email: str, access: Optional[str]):
+    """Configure user settings."""
+    user_manager = ctx.obj['user_manager']
+    
+    if not access:
+        click.echo("No configuration options provided.")
+        return
+    
+    click.echo(f"⚙️  Configuring user {email}...")
+    try:
+        result = user_manager.config_user(email, access=access)
+        if result['success']:
+            click.echo(f"✅ User {email} configured successfully!")
+        else:
+            click.echo(f"❌ Failed to configure user: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error configuring user: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.pass_context
+def show(ctx, email: str):
+    """Show user details."""
+    user_manager = ctx.obj['user_manager']
+    
+    user_manager.set_default_provider(_get_default_provider(ctx))
+
+    try:
+        result = user_manager.get_user(email)
+        if result['success']:
+            user = result['user']
+            click.echo(f"👤 User Details:")
+            if user.get('name'):
+                click.echo(f"   Name: {user['name']}")
+            click.echo(f"   Email: {user['email']}")
+            click.echo(f"   OAuth ID: {user['oauth_id']}")
+            click.echo(f"   Access: {user['access']}")
+            click.echo(f"   Provider: {user_manager._provider_label(user.get('provider'))}")
+            if user.get('company'):
+                click.echo(f"   Company: {user['company']}")
+            metadata = user.get('metadata')
+            if metadata:
+                click.echo("   Metadata:")
+                for key, value in metadata.items():
+                    click.echo(f"      - {key}: {value}")
+        else:
+            click.echo(f"❌ User {email} not found")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting user: {e}")
+        sys.exit(1)
+
+@user.command(name='bulk-add')
+@click.argument('file', type=click.Path(exists=True))
+@click.option('--company', help='Company name for all users')
+@click.option(
+    '--metadata',
+    help='Default metadata applied to each user (JSON or comma-separated key=value pairs)',
+)
+@click.option(
+    '--verbose',
+    is_flag=True,
+    help='Show per-user results during import',
+)
+@click.option(
+    '--provider',
+    help='OAuth provider for imported users (google or github).'
+)
+@click.pass_context
+def bulk_add(
+    ctx,
+    file: str,
+    company: Optional[str],
+    metadata: Optional[str],
+    verbose: bool,
+    provider: Optional[str],
+):
+    """Add multiple users from CSV/JSON file."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"📁 Adding users from {file}...")
+    try:
+        default_metadata = None
+        if metadata is not None:
+            parsed = _parse_metadata_option(metadata)
+            default_metadata = parsed or None
+
+        default_provider = _normalize_provider_choice(provider, _get_default_provider(ctx))
+        user_manager.set_default_provider(default_provider)
+
+        result = user_manager.bulk_add_users(
+            file,
+            company,
+            default_metadata=default_metadata,
+            provider=default_provider,
+        )
+        if result['success']:
+            added_count = result.get('added', 0)
+            updated_count = result.get('updated', 0)
+
+            click.echo(f"✅ Added {added_count} users successfully!")
+            if updated_count:
+                click.echo(f"🔁 Updated {updated_count} existing users.")
+
+            if verbose:
+                details = result.get('details', {})
+                for user in details.get('added', []):
+                    email = user.get('email', 'unknown')
+                    click.echo(f"   • Added {email}")
+                for user in details.get('updated', []):
+                    email = user.get('email', 'unknown')
+                    click.echo(f"   • Updated {email}")
+                for skipped in details.get('skipped', []):
+                    email = skipped.get('email', 'unknown')
+                    reason = skipped.get('reason', 'Skipped')
+                    click.echo(f"   • Skipped {email}: {reason}")
+                for failure in details.get('failed', []):
+                    email = failure.get('email') or failure.get('data', {}).get('email', 'unknown')
+                    error_msg = failure.get('error', 'Unknown error')
+                    click.echo(f"   • Failed {email}: {error_msg}")
+
+            if result['skipped']:
+                click.echo(
+                    f"ℹ️  Skipped {result['skipped']} users."
+                )
+            if result['failed']:
+                click.echo(
+                    f"⚠️  {result['failed']} users failed to add (see logs)"
+                )
+        else:
+            click.echo(f"❌ Failed to bulk add users: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error bulk adding users: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.pass_context
+def activity(ctx, email: str):
+    """Show user activity from GitLab."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"📊 Getting activity for {email}...")
+    try:
+        result = user_manager.get_user_activity(email)
+        if result['success']:
+            activity = result['activity']
+            if not activity:
+                click.echo("No activity found.")
+                return
+                
+            click.echo(f"📈 Recent Activity for {email}:")
+            for item in activity[:10]:  # Show last 10 activities
+                click.echo(f"   • {item.get('created_at', 'N/A')} - {item.get('action_name', 'Unknown')}")
+        else:
+            click.echo(f"❌ Failed to get activity: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting activity: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('email')
+@click.pass_context
+def permissions(ctx, email: str):
+    """Show user permissions across projects."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"🔑 Getting permissions for {email}...")
+    try:
+        result = user_manager.get_user_permissions(email)
+        if result['success']:
+            permissions = result['permissions']
+            if not permissions:
+                click.echo("No project permissions found.")
+                return
+                
+            click.echo(f"🔒 Project Permissions for {email}:")
+            for perm in permissions:
+                access_level = perm.get('access_level', 'Unknown')
+                project_name = perm.get('project_name', 'Unknown Project')
+                click.echo(f"   • {project_name}: {access_level}")
+        else:
+            click.echo(f"❌ Failed to get permissions: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting permissions: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.pass_context
+def sync(ctx):
+    """Sync local users with GitLab."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo("🔄 Syncing users with GitLab...")
+    try:
+        result = user_manager.sync_users_with_gitlab()
+        if result['success']:
+            synced = result['synced']
+            added = result['added']
+            updated = result['updated']
+            click.echo(f"✅ Sync complete!")
+            click.echo(f"   Synced: {synced} users")
+            click.echo(f"   Added: {added} new users")
+            click.echo(f"   Updated: {updated} users")
+        else:
+            click.echo(f"❌ Failed to sync users: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error syncing users: {e}")
+        sys.exit(1)
+
+@user.command()
+@click.argument('file', type=click.Path())
+@click.option('--format', type=click.Choice(['csv', 'json']), default='csv', help='Export format')
+@click.option('--company', help='Filter by company')
+@click.pass_context
+def export(ctx, file: str, format: str, company: Optional[str]):
+    """Export users to CSV/JSON file."""
+    user_manager = ctx.obj['user_manager']
+    
+    click.echo(f"📤 Exporting users to {file} ({format})...")
+    try:
+        result = user_manager.export_users(file, format, company)
+        if result['success']:
+            exported = result['exported']
+            click.echo(f"✅ Exported {exported} users to {file}")
+        else:
+            click.echo(f"❌ Failed to export users: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error exporting users: {e}")
+        sys.exit(1)
+
+# OAuth Management Commands
+@cli.group()
+def oauth():
+    """OAuth configuration commands."""
+    pass
+
+@oauth.command()
+@click.argument('service', type=click.Choice(['penpot', 'element']))
+@click.option('--provider', default='gitlab', help='OAuth provider')
+@click.option('--client-id', required=True, help='OAuth client ID')
+@click.option('--client-secret', required=True, help='OAuth client secret')
+@click.option('--redirect-uri', help='OAuth redirect URI')
+@click.pass_context
+def config(ctx, service: str, provider: str, client_id: str, client_secret: str, redirect_uri: Optional[str]):
+    """Configure OAuth for services."""
+    oauth_manager = ctx.obj['oauth_manager']
+    
+    click.echo(f"🔐 Configuring {service} OAuth with {provider}...")
+    try:
+        result = oauth_manager.configure_service(
+            service, provider, client_id, client_secret, redirect_uri
+        )
+        if result['success']:
+            click.echo(f"✅ OAuth configured for {service}!")
+        else:
+            click.echo(f"❌ Failed to configure OAuth: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error configuring OAuth: {e}")
+        sys.exit(1)
+
+
+@oauth.command('redirects')
+@click.argument('company', required=False)
+@click.option(
+    '--provider',
+    type=click.Choice(['google', 'github']),
+    help='Limit output to a single provider',
+)
+@click.option(
+    '--host', 'extra_hosts', multiple=True,
+    help='Extra hostnames or base URLs (e.g. chat.example.com or https://gitlab.example.com:10443)',
+)
+@click.option(
+    '--include-loopback/--no-loopback',
+    default=True,
+    help='Include localhost/127.0.0.1 callback URLs (default: include)',
+)
+@click.pass_context
+def oauth_redirects(ctx, company: Optional[str], provider: Optional[str],
+                    extra_hosts: List[str], include_loopback: bool):
+    """Show redirect URIs needed by Google/GitHub OAuth clients."""
+
+    vm_manager: VMManager = ctx.obj['vm_manager']
+
+    company_names = [company] if company else _list_company_names()
+    if not company_names:
+        click.echo("No VM definitions found. Use 'rave vm create' first.")
+        return
+
+    provider_keys = [provider] if provider else builtins.list(PROVIDER_META.keys())
+
+    for name in company_names:
+        config = _load_company_config_or_exit(vm_manager, name)
+        ports = config.get('ports') or {}
+        https_port = ports.get('https')
+        if not https_port:
+            click.echo(f"❌ VM '{name}' has no HTTPS port mapping in the local config.")
+            continue
+
+        click.echo(f"🔗 {name} (HTTPS :{https_port}):")
+
+        host_list, _ = _build_redirect_hosts_and_uris(
+            DEFAULT_PROVIDER_SLUG,
+            https_port,
+            builtins.list(extra_hosts),
+            include_loopback=include_loopback,
+        )
+        if host_list:
+            click.echo("  Suggested origins:")
+            for host in host_list:
+                click.echo(f"    - {host}")
+
+        for provider_key in provider_keys:
+            meta = PROVIDER_META[provider_key]
+            _, redirect_uris = _build_redirect_hosts_and_uris(
+                meta['slug'],
+                https_port,
+                builtins.list(extra_hosts),
+                include_loopback=include_loopback,
+            )
+            click.echo(f"  {meta['label']} redirect URIs:")
+            for uri in redirect_uris:
+                click.echo(f"    - {uri}")
+
+        click.echo()
+
+
+@oauth.command('bootstrap')
+@click.argument('provider', type=click.Choice(['google', 'github']))
+@click.option('--company', help='Company VM name (defaults to sole VM if only one exists)')
+@click.option('--project', help='Google Cloud project ID for the OAuth client (gcloud --project)')
+@click.option('--client-name', help='Identifier for the OAuth client (defaults to rave-<company>-gitlab)')
+@click.option('--host', 'extra_hosts', multiple=True, help='Additional hostnames/base URLs to include')
+@click.option('--include-loopback/--no-loopback', default=True, help='Include localhost/127.0.0.1 redirect URIs')
+@click.option('--run', is_flag=True, help='Execute the generated command instead of printing it')
+@click.pass_context
+def oauth_bootstrap(ctx, provider: str, company: Optional[str], project: Optional[str],
+                    client_name: Optional[str], extra_hosts: List[str],
+                    include_loopback: bool, run: bool):
+    """Generate helper commands for provisioning Google/GitHub OAuth clients."""
+
+    vm_manager: VMManager = ctx.obj['vm_manager']
+
+    company_names = _list_company_names()
+    if not company_names:
+        raise click.ClickException("No VM definitions found. Create one with 'rave vm create'.")
+
+    target_company = company
+    if not target_company:
+        if len(company_names) == 1:
+            target_company = company_names[0]
+        else:
+            raise click.ClickException(
+                "Multiple VMs detected; pass --company <name> to choose one."
+            )
+
+    config = _load_company_config_or_exit(vm_manager, target_company)
+    https_port = (config.get('ports') or {}).get('https')
+    if not https_port:
+        raise click.ClickException(
+            f"VM '{target_company}' is missing an HTTPS port mapping in ~/.config/rave/vms/{target_company}.json"
+        )
+
+    meta = PROVIDER_META[provider]
+
+    hosts, redirect_uris = _build_redirect_hosts_and_uris(
+        meta['slug'],
+        https_port,
+        builtins.list(extra_hosts),
+        include_loopback=include_loopback,
+    )
+
+    if provider == 'google':
+        suggested_name = client_name or f"rave-{target_company}-gitlab"
+        display_name = f"RAVE GitLab ({target_company})"
+        command_text = _render_gcloud_command(
+            project,
+            suggested_name,
+            display_name,
+            redirect_uris,
+            meta['scopes'],
+        )
+
+        click.echo("🚀 Google Cloud OAuth client helper:")
+        click.echo(command_text)
+        click.echo()
+        click.echo("After creation, capture the client ID & secret (the command prints them).")
+        click.echo("Store the secret via: sops --set '[\"gitlab\"][\"oauth-provider-client-secret\"]' 'SECRET' config/secrets.yaml")
+        click.echo(
+            f"Then apply them to the running VM with: rave oauth apply --company {target_company} --provider google --client-id <ID>"
+        )
+
+        if run:
+            if shutil.which('gcloud') is None:
+                raise click.ClickException("gcloud is not installed in PATH; cannot execute command.")
+            click.echo("Executing gcloud command...")
+            result = subprocess.run(command_text, shell=True)
+            if result.returncode != 0:
+                raise click.ClickException("gcloud command failed; inspect the output above.")
+
+    else:
+        click.echo("ℹ️  GitHub does not expose a public API to create OAuth Apps via gh.")
+        click.echo("Use https://github.com/settings/developers to create a new OAuth App with:")
+        click.echo(f"  • Application name: RAVE GitLab ({target_company})")
+        click.echo("  • Homepage URL: https://localhost:{https_port}/gitlab")
+        click.echo("  • Authorization callback URL(s):")
+        for uri in redirect_uris:
+            click.echo(f"    - {uri}")
+        click.echo()
+        click.echo("After creation, grab the Client ID/Secret and run 'rave oauth apply --provider github ...'.")
+        if run:
+            click.echo("⚠️  Ignoring --run because GitHub OAuth Apps cannot be provisioned via gh today.")
+
+    if hosts:
+        click.echo()
+        click.echo("Suggested trusted origins (Google UI → Authorized JavaScript origins):")
+        for host in hosts:
+            click.echo(f"  - {host}")
+
+
+@oauth.command('apply')
+@click.option('--company', required=True, help='Target company VM name')
+@click.option('--provider', type=click.Choice(['google', 'github']), required=True)
+@click.option(
+    '--client-id',
+    help='OAuth client ID from the provider (auto-detects GOOGLE_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_ID)',
+)
+@click.option(
+    '--client-secret',
+    help='Client secret from the provider (reads GOOGLE_OAUTH_CLIENT_SECRET / GITHUB_OAUTH_CLIENT_SECRET when available)',
+)
+@click.option('--no-secret-sync', is_flag=True, help='Skip pushing the secret into /run/secrets')
+@click.option('--auto-sign-in/--no-auto-sign-in', default=True, help='Toggle GitLab auto sign-in redirect')
+@click.pass_context
+def oauth_apply(ctx, company: str, provider: str, client_id: Optional[str], client_secret: Optional[str],
+                no_secret_sync: bool, auto_sign_in: bool):
+    """Apply provider credentials to the running GitLab instance."""
+
+    vm_manager: VMManager = ctx.obj['vm_manager']
+    user_manager: UserManager = ctx.obj['user_manager']
+
+    config = _load_company_config_or_exit(vm_manager, company)
+    if not vm_manager._is_vm_running(company):
+        raise click.ClickException(
+            f"VM '{company}' is not running. Start it with 'rave vm start {company}'."
+        )
+
+    meta = PROVIDER_META[provider]
+
+    env_keys = PROVIDER_ENV_VARS.get(provider) or PROVIDER_ENV_VARS.get(meta['slug'])
+    env_client_id = None
+    env_client_secret = None
+    env_key_id = None
+    env_key_secret = None
+    if env_keys:
+        env_key_id, env_key_secret = env_keys
+        env_client_id = os.environ.get(env_key_id)
+        env_client_secret = os.environ.get(env_key_secret)
+
+    if client_id:
+        client_id = client_id.strip()
+    if not client_id and env_client_id:
+        client_id = env_client_id.strip()
+        if env_key_id:
+            click.echo(f"🔐 Using OAuth client ID from {env_key_id}")
+    if not client_id:
+        client_id = click.prompt('OAuth client ID', type=str)
+        client_id = client_id.strip()
+
+    if client_secret:
+        client_secret = client_secret.strip()
+    if not client_secret and env_client_secret:
+        client_secret = env_client_secret.strip()
+        if env_key_secret:
+            click.echo(f"🔐 Using OAuth client secret from {env_key_secret}")
+    if not client_secret:
+        client_secret = click.prompt(
+            'OAuth client secret',
+            hide_input=True,
+            confirmation_prompt=True,
+        ).strip()
+
+    if not client_id:
+        raise click.ClickException("OAuth client ID is required.")
+    if not client_secret:
+        raise click.ClickException("OAuth client secret is required.")
+
+    secret_path = "/run/secrets/gitlab/oauth-provider-client-secret"
+    gitlab_secret_mode = "file"
+    if not no_secret_sync:
+        secret_result = vm_manager.install_secret_file(
+            company,
+            secret_path,
+            client_secret,
+            "root",
+            "root",
+            "0400",
+        )
+        if not secret_result.get('success'):
+            raise click.ClickException(secret_result.get('error', 'Failed to copy client secret into VM'))
+    else:
+        gitlab_secret_mode = "inline"
+
+    provider_args = dict(meta["args"])
+
+    gitlab_payload = {
+        "slug": meta["slug"],
+        "label": meta["label"],
+        "args": provider_args,
+        "client_id": client_id,
+        "secret_path": secret_path if gitlab_secret_mode == "file" else None,
+        "client_secret": client_secret if gitlab_secret_mode != "file" else None,
+    }
+
+    ports = config.get("ports") or {}
+    https_port = ports.get("https")
+    if https_port:
+        site_url = f"https://localhost:{https_port}"
+    else:
+        site_url = "https://localhost"
+
+    mattermost_payload: Dict[str, Any] = {
+        "provider": provider,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "site_url": site_url,
+    }
+
+    remote_payload = {
+        "gitlab": gitlab_payload,
+        "options": {
+            "auto_sign_in": auto_sign_in,
+            "allow_local_signin": not auto_sign_in,
+        },
+        "mattermost": mattermost_payload,
+    }
+
+    payload_json = json.dumps(remote_payload)
+    payload_env = shlex.quote(payload_json)
+
+    remote_script_template = """
+        set -euo pipefail
+        export RAVE_OAUTH_PAYLOAD=__PAYLOAD__
+        cat <<'RUBY' | gitlab-rails runner -
+        require 'json'
+        require 'yaml'
+
+        payload = JSON.parse(ENV.fetch('RAVE_OAUTH_PAYLOAD'))
+
+        gitlab_cfg = payload.fetch('gitlab')
+        gitlab_config_path = '/var/gitlab/state/config/gitlab.yml'
+        gitlab_config = YAML.load_file(gitlab_config_path)
+        production = gitlab_config['production'] ||= {}
+        omniauth = production['omniauth'] ||= {}
+
+        slug = gitlab_cfg.fetch('slug')
+        provider_args = Marshal.load(Marshal.dump(gitlab_cfg.fetch('args')))
+        provider_args['client_id'] = gitlab_cfg.fetch('client_id')
+
+        if gitlab_cfg['secret_path']
+          provider_args['client_secret'] = { '_secret' => gitlab_cfg['secret_path'] }
+        elsif gitlab_cfg['client_secret']
+          provider_args['client_secret'] = gitlab_cfg['client_secret']
+        end
+
+        provider_entry = {
+          'name' => slug,
+          'label' => gitlab_cfg.fetch('label'),
+          'args' => provider_args
+        }
+
+        omniauth['enabled'] = true
+
+        allow_single = Array(omniauth['allow_single_sign_on']).map(&:to_s)
+        omniauth['allow_single_sign_on'] = (allow_single | [slug])
+
+        auto_link = Array(omniauth['auto_link_user']).map(&:to_s)
+        omniauth['auto_link_user'] = (auto_link | [slug])
+
+        omniauth['block_auto_created_users'] = false
+
+        providers = Array(omniauth['providers']).dup
+        providers.reject! { |existing| existing.is_a?(Hash) && existing['name'] == slug }
+        providers << provider_entry
+        omniauth['providers'] = providers
+
+        options = payload.fetch('options')
+        if options['auto_sign_in']
+          omniauth['auto_sign_in_with_provider'] = slug
+        elsif omniauth['auto_sign_in_with_provider'] == slug
+          omniauth.delete('auto_sign_in_with_provider')
+        end
+
+        allow_local = !!options['allow_local_signin']
+        production['gitlab_signin_enabled'] = allow_local
+        production['password_authentication_enabled_for_web'] = allow_local
+        production['gitlab_signup_enabled'] = false
+
+        File.write(gitlab_config_path, YAML.dump(gitlab_config))
+RUBY
+
+        python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = json.loads(os.environ.get('RAVE_OAUTH_PAYLOAD', '{}'))
+mattermost = payload.get('mattermost') or {}
+config_path = Path('/var/lib/mattermost/config/config.json')
+if config_path.exists():
+    try:
+        config = json.loads(config_path.read_text())
+    except Exception as exc:
+        raise SystemExit(f'Failed to load Mattermost config: {exc}')
+
+    email = config.setdefault('EmailSettings', {})
+    email['EnableSignUpWithEmail'] = False
+    email['EnableSignInWithEmail'] = False
+    email['EnableSignInWithUsername'] = False
+
+    service = config.setdefault('ServiceSettings', {})
+    service['EnableLocalMode'] = False
+    site_url = mattermost.get('site_url')
+    if site_url:
+        service['SiteURL'] = site_url
+
+    provider = (mattermost.get('provider') or '').lower()
+    client_id = mattermost.get('client_id') or ''
+    client_secret = mattermost.get('client_secret') or ''
+
+    if provider == 'google':
+        google = config.setdefault('GoogleSettings', {})
+        google['Enable'] = True
+        google['Id'] = client_id
+        google['Secret'] = client_secret
+        google.setdefault('Scope', 'profile email')
+        google.setdefault('AuthEndpoint', 'https://accounts.google.com/o/oauth2/v2/auth')
+        google.setdefault('TokenEndpoint', 'https://www.googleapis.com/oauth2/v4/token')
+        google.setdefault('UserAPIEndpoint', 'https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses,nicknames,metadata')
+
+        github = config.setdefault('GitLabSettings', {})
+        github['Enable'] = False
+    elif provider == 'github':
+        google = config.setdefault('GoogleSettings', {})
+        google['Enable'] = False
+
+        github = config.setdefault('GitLabSettings', {})
+        github['Enable'] = True
+        github['Id'] = client_id
+        github['Secret'] = client_secret
+        github['Scope'] = 'user:email'
+        github['AuthEndpoint'] = 'https://github.com/login/oauth/authorize'
+        github['TokenEndpoint'] = 'https://github.com/login/oauth/access_token'
+        github['UserAPIEndpoint'] = 'https://api.github.com/user'
+        github['DiscoveryEndpoint'] = ''
+        github['ButtonText'] = 'GitHub'
+        github['ButtonColor'] = '#24292e'
+    else:
+        google = config.setdefault('GoogleSettings', {})
+        google['Enable'] = False
+        github = config.setdefault('GitLabSettings', {})
+        github['Enable'] = False
+
+    with config_path.open('w') as handle:
+        json.dump(config, handle, indent=2)
+PY
+        """
+
+    remote_script = textwrap.dedent(remote_script_template).replace('__PAYLOAD__', payload_env)
+    run_result = vm_manager._run_remote_script(
+        config,
+        remote_script,
+        timeout=420,
+        description="configuring OAuth services",
+        max_attempts=3,
+        initial_delay=2.0,
+        connect_timeout=45,
+    )
+
+    if not run_result.get('success'):
+        raise click.ClickException(run_result.get('error', 'Failed to configure OAuth services'))
+
+    user_manager.set_default_provider(meta['slug'])
+    click.echo(f"✅ Applied {meta['label']} OAuth credentials to GitLab on VM '{company}'.")
+
+@oauth.command()
+@click.argument('service', required=False)
+@click.pass_context
+def status(ctx, service: Optional[str]):
+    """Show OAuth configuration status."""
+    oauth_manager = ctx.obj['oauth_manager']
+    
+    try:
+        result = oauth_manager.get_status(service)
+        if result['success']:
+            configs = result['configs']
+            if not configs:
+                click.echo("No OAuth configurations found.")
+                return
+                
+            click.echo("🔐 OAuth Status:")
+            for svc, config in configs.items():
+                status_icon = "🟢" if config['configured'] else "🔴"
+                click.echo(f"   {status_icon} {svc}: {config['provider']} - {config['status']}")
+        else:
+            click.echo(f"❌ Failed to get OAuth status: {result['error']}")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Error getting OAuth status: {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    cli()

@@ -77,6 +77,8 @@ This command decrypts `config/secrets.yaml`, writes the `/run/secrets/**` files 
 | `database.prometheus-password` | Prometheus exporter PostgreSQL role password. | `/run/secrets/database/prometheus-password` | `postgres-set-prometheus-password.service` + CLI refresh |
 | `outline.secret-key` | Outline SESSION/COOKIE key. | `/run/secrets/outline/secret-key` | Outline container `SECRET_KEY` |
 | `outline.utils-secret` | Outline UTILS secret for background jobs. | `/run/secrets/outline/utils-secret` | Outline container `UTILS_SECRET` |
+| `outline.webhook-secret` | Outline outgoing webhook shared secret. | `/run/secrets/outline/webhook-secret` | Outline container `WEBHOOK_SECRET` |
+| `benthos.gitlab-webhook-secret` | Token attached to GitLab system hooks targeting Benthos. | `/run/secrets/benthos/gitlab-webhook-secret` | `gitlab-benthos-webhook.service` + GitLab hook provisioning |
 
 During boot, the `postgres-set-{grafana,mattermost,penpot,n8n,prometheus}-password` services read their respective secrets and update the Postgres roles before the applications start.
 Running `rave secrets install` copies these files and immediately refreshes each database password via SSH, so operators do not have to run manual `psql` statements after a rotation.

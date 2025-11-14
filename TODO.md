@@ -13,7 +13,7 @@ When we're done, building and running any VM will be a simple, two-command proce
 
 ### **Pillar 1: Consolidate Your NixOS Configurations**
 
-**The Problem:** You have over a dozen `.nix` configuration files in the root directory (`p0-production.nix`, `gitlab-working-complete.nix`, etc.). This creates massive code duplication and makes maintenance nearly impossible. You've already started the correct modular structure in `nixos/modules/`—we will now complete this transition.
+**The Problem:** You have over a dozen `.nix` configuration files in the root directory (`p0-production.nix`, `gitlab-working-complete.nix`, etc.). This creates massive code duplication and makes maintenance nearly impossible. You've already started the correct modular structure in `infra/nixos/modules/`—we will now complete this transition.
 
 **The Solution:** We will use your existing modules and create clean, top-level configurations that simply import the features they need.
 
@@ -21,17 +21,17 @@ When we're done, building and running any VM will be a simple, two-command proce
 
 These new files will be very short. They define a complete VM by simply listing the feature modules it should include.
 
-1.  **Create a new `production.nix` configuration file** inside `nixos/configs/`.
+1.  **Create a new `production.nix` configuration file** inside `infra/nixos/configs/`.
 
     ```bash
     # Make sure you are in the root of the 'rave' repository
-    touch nixos/configs/production.nix
+    touch infra/nixos/configs/production.nix
     ```
 
-2.  **Copy the following code into `nixos/configs/production.nix`**. This will be your main production-ready VM, including all features from P6.
+2.  **Copy the following code into `infra/nixos/configs/production.nix`**. This will be your main production-ready VM, including all features from P6.
 
     ```nix
-    # nixos/configs/production.nix
+    # infra/nixos/configs/production.nix
     # P6 production configuration - all services with full security hardening
     { ... }:
 
@@ -91,12 +91,12 @@ These new files will be very short. They define a complete VM by simply listing 
 3.  **Create a new `development.nix` configuration file** for local testing.
 
     ```bash
-    touch nixos/configs/development.nix
+    touch infra/nixos/configs/development.nix
     ```
-4.  **Copy the following code into `nixos/configs/development.nix`**. This defines a lightweight, HTTP-only environment for quick iteration.
+4.  **Copy the following code into `infra/nixos/configs/development.nix`**. This defines a lightweight, HTTP-only environment for quick iteration.
 
     ```nix
-    # nixos/configs/development.nix
+    # infra/nixos/configs/development.nix
     # Development configuration - HTTP-only, minimal security for local testing
     { config, pkgs, lib, ... }:
 
@@ -166,7 +166,7 @@ Now, we'll point your build system to these new, clean configurations.
         system = "x86_64-linux";
         format = "qcow";
         modules = [ 
-          ./nixos/configs/production.nix
+          ./infra/nixos/configs/production.nix
           sops-nix.nixosModules.sops
         ];
       };
@@ -176,7 +176,7 @@ Now, we'll point your build system to these new, clean configurations.
         system = "x86_64-linux";
         format = "qcow";
         modules = [ 
-          ./nixos/configs/development.nix
+          ./infra/nixos/configs/development.nix
           sops-nix.nixosModules.sops
         ];
       };
@@ -186,7 +186,7 @@ Now, we'll point your build system to these new, clean configurations.
         system = "x86_64-linux";
         format = "qcow";
         modules = [ 
-          ./nixos/configs/demo.nix
+          ./infra/nixos/configs/demo.nix
           sops-nix.nixosModules.sops
         ];
       };
@@ -195,22 +195,22 @@ Now, we'll point your build system to these new, clean configurations.
       virtualbox = nixos-generators.nixosGenerate {
         system = "x86_64-linux";
         format = "virtualbox";
-        modules = [ ./nixos/configs/production.nix sops-nix.nixosModules.sops ];
+        modules = [ ./infra/nixos/configs/production.nix sops-nix.nixosModules.sops ];
       };
       vmware = nixos-generators.nixosGenerate {
         system = "x86_64-linux";
         format = "vmware";
-        modules = [ ./nixos/configs/production.nix sops-nix.nixosModules.sops ];
+        modules = [ ./infra/nixos/configs/production.nix sops-nix.nixosModules.sops ];
       };
       raw = nixos-generators.nixosGenerate {
         system = "x86_64-linux";
         format = "raw";
-        modules = [ ./nixos/configs/production.nix sops-nix.nixosModules.sops ];
+        modules = [ ./infra/nixos/configs/production.nix sops-nix.nixosModules.sops ];
       };
       iso = nixos-generators.nixosGenerate {
         system = "x86_64-linux";
         format = "iso";
-        modules = [ ./nixos/configs/production.nix sops-nix.nixosModules.sops ];
+        modules = [ ./infra/nixos/configs/production.nix sops-nix.nixosModules.sops ];
       };
     };
 
@@ -244,9 +244,9 @@ rm ai-sandbox-config.nix \
 
 ### **Pillar 2: Unify Entry Points Around the CLI**
 
-**The Problem:** Multiple `run-*.sh` helpers are still documented even though the Python CLI under `cli/rave` is the supported interface for building, launching, and operating VMs. This drift keeps sending contributors to a deprecated workflow.
+**The Problem:** Multiple `run-*.sh` helpers are still documented even though the Python CLI under `apps/cli/rave` is the supported interface for building, launching, and operating VMs. This drift keeps sending contributors to a deprecated workflow.
 
-**The Solution:** Make `./cli/rave` the documented Golden Path. Update guides, READMEs, and handoffs to reference CLI subcommands only, and delete shell helpers that overlap with the CLI.
+**The Solution:** Make `./apps/cli/rave` the documented Golden Path. Update guides, READMEs, and handoffs to reference CLI subcommands only, and delete shell helpers that overlap with the CLI.
 
 #### **Step 2.1: Highlight the CLI workflow**
 
@@ -254,13 +254,13 @@ Show the two-command happy path everywhere:
 
 ```bash
 # Build/update a QCOW image
-./cli/rave vm build-image --profile production
+./apps/cli/rave vm build-image --profile production
 
 # Launch a local VM with forwarded ports & secrets
-./cli/rave vm launch-local --profile production --name prod-test
+./apps/cli/rave vm launch-local --profile production --name prod-test
 ```
 
-For persistent environments, emphasize `./cli/rave vm start|stop|status|logs <name>` instead of bespoke scripts.
+For persistent environments, emphasize `./apps/cli/rave vm start|stop|status|logs <name>` instead of bespoke scripts.
 
 #### **Step 2.2: Delete Redundant Scripts**
 
@@ -341,7 +341,7 @@ You have now completed a major refactoring. To ensure everything is working:
 
 3.  **Launch a development VM via the CLI:**
     ```bash
-    ./cli/rave vm launch-local --profile development --name dev-gui
+    ./apps/cli/rave vm launch-local --profile development --name dev-gui
     ```
 
 You now have a clean, stable, and maintainable repository that fully leverages the power of NixOS. The "Golden Path" is established. Your project is ready to go.
@@ -349,8 +349,8 @@ You now have a clean, stable, and maintainable repository that fully leverages t
 ### ⚠️ Active Issue: nginx front-door vhost regression (November 2025)
 
 **What broke**
-- `nixos/modules/services/nginx/default.nix` still assigns the entire `services.nginx.virtualHosts` attrset in one shot.
-- Other modules (notably `nixos/modules/services/nats/default.nix`) assign to the same option later in the module list, so our primary `"${host}"` entry (dashboard + GitLab/Mattermost/etc.) gets overwritten. The resulting `/nix/store/*-nginx.conf` in the VM only exposes `/nginx_status` (and `/nats/` under `rave.local`).
+- `infra/nixos/modules/services/nginx/default.nix` still assigns the entire `services.nginx.virtualHosts` attrset in one shot.
+- Other modules (notably `infra/nixos/modules/services/nats/default.nix`) assign to the same option later in the module list, so our primary `"${host}"` entry (dashboard + GitLab/Mattermost/etc.) gets overwritten. The resulting `/nix/store/*-nginx.conf` in the VM only exposes `/nginx_status` (and `/nats/` under `rave.local`).
 - Symptom: `https://localhost:28443/` never comes up because port 443 isn’t configured in the final nginx conf.
 
 **Current status**
@@ -363,11 +363,11 @@ You now have a clean, stable, and maintainable repository that fully leverages t
    - The existing `mkMerge` payload (dashboard, GitLab, Outline, Penpot, n8n, NATS locations) should move inside the new `services.nginx.virtualHosts."${host}"` assignment so behavior stays identical.
 2. After the change, verify with:
    ```bash
-   nix eval --impure --expr 'let eval = import <nixpkgs/nixos/lib/eval-config.nix> { system = "x86_64-linux"; modules = [ ./nixos/configs/production.nix ]; }; in builtins.attrNames eval.config.services.nginx.virtualHosts.localhost.locations'
+   nix eval --impure --expr 'let eval = import <nixpkgs/nixos/lib/eval-config.nix> { system = "x86_64-linux"; modules = [ ./infra/nixos/configs/production.nix ]; }; in builtins.attrNames eval.config.services.nginx.virtualHosts.localhost.locations'
    ```
    Expect both `"/"` and `/nginx_status` to appear.
 3. Rebuild (`nix build .#production`), recreate `prod-test`, and confirm `curl -k https://localhost:28443/` serves the new dashboard.
 
 **Helpful references**
-- The last known-good version of the module is available via `git show HEAD^:nixos/modules/services/nginx/default.nix`.
+- The last known-good version of the module is available via `git show HEAD^:infra/nixos/modules/services/nginx/default.nix`.
 - Keep an eye on other modules that still assign to `services.nginx.virtualHosts` (NATS, legacy overlays) to ensure they merge cleanly after the refactor.

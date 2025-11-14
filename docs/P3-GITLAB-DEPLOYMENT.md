@@ -23,7 +23,7 @@ Phase P3 adds GitLab CE as the central code repository and CI/CD hub for the aut
 ```
 rave/
 ├── p3-production-config.nix     # P3 main configuration (inherits P2)
-├── nixos/
+├── infra/nixos/
 │   ├── configuration.nix        # NixOS system entry point
 │   ├── gitlab.nix              # GitLab service configuration  
 │   ├── prometheus.nix          # Monitoring (extracted from P2)
@@ -79,7 +79,7 @@ openssl rand -base64 24  # For passwords (32 chars)
 
 # Check configuration syntax
 nix-instantiate --parse p3-production-config.nix
-nix-instantiate --parse nixos/gitlab.nix
+nix-instantiate --parse infra/nixos/gitlab.nix
 ```
 
 ### 2. Build VM Image
@@ -255,7 +255,7 @@ Configured alerts:
    free -h
    systemctl show gitlab | grep Memory
    
-   # Adjust limits in nixos/gitlab.nix if needed
+   # Adjust limits in infra/nixos/gitlab.nix if needed
    # Then rebuild and redeploy
    ```
 
@@ -263,7 +263,7 @@ Configured alerts:
 
 1. **GitLab Memory Limits**:
    - Default: 8GB max memory
-   - Adjust in `nixos/gitlab.nix` → `systemd.services.gitlab.serviceConfig.MemoryMax`
+   - Adjust in `infra/nixos/gitlab.nix` → `systemd.services.gitlab.serviceConfig.MemoryMax`
 
 2. **PostgreSQL Optimization**:
    - Shared buffers, work memory configured for GitLab workload

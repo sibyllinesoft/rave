@@ -39,15 +39,15 @@
 | Goal | Deliverables | Definition of Done |
 | --- | --- | --- |
 | Separate source from artifacts | - Move QCOWs, `.qcow2.backup`, `gitlab-complete/`, `run/*.log`, and cache directories under `artifacts/` (gitignored) or publish them to release storage. <br>- Add Git LFS pointer rules only for the few binary assets we must keep. | `git status` in root shows only source + config. README documents how to fetch images via CLI or release URL. |
-| Clarify top-level purpose | - Introduce `apps/cli/`, `infra/nixos/`, `services/chat-control/`, `docs/`, `legacy/`. <br>- Migrate active code into these namespaces; move experiments to `legacy/` with README. | New directory map is documented, and CLI scripts/tests are discoverable under `apps/cli`. |
+| Clarify top-level purpose | - Introduce `apps/cli/`, `infra/infra/nixos/`, `services/chat-control/`, `docs/`, `legacy/`. <br>- Migrate active code into these namespaces; move experiments to `legacy/` with README. | New directory map is documented, and CLI scripts/tests are discoverable under `apps/cli`. |
 | Instrument metadata | - Add `.gitmodules` or `manifest.json` describing large external dependencies so automation can fetch them intentionally. | Automated tooling (e.g., `rave doctor`) reports missing artifacts instead of scanning filesystem heuristically. |
 
 ### B. Layered Nix Architecture
 | Goal | Deliverables | Definition of Done |
 | --- | --- | --- |
-| Split monolithic config | - Create `infra/nixos/profiles/base.nix`, `services.nix`, `observability.nix`, `chat.nix`, etc. <br>- Compose new profiles: `development`, `demo`, `production`. | `nix build .#vm-dev` and `.#vm-prod` both succeed without editing shared modules. |
+| Split monolithic config | - Create `infra/infra/nixos/profiles/base.nix`, `services.nix`, `observability.nix`, `chat.nix`, etc. <br>- Compose new profiles: `development`, `demo`, `production`. | `nix build .#vm-dev` and `.#vm-prod` both succeed without editing shared modules. |
 | Parameterize secrets & ports | - Replace inline passwords in `complete-production.nix` with option defaults that assert `config.services.rave.secretsRequired = true`. <br>- Provide environment overlays for port blocks per tenant. | Builds fail fast when secrets are missing; CLI prompts to sync via `rave secrets install`. |
-| Align CLI with Nix outputs | - Update `cli/vm_manager.py` to read flake outputs instead of hardcoded filenames, enabling `rave vm build --profile development`. | CLI help lists available profiles derived from flake metadata. |
+| Align CLI with Nix outputs | - Update `apps/cli/vm_manager.py` to read flake outputs instead of hardcoded filenames, enabling `rave vm build --profile development`. | CLI help lists available profiles derived from flake metadata. |
 
 ### C. Secrets & Compliance
 | Goal | Deliverables | Definition of Done |

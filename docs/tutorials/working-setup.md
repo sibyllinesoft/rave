@@ -13,12 +13,12 @@ rave vm launch-local
 
 ### Access Services
 Once the VM boots (5-7 minutes on first start while GitLab seeds data):
-- **🌐 Dashboard**: https://localhost:18221/
-- **🦊 GitLab**: https://localhost:18221/gitlab/
-- **💬 Mattermost**: https://localhost:18221/mattermost/
-- **📊 Grafana**: https://localhost:18221/grafana/
-- **🔍 Prometheus**: https://localhost:18221/prometheus/
-- **⚡ NATS**: https://localhost:18221/nats/
+- **🌐 Dashboard**: https://localhost:8443/
+- **🦊 GitLab**: https://localhost:8443/gitlab/
+- **💬 Mattermost**: https://localhost:8443/mattermost/
+- **📊 Grafana**: https://localhost:8443/grafana/
+- **🔍 Prometheus**: https://localhost:8443/prometheus/
+- **⚡ NATS**: https://localhost:8443/nats/
 
 ### SSH Access
 ```bash
@@ -50,11 +50,12 @@ rave vm build-image
 ### Launch Commands
 - `rave vm launch-local` - Local QEMU launcher with port forwarding
 - `rave vm build-image` - Image build command with Nix integration
-- `cli/rave` - Management CLI (Python-based)
+- `apps/cli/rave` - Management CLI (Python-based)
 
 ### Configuration
 - `flake.nix` - Main Nix build configuration
-- `nixos/configs/complete-production.nix` - VM service configuration
+- `infra/nixos/configs/complete-production.nix` - VM service configuration
+- `artifacts/qcow/production/rave-production-localhost.qcow2` - Current profile symlink refreshed by `rave vm build-image`.
 - `artifacts/legacy-qcow/rave-complete-localhost.qcow2` - Legacy working image (used as emergency fallback; prefer flake builds).
 
 ### Backups
@@ -64,16 +65,16 @@ rave vm build-image
 
 ### Prerequisites Check
 ```bash
-python3 cli/rave prerequisites
+python3 apps/cli/rave prerequisites
 # Should show: ✅ All prerequisites satisfied!
 ```
 
 ### VM Management (Future)
 ```bash
 # These require SSH keys setup
-python3 cli/rave vm create my-company --keypair ~/.ssh/id_rsa
-python3 cli/rave vm start my-company
-python3 cli/rave vm status my-company
+python3 apps/cli/rave vm create my-company --keypair ~/.ssh/id_rsa
+python3 apps/cli/rave vm start my-company
+python3 apps/cli/rave vm status my-company
 ```
 
 ## 🏗️ Architecture
@@ -94,8 +95,8 @@ python3 cli/rave vm status my-company
 - **OS**: NixOS 24.11 (Vicuna)
 
 ### Network Ports
-- `18220` → VM:8220 (HTTP redirect)
-- `18221` → VM:8221 (HTTPS services)
+- `8081` → VM:80 (HTTP redirect)
+- `8443` → VM:443 (HTTPS services)
 - `2224` → VM:22 (SSH access)
 - `8889` → VM:8080 (Status page)
 

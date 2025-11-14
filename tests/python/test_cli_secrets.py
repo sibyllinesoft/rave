@@ -13,7 +13,7 @@ from click.testing import CliRunner
 from importlib.machinery import SourceFileLoader
 import importlib.util
 
-CLI_DIR = Path(__file__).resolve().parents[2] / "cli"
+CLI_DIR = Path(__file__).resolve().parents[2] / "apps" / "cli"
 if str(CLI_DIR) not in sys.path:
     sys.path.insert(0, str(CLI_DIR))
 

@@ -1,4 +1,4 @@
-{ pkgs, sopsModule }:
+{ pkgs, sopsModule, overlays ? [] }:
 
 let
   testLib = import (pkgs.path + "/nixos/lib/testing-python.nix") {
@@ -12,8 +12,9 @@ testLib.runTest {
   nodes.machine = { lib, ... }: {
     imports = [
       sopsModule
-      ../nixos/configs/production.nix
+      ../infra/nixos/configs/production.nix
       ({ lib, ... }: {
+        nixpkgs.overlays = overlays;
         services.rave.gitlab.useSecrets = lib.mkForce false;
         services.rave.mattermost.gitlab.apiTokenFile = lib.mkForce "/var/lib/rave/gitlab-ci-token";
 

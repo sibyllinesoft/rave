@@ -10,7 +10,7 @@ RAVE provides isolated, production-ready development VMs with GitLab, NATS JetSt
 ```bash
 # The RAVE CLI is the ONLY supported method for VM management
 # All direct QEMU commands are FORBIDDEN
-cd cli && pip install -r requirements.txt
+cd apps/cli && pip install -r requirements.txt
 export PATH="$PATH:$(pwd)"
 ```
 
@@ -61,33 +61,39 @@ rave user bulk-add ./users.csv --company acme-corp --metadata 'project=beta'
 rave set-oauth-provider github
 ```
 
-The GitLab VM enables OAuth via `services.rave.gitlab.oauth` (see `nixos/configs/complete-production.nix`). Set the client ID in Nix and keep the client secret in `config/secrets.yaml`; the CLI pushes the secret into `/run/secrets/gitlab/oauth-provider-client-secret` when you start the VM.
+The GitLab VM enables OAuth via `services.rave.gitlab.oauth` (see `infra/nixos/configs/complete-production.nix`). Set the client ID in Nix and keep the client secret in `config/secrets.yaml`; the CLI pushes the secret into `/run/secrets/gitlab/oauth-provider-client-secret` when you start the VM.
 
 ## 🏗️ Repository Structure
 
 ```
 rave/
-├── cli/                    # RAVE CLI (main interface)
-│   ├── rave               # Main CLI executable
-│   ├── vm_manager.py      # VM lifecycle management
-│   ├── user_manager.py    # GitLab OAuth user management
-│   └── oauth_manager.py   # OAuth integration status
-├── nixos/                 # NixOS VM configurations
-│   ├── configs/           # VM build configurations
-│   │   ├── development.nix
-│   │   ├── production.nix
-│   │   └── demo.nix
-│   └── modules/           # NixOS service modules
-│       ├── services/      # GitLab, NATS, etc.
-│       ├── security/      # SSL, certificates
-│       └── foundation/    # Base system config
+├── apps/
+│   ├── cli/                # RAVE CLI (main interface)
+│   │   ├── rave            # Main CLI executable
+│   │   ├── vm_manager.py   # VM lifecycle management
+│   │   ├── user_manager.py # GitLab OAuth user management
+│   │   └── oauth_manager.py
+│   └── auth-manager/       # Go sidecar that bridges Pomerium to downstream apps
+├── infra/
+│   └── nixos/             # NixOS VM configurations
+│       ├── configs/       # VM build configurations
+│       │   ├── development.nix
+│       │   ├── production.nix
+│       │   └── demo.nix
+│       └── modules/       # NixOS service modules
+│           ├── services/  # GitLab, NATS, etc.
+│           ├── security/  # SSL, certificates
+│           └── foundation/# Base system config
 ├── services/              # Service-specific configurations
 ├── docs/                  # Documentation and reports
 ├── scripts/               # Utility and test scripts
 ├── build-scripts/         # VM build automation
 ├── demo-scripts/          # Demo and example scripts
-├── legacy-configs/        # Historical configurations
-└── archive/               # Deprecated files
+├── artifacts/             # Gitignored qcow images, logs, volume snapshots
+│   └── qcow/              # Canonical qcow images per profile + dated builds
+└── legacy/                # Archived assets kept for reference
+    ├── configs/           # Historical Nix configs & scripts (formerly legacy-configs/)
+    └── archive/           # Deprecated shell helpers & nginx fixes
 ```
 
 ## 🖥️ Architecture
@@ -107,7 +113,7 @@ Each company VM includes:
 - **Data separation**: Isolated file systems and databases
 
 ### Chat Control Bridge
-- **Mattermost** provides the default operator chat surface (`https://chat.localtest.me:18221/`).
+- **Mattermost** provides the default operator chat surface (`https://chat.localtest.me:8443/`).
 - A hardened chat bridge (`rave-chat-bridge`) consumes Mattermost slash commands and maps them to agent actions.
 - GitLab OIDC is pre-wired for Mattermost and the bridge; update the encrypted secrets (`mattermost/admin-username`, `mattermost/admin-email`, `mattermost/admin-password`, `oidc/chat-control-client-secret`, `gitlab/api-token`) before production use.
 - Shared chat-control components live in `services/chat-control/` so alternate adapters (Slack, etc.) can be swapped in with minimal effort.
@@ -143,6 +149,22 @@ rave oauth bootstrap google --company <name> # Generate gcloud command for OAuth
 rave oauth apply --company <name> --provider google --client-id ...
 ```
 
+### GitOps override layers
+```bash
+rave overrides init                          # Scaffold config/overrides/global
+rave overrides status                        # List known layers + file counts
+rave overrides create-layer host-foo --priority 50 \
+  --preset nginx                             # Add a dedicated layer with presets
+rave overrides apply --dry-run --company <name> \
+  --preflight-cmd "nixos-rebuild test --flake .#{company}"  # Preview + host preflight
+rave overrides apply --company <name> --json-output  # Sync overrides and emit JSON summary
+```
+
+- The CLI treats `config/overrides/<layer>/files/` as a mirror of `/` on the VM, copying files verbatim with owner/mode hints from the layer’s `metadata.json`.
+- Drop complete units under `config/overrides/<layer>/systemd/` to create/override services in `/etc/systemd/system/`; `daemon-reload` is handled automatically.
+- Metadata presets (`--preset nginx`, `--preset gitlab`, etc.) append opinionated pattern blocks so new layers inherit the correct restart/reload semantics automatically.
+- `--dry-run` first runs `nix flake check` (override with `--nix-check-cmd` or skip via `--skip-nix-check`), optionally executes extra `--preflight-cmd` commands (placeholders: `{company}`, `{layers}`), then streams the layer into the VM in preview mode, printing the plan without touching the filesystem. Add `--json-output` to capture the resulting plan for automation.
+
 ### Secrets
 ```bash
 rave secrets init                            # Bootstrap SOPS + Age locally
@@ -155,36 +177,56 @@ credentials into a running VM after rotation.
 ### Trusted TLS for Local Browsers
 ```bash
 rave tls bootstrap                           # Install mkcert & trust the local CA (run once per host)
-rave tls issue acme-corp                     # Mint & install a cert for https://chat.localtest.me:18221
+rave tls issue acme-corp                     # Mint & install a cert for https://chat.localtest.me:8443
 ```
-After issuing the certificate, hit the dashboard at `https://localhost:18221/` and Mattermost at
-`https://chat.localtest.me:18221/` for green locks. Add `--domain` flags if you expose the VM on
+After issuing the certificate, hit the dashboard at `https://localhost:8443/` and Mattermost at
+`https://chat.localtest.me:8443/` for green locks. Add `--domain` flags if you expose the VM on
 additional hostnames (e.g. `--domain app.dev.vm`).
+
+Need to front the stack with Google OAuth instead of GitLab? Follow `docs/how-to/oauth-google.md`
+for the Google Console steps, SOPS secret layout, and the new `--idp-*` flags available on
+`rave vm build-image` and `rave vm create`.
 
 ### End-to-End Smoke Test
 ```bash
 scripts/test-e2e.sh --profile development    # runs unit + integration suite
 python3 test_vm_integration.py --profile development
+python3 test_vm_integration.py --mode split --apps-profile appsPlane \
+  --data-host 10.0.2.2 --data-pg-port 25432 --data-redis-port 26379
 ```
 Use `--profile production` for the full stack or `--keep-vm` to leave the VM running for debugging.
+Split mode spins up both the `dataPlane` (Postgres/Redis) and `appsPlane` VMs simultaneously, wiring the
+apps tier to `10.0.2.2:<ports>` so you can run end-to-end OAuth/pomerium tests without rebuilding images.
 
 ## 🧱 VM Profiles
 
 | Profile | Build Command | Notes |
 | --- | --- | --- |
 | `production` | `nix build .#production` | Full production stack with Outline + n8n and higher resource defaults (≈12 GB RAM, 40 GB disk). |
+| `dataPlane` | `nix build .#dataPlane` | PostgreSQL + Redis only; run once per company to host durable data and keep app images stateless. |
+| `appsPlane` | `nix build .#appsPlane` | Application tier (GitLab/Mattermost/etc.) configured to talk to an external data plane via `RAVE_DATA_HOST`. |
 | `development` | `nix build .#development` | Lightweight dev image with Penpot/Outline/n8n disabled and smaller VM footprint (≈8 GB RAM, 30 GB disk). |
 | `demo` | `nix build .#demo` | Demo-friendly build with observability/optional apps disabled for faster boots (≈6 GB RAM). |
 
 Run `rave vm list-profiles` to print this matrix (and any future custom profiles) from the CLI.
 
+When using the split deployment, set `RAVE_DATA_HOST=<ip-or-hostname>` before running `nix build` (or pass `--env RAVE_DATA_HOST=...` to the CLI) so the apps-plane image bakes the correct Postgres/Redis endpoints. You can also override `RAVE_DATA_PG_PORT` and `RAVE_DATA_REDIS_PORT` when the remote services are exposed on non-standard host ports (useful for CI or port-forwarded e2e runs). The data-plane profile listens on `0.0.0.0` for ports 5432/6379 by default; lock that down with firewalls or WireGuard in production.
+
 From the CLI, run `rave vm build-image --profile development` for the lightweight variant (default `production`), or pass `--attr` if you need a custom flake output. `rave vm launch-local --profile development` picks the matching qcow2 and hides Penpot/Outline/n8n because that profile disables them.
 
 Use `nix build .#development` when you need a faster local iteration loop, and swap back to the full profile before publishing artifacts.
-Generated QCOWs, logs, and snapshots should live under `artifacts/` (ignored by Git); the CLI stores images there automatically when you pass `--output artifacts/qcow`. See `artifacts/README.md` for the recommended layout.
+Generated QCOWs, logs, and snapshots should live under `artifacts/` (ignored by Git); the CLI now writes qcow images into `artifacts/qcow/` automatically. See `artifacts/README.md` for the recommended layout.
 The landing dashboard and welcome script automatically hide Outline/n8n (or any future optional services) when those modules are disabled.
 
 ## 🔧 Development
+
+### Dev Shell
+```bash
+nix develop
+```
+The shell exposes the CLI, Go toolchain, and nix tooling, and automatically points
+`GOPATH` at a repo-local `.gopath/` so `apps/auth-manager` builds without the
+`runExitHooks redeclared` runtime error that appears with mismatched host Go installs.
 
 ### Building VMs
 ```bash
@@ -200,6 +242,10 @@ nix build .#checks.x86_64-linux.minimal-test
 
 # Health checks
 scripts/health_checks/
+
+# Auth Manager unit tests (inside the dev shell)
+cd apps/auth-manager
+go test ./...
 ```
 
 ## 🚀 Use Cases
@@ -220,7 +266,7 @@ scripts/health_checks/
 
 ## 📚 Documentation
 
-- [CLI Documentation](cli/README.md)
+- [CLI Documentation](apps/cli/README.md)
 - [VM Architecture](docs/SERVICES-OVERVIEW.md)
 - [Security Reports](docs/)
 - [Legacy Documentation](docs/DEPLOYMENT-STATUS.md)

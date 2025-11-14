@@ -35,8 +35,8 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                    RAVE VM (NixOS)                         │
 ├─────────────────────────────────────────────────────────────┤
-│ GitLab (18221/gitlab/)     ←→    OAuth    ←→   Mattermost   │
-│                                                 (18231/)    │
+│ GitLab (8443/gitlab/)      ←→    OAuth    ←→   Mattermost   │
+│                                                 (8443/)     │
 │ PostgreSQL Database        ←→    Redis    ←→   nginx Proxy  │
 │                                                             │
 │ gitlab-mattermost-ci-bridge.service                        │
@@ -69,9 +69,9 @@
   - Step-by-step user testing guide
 
 ### Manual Testing Steps
-1. Start VM: `./cli/rave vm start your-project`
-2. Access GitLab: https://localhost:18221/gitlab/
-3. Access Mattermost: https://localhost:18231/mattermost/
+1. Start VM: `./apps/cli/rave vm start your-project`
+2. Access GitLab: https://localhost:8443/gitlab/
+3. Access Mattermost: https://localhost:8443/mattermost/
 4. Test OAuth login
 5. Verify "builds" channel creation
 6. Test CI notifications with sample project
@@ -104,7 +104,7 @@
 3. **INTEGRATION-STATUS.md**: This status report
 
 ### Configuration Files
-- **nixos/configs/complete-production.nix**: Main integration config
+- **infra/nixos/configs/complete-production.nix**: Main integration config
 - **config/secrets.yaml**: Encrypted credentials (SOPS)
 
 ## 🎯 Success Criteria Met

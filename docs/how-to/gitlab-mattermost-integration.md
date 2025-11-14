@@ -10,9 +10,9 @@ The RAVE VM automatically configures GitLab and Mattermost to work together, pro
 2. **CI/CD Notifications**: Automatic notifications in Mattermost when GitLab CI pipelines run
 3. **Automated Setup**: No manual configuration required - everything is set up automatically
 
-All of the knobs for this automation live in the Nix modules under `nixos/modules/services/{mattermost,gitlab}`.
+All of the knobs for this automation live in the Nix modules under `infra/nixos/modules/services/{mattermost,gitlab}`.
 Each flake profile (production, development, demo) simply sets the `services.rave.*` options it needs in
-`nixos/configs/*.nix`, so you can toggle the integration per profile without editing ad-hoc manifests.
+`infra/nixos/configs/*.nix`, so you can toggle the integration per profile without editing ad-hoc manifests.
 
 ## Features
 
@@ -68,15 +68,15 @@ CI/CD Events, MRs, Deployments
 
 Use the following options when you need to change how the integration behaves:
 
-- `services.rave.mattermost` (defined in `nixos/modules/services/mattermost/default.nix`) — controls the
+- `services.rave.mattermost` (defined in `infra/nixos/modules/services/mattermost/default.nix`) — controls the
   Mattermost site URL, team/channel metadata, GitLab OAuth credentials, Calls plugin, and the CI bridge toggles.
-- `services.rave.gitlab` (in `nixos/modules/services/gitlab/default.nix`) — defines the GitLab external URL,
+- `services.rave.gitlab` (in `infra/nixos/modules/services/gitlab/default.nix`) — defines the GitLab external URL,
   OAuth providers, runners, and any secrets the bridge consumes.
-- Profile overlays such as `nixos/configs/production.nix` or `nixos/configs/development.nix` simply set those
+- Profile overlays such as `infra/nixos/configs/production.nix` or `infra/nixos/configs/development.nix` simply set those
   options; the CLI’s `--profile` flag picks the right file automatically.
 
 Whenever you update the Python automation helpers (`ensure-gitlab-mattermost-ci.py`,
-`update-mattermost-config.py`), edit them inside `nixos/modules/services/mattermost/` so every profile stays in sync.
+`update-mattermost-config.py`), edit them inside `infra/nixos/modules/services/mattermost/` so every profile stays in sync.
 
 ### Runtime Environment
 
@@ -92,7 +92,7 @@ The CI bridge systemd service now generates its environment automatically from t
 
 1. **Start the VM**:
    ```bash
-   ./cli/rave vm start your-project
+   ./apps/cli/rave vm start your-project
    ```
 
 2. **Access GitLab**: 
@@ -163,11 +163,11 @@ Run the integration test script:
 To modify the integration:
 
 1. Update the relevant `services.rave.mattermost` / `services.rave.gitlab` options in the profile you are targeting
-   (`nixos/configs/production.nix`, `development.nix`, or `demo.nix`).
+   (`infra/nixos/configs/production.nix`, `development.nix`, or `demo.nix`).
 2. If automation logic needs to change, edit the helper scripts inside
-   `nixos/modules/services/mattermost/` so every profile picks up the same behavior.
+   `infra/nixos/modules/services/mattermost/` so every profile picks up the same behavior.
 3. Rebuild an image: `nix build .#production` (or another profile attribute).
-4. Launch it via the CLI: `./cli/rave vm launch-local --profile production`.
+4. Launch it via the CLI: `./apps/cli/rave vm launch-local --profile production`.
 5. Run `./test-integration.sh` for an end-to-end verification.
 
 ## API Endpoints
