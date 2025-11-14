@@ -105,7 +105,9 @@ let
   authManagerLoopback = "http://127.0.0.1:${toString authManagerPort}";
   gitlabRailsRunner = "${config.system.path}/bin/gitlab-rails";
 
-  dbPasswordUnitSpecs = [
+  hasLocalPostgres = config.services.rave.postgresql.enable;
+
+  dbPasswordUnitSpecs = lib.optionals hasLocalPostgres [
     {
       name = "grafana";
       role = "grafana";
@@ -737,12 +739,14 @@ sops = lib.mkIf false {
   services.rave.postgresql = {
     enable = true;
     listenAddresses = "0.0.0.0";
-    ensureDatabases = [ "gitlab" "grafana" "mattermost" ]
+    ensureDatabases = [ "gitlab" "grafana" "mattermost" "penpot" "n8n" ]
       ++ lib.optionals config.services.rave.authentik.enable [ "authentik" ];
     ensureUsers = [
       { name = "gitlab"; ensureDBOwnership = true; }
       { name = "grafana"; ensureDBOwnership = true; }
       { name = "mattermost"; ensureDBOwnership = true; }
+      { name = "penpot"; ensureDBOwnership = true; }
+      { name = "n8n"; ensureDBOwnership = true; }
       { name = "prometheus"; ensureDBOwnership = false; }
     ] ++ lib.optionals config.services.rave.authentik.enable [
       { name = "authentik"; ensureDBOwnership = true; }
@@ -775,6 +779,14 @@ sops = lib.mkIf false {
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mattermost')
       \gexec
 
+      SELECT format('CREATE ROLE %I LOGIN', 'penpot')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'penpot')
+      \gexec
+
+      SELECT format('CREATE ROLE %I LOGIN', 'n8n')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'n8n')
+      \gexec
+
       SELECT format('CREATE ROLE %I LOGIN', 'authentik')
       WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authentik')
       \gexec
@@ -795,6 +807,14 @@ sops = lib.mkIf false {
       SELECT format('CREATE DATABASE %I OWNER %I', 'mattermost', 'mattermost')
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'mattermost')
       \\gexec
+
+      SELECT format('CREATE DATABASE %I OWNER %I', 'penpot', 'penpot')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'penpot')
+      \gexec
+
+      SELECT format('CREATE DATABASE %I OWNER %I', 'n8n', 'n8n')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'n8n')
+      \gexec
 
       SELECT format('CREATE DATABASE %I OWNER %I', 'authentik', 'authentik')
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'authentik')
@@ -827,6 +847,36 @@ sops = lib.mkIf false {
       GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO mattermost;
       GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO mattermost;
       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO mattermost;
+
+      -- Penpot database setup
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'penpot') THEN
+          CREATE ROLE penpot WITH LOGIN;
+        END IF;
+      END
+      $$;
+      GRANT ALL PRIVILEGES ON DATABASE penpot TO penpot;
+      ALTER DATABASE penpot OWNER TO penpot;
+      GRANT USAGE ON SCHEMA public TO penpot;
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO penpot;
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO penpot;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO penpot;
+
+      -- n8n database setup
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'n8n') THEN
+          CREATE ROLE n8n WITH LOGIN;
+        END IF;
+      END
+      $$;
+      GRANT ALL PRIVILEGES ON DATABASE n8n TO n8n;
+      ALTER DATABASE n8n OWNER TO n8n;
+      GRANT USAGE ON SCHEMA public TO n8n;
+      GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO n8n;
+      GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO n8n;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO n8n;
 
       -- Authentik database setup
       GRANT ALL PRIVILEGES ON DATABASE authentik TO authentik;
@@ -947,10 +997,7 @@ RUBY
     useSecrets = false;
     publicUrl = gitlabExternalUrl;
     externalPort = lib.toInt baseHttpsPort;
-    databaseSeedFile =
-      if builtins.pathExists ./artifacts/gitlab/schema.sql
-      then ./artifacts/gitlab/schema.sql
-      else null;
+    databaseSeedFile = ./../assets/gitlab-schema.sql;
     runner.enable = false;
     oauth = {
       enable = true;
