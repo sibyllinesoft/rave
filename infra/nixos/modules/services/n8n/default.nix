@@ -142,6 +142,8 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
         TimeoutStartSec = "0";
+        Restart = "on-failure";
+        RestartSec = 30;
         ExecStart = ''
           ${pkgs.docker}/bin/docker pull ${cfg.dockerImage}
         '';

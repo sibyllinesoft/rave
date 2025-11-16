@@ -2505,10 +2505,10 @@ def remove(ctx, email: str):
         click.echo(f"❌ Error removing user: {e}")
         sys.exit(1)
 
-@user.command()
+@user.command(name="list")
 @click.option('--company', help='Filter by company')
 @click.pass_context
-def list(ctx, company: Optional[str]):
+def list_users(ctx, company: Optional[str]):
     """List all users."""
     user_manager = ctx.obj['user_manager']
     

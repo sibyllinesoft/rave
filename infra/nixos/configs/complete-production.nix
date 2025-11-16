@@ -81,9 +81,22 @@ let
   pomeriumIdp = config.services.rave.pomerium.idp;
   pomeriumInlineSecret = pomeriumIdp.clientSecret or "";
   pomeriumSecretFile = pomeriumIdp.clientSecretFile;
+  gitlabSchemaSeed = builtins.path {
+    path = ../assets/gitlab-schema.sql;
+    name = "gitlab-schema.sql";
+  };
   authentikPublicUrl = "https://auth.localtest.me:${baseHttpsPort}/";
   authentikHostPort = 9130;
   authentikMetricsPort = 9131;
+  authentikDockerArchivePath = ../../artifacts/docker/authentik-server-2024.6.2.tar;
+  authentikDockerArchive =
+    if builtins.pathExists authentikDockerArchivePath then
+      builtins.path {
+        path = authentikDockerArchivePath;
+        name = "authentik-server-2024.6.2.tar";
+      }
+    else
+      null;
   authentikSecretKeyFile = if useSecrets
     then "/run/secrets/authentik/secret-key"
     else pkgs.writeText "authentik-secret-key" "authentik-development-secret";
@@ -279,6 +292,7 @@ in
     publicUrl = authentikPublicUrl;
     hostPort = authentikHostPort;
     metricsPort = authentikMetricsPort;
+    dockerImageArchive = authentikDockerArchive;
     rootDomain = "auth.localtest.me";
     defaultExternalPort = baseHttpsPort;
     secretKey = if useSecrets then null else "authentik-development-secret";
@@ -997,7 +1011,7 @@ RUBY
     useSecrets = false;
     publicUrl = gitlabExternalUrl;
     externalPort = lib.toInt baseHttpsPort;
-    databaseSeedFile = ./../assets/gitlab-schema.sql;
+    databaseSeedFile = gitlabSchemaSeed;
     runner.enable = false;
     oauth = {
       enable = true;
@@ -1070,5 +1084,7 @@ RUBY
       4222  # NATS
     ];
   };
+
+  system.extraDependencies = [ gitlabSchemaSeed ];
 
 }

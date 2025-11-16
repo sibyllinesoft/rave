@@ -136,8 +136,14 @@ ${welcomeScript}
 WELCOME
         chmod +x ${cfg.scriptPath}
 ${optionalString cfg.appendToBashrc ''
-        if ! grep -qF "${cfg.scriptPath}" /root/.bashrc; then
-          echo "${cfg.scriptPath}" >> /root/.bashrc
+        marker="# RAVE welcome script"
+        if ! grep -qF "$marker" /root/.bashrc; then
+          cat >> /root/.bashrc <<EOF_RAVE_WELCOME
+$marker
+if [ -n "\$PS1" ] && [ -x ${cfg.scriptPath} ]; then
+  ${cfg.scriptPath}
+fi
+EOF_RAVE_WELCOME
         fi
 ''}
       '';

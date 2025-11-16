@@ -37,6 +37,11 @@ if [[ "${ACTIVE_MIGRATIONS:-0}" -eq 0 ]]; then
 fi
 
 sudo -u "${POSTGRES_USER}" "${PG_BIN}" --schema-only --no-owner gitlab > "${OUTPUT_PATH}"
+echo "Embedding schema_migrations + ar_internal_metadata contents..."
+sudo -u "${POSTGRES_USER}" "${PG_BIN}" --data-only --column-inserts \
+  --table=schema_migrations \
+  --table=ar_internal_metadata \
+  gitlab >> "${OUTPUT_PATH}"
 if getent passwd git >/dev/null 2>&1; then
   chown git:git "${OUTPUT_PATH}" || true
 elif getent passwd gitlab >/dev/null 2>&1; then

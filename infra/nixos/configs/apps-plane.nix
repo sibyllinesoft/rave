@@ -1,7 +1,10 @@
 { lib, ... }:
 let
+  tenantEnv = builtins.getEnv "RAVE_TENANT";
+  tenant = if tenantEnv == "" then "acme" else tenantEnv;
   dataHostEnv = builtins.getEnv "RAVE_DATA_HOST";
-  dataHost = if dataHostEnv == "" then "rave-data-plane.local" else dataHostEnv;
+  defaultClusterHost = "${tenant}-data-cluster.${tenant}.svc.cluster.local";
+  dataHost = if dataHostEnv == "" then defaultClusterHost else dataHostEnv;
   parsePort = envVar: default:
     let
       raw = builtins.getEnv envVar;

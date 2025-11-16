@@ -190,6 +190,49 @@ if __name__ == "__main__":
 
   systemctl = lib.getExe' pkgs.systemd "systemctl";
 
+  gitlabPackage =
+    if config.services ? gitlab && config.services.gitlab ? package
+    then config.services.gitlab.package
+    else pkgs.gitlab;
+  migrationDirs =
+    lib.filter
+      (dir: builtins.pathExists dir)
+      [
+        "${gitlabPackage}/share/gitlab/db/migrate"
+        "${gitlabPackage}/share/gitlab/db/post_migrate"
+      ];
+
+  gitlabMigrationSql =
+    pkgs.runCommand "gitlab-seed-migrations.sql" { buildInputs = [ pkgs.coreutils pkgs.bash ]; } ''
+      ${pkgs.bash}/bin/bash <<'SCRIPT' > "$out"
+set -euo pipefail
+pkg=${gitlabPackage}
+tmp=$(mktemp)
+shopt -s nullglob
+for dir in "$pkg/share/gitlab/db/migrate" "$pkg/share/gitlab/db/post_migrate"; do
+  if [ -d "$dir" ]; then
+    for file in "$dir"/*.rb; do
+      basename=$(basename "$file")
+      version="''${basename%%_*}"
+      if [[ "$version" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$version" >> "$tmp"
+      fi
+    done
+  fi
+done
+sort -u "$tmp" > "$tmp.sorted"
+echo "DELETE FROM schema_migrations;"
+while IFS= read -r version; do
+  [ -n "$version" ] || continue
+  echo "INSERT INTO schema_migrations (version) VALUES ('$version') ON CONFLICT (version) DO NOTHING;"
+done < "$tmp.sorted"
+echo "DELETE FROM ar_internal_metadata;"
+echo "INSERT INTO ar_internal_metadata (key, value, created_at, updated_at)"
+echo "VALUES ('environment', 'production', NOW(), NOW())"
+echo "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at;"
+SCRIPT
+    '';
+
 in
 {
 
@@ -346,11 +389,26 @@ in
 
           if [ -n "$HAS_SCHEMA" ]; then
             echo "GitLab schema already present; skipping seed import."
-            exit 0
+          else
+            echo "📥 Importing GitLab schema from $SEED_FILE ..."
+            ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -f "$SEED_FILE"
           fi
 
-          echo "📥 Importing GitLab schema from $SEED_FILE ..."
-          ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -f "$SEED_FILE"
+          echo "🧾 Marking GitLab migrations as applied ..."
+          ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -f ${gitlabMigrationSql}
+          echo "🔑 Ensuring gitlab owns all imported objects ..."
+          ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d postgres -c "ALTER DATABASE gitlab OWNER TO gitlab;"
+          for schema in public gitlab_partitions_dynamic gitlab_partitions_static; do
+            CHECK_SQL=$(printf "SELECT 1 FROM information_schema.schemata WHERE schema_name='%s';" "$schema")
+            if ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -d gitlab -tAc "$CHECK_SQL" | grep -q 1; then
+              ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -c "$(printf "ALTER SCHEMA %s OWNER TO gitlab;" "$schema")"
+              ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -c "$(printf "GRANT ALL PRIVILEGES ON SCHEMA %s TO gitlab;" "$schema")" || true
+              ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -c "$(printf "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA %s TO gitlab;" "$schema")" || true
+              ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -c "$(printf "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %s TO gitlab;" "$schema")" || true
+            fi
+          done
+          ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -c "ALTER DEFAULT PRIVILEGES FOR ROLE gitlab IN SCHEMA public GRANT ALL ON TABLES TO gitlab;"
+          ${pkgs.sudo}/bin/sudo -u postgres ${pkgs.postgresql_15}/bin/psql -v ON_ERROR_STOP=1 -d gitlab -c "ALTER DEFAULT PRIVILEGES FOR ROLE gitlab IN SCHEMA public GRANT ALL ON SEQUENCES TO gitlab;"
         '';
     in {
     assertions = lib.optionals (cfg.oauth.enable) [

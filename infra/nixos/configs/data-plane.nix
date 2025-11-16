@@ -4,6 +4,7 @@
 
   config = {
     services.rave.gitlab.enable = lib.mkForce false;
+    services.rave.gitlab.useSecrets = lib.mkForce false;
     services.rave.mattermost.enable = lib.mkForce false;
     services.rave.monitoring.enable = lib.mkForce false;
     services.rave.penpot.enable = lib.mkForce false;

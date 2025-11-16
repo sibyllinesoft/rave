@@ -14,7 +14,8 @@ instance and baking it back into future builds.
      < scripts/gitlab/dump-schema.sh
    ```
    The script waits for PostgreSQL, confirms `schema_migrations` exists, and
-   writes a schema-only `pg_dump` to the path you provide.
+   writes a schema-only `pg_dump` (followed by data-only inserts for
+   `schema_migrations`/`ar_internal_metadata`) to the path you provide.
 3. Copy the file back to your workstation:
    ```bash
    scp -P 2224 root@localhost:/var/lib/gitlab/gitlab-schema.sql artifacts/gitlab/schema.sql

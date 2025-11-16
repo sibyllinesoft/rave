@@ -145,6 +145,17 @@ in
       description = "Container image tag used for both authentik server and worker.";
     };
 
+    dockerImageArchive = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      description = ''
+        Optional path to a `docker save` tarball containing the Authentik image. When provided, the
+        image is loaded from the tarball instead of pulling from the registry, allowing completely offline starts.
+        Generate with `docker pull ${cfg.dockerImage} && docker save ${cfg.dockerImage} > artifacts/docker/authentik.tar`.
+      '';
+      example = ./artifacts/docker/authentik.tar;
+    };
+
     publicUrl = mkOption {
       type = types.str;
       default = "https://auth.localtest.me:8443/";
@@ -424,8 +435,23 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = ''
-          ${pkgs.docker}/bin/docker pull ${cfg.dockerImage}
+        Restart = "on-failure";
+        RestartSec = 30;
+        ExecStart = pkgs.writeShellScript "authentik-prefetch-image" ''
+          set -euo pipefail
+
+          ${lib.optionalString (cfg.dockerImageArchive != null) ''
+            if [ ! -r ${cfg.dockerImageArchive} ]; then
+              echo "Authentik image archive missing at ${cfg.dockerImageArchive}" >&2
+              exit 1
+            fi
+            echo "Loading Authentik Docker image from ${cfg.dockerImageArchive} ..."
+            ${pkgs.docker}/bin/docker load -i ${cfg.dockerImageArchive} >/dev/null
+          ''}
+          ${lib.optionalString (cfg.dockerImageArchive == null) ''
+            echo "Pulling Authentik Docker image ${cfg.dockerImage} ..."
+            ${pkgs.docker}/bin/docker pull ${cfg.dockerImage}
+          ''}
         '';
       };
     };
@@ -499,5 +525,9 @@ ${volumeRunArgs}${commonEnvArgs}            ${cfg.dockerImage} worker
         ExecStop = "${pkgs.docker}/bin/docker stop authentik-worker";
       };
     };
+
+    system.extraDependencies = lib.optionals (cfg.dockerImageArchive != null) [
+      cfg.dockerImageArchive
+    ];
   };
 }
