@@ -136,6 +136,7 @@ local-artifacts/
 artifacts/
 run/
 workspace/
+scripts/btrfs-trim-snapshots.sh
 
 # -----------------------------------------------------------------------------
 # Development Tools

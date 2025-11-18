@@ -16,8 +16,12 @@ import textwrap
 import builtins
 import hashlib
 import datetime
+import fnmatch
 import re
+import time
+import urllib.parse
 import click
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -108,6 +112,90 @@ def _load_profile_metadata_from_flake() -> Optional[Dict[str, Dict[str, Any]]]:
 PROFILE_METADATA = _load_profile_metadata_from_flake() or _DEFAULT_PROFILE_METADATA
 
 PROFILE_ATTRS = {name: meta["attr"] for name, meta in PROFILE_METADATA.items()}
+
+
+def _locate_result_image(repo_root: Path) -> Optional[Path]:
+    """Locate the nixos.qcow2 artifact, even when using a chroot-style Nix store."""
+    result_dir = repo_root / "result"
+    direct_image = result_dir / "nixos.qcow2"
+    if direct_image.exists():
+        return direct_image
+
+    fallback_dir = _resolve_chroot_store_entry(result_dir)
+    if fallback_dir is None:
+        return None
+
+    fallback_image = fallback_dir / "nixos.qcow2"
+    if fallback_image.exists():
+        return fallback_image
+
+    return None
+
+
+def _resolve_chroot_store_entry(result_dir: Path) -> Optional[Path]:
+    """Map a /nix/store symlink target to its physical location for custom stores."""
+    if not result_dir.is_symlink():
+        return None
+
+    try:
+        link_target = os.readlink(result_dir)
+    except OSError:
+        return None
+
+    target_name = os.path.basename(link_target.rstrip("/"))
+    if not target_name:
+        return None
+
+    store_root = _detect_chroot_store_root()
+    if store_root is None:
+        return None
+
+    candidate_dir = store_root / "nix" / "store" / target_name
+    if candidate_dir.exists():
+        return candidate_dir
+
+    return None
+
+
+def _detect_chroot_store_root() -> Optional[Path]:
+    """Return the physical root directory for the configured local store, if any."""
+    if shutil.which("nix") is None:
+        return None
+
+    try:
+        result = subprocess.run(
+            ["nix", "config", "show", "--json"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+
+    try:
+        config = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+
+    store_entry = config.get("store")
+    if isinstance(store_entry, dict):
+        store_setting = store_entry.get("value")
+    else:
+        store_setting = store_entry
+    if not store_setting:
+        return None
+
+    parsed = urllib.parse.urlparse(store_setting)
+    params = urllib.parse.parse_qs(parsed.query)
+    root_value = params.get("root", [None])[0]
+    if not root_value:
+        return None
+
+    root_path = Path(root_value)
+    if root_path.exists():
+        return root_path
+
+    return None
 
 
 def _profile_feature(profile: str, feature: str) -> bool:
@@ -244,9 +332,28 @@ def _parse_env_file(path: Path) -> Dict[str, str]:
     return data
 
 
+_ENV_SOURCE_PATHS = [
+    Path.cwd() / ".env",
+    REPO_ROOT / ".env",
+    CLI_DIR.parent / ".env",
+    Path.home() / ".config" / "rave" / ".env",
+]
+_ENV_BOOTSTRAPPED = False
+
+
+def _bootstrap_env_from_files() -> None:
+    global _ENV_BOOTSTRAPPED
+    if _ENV_BOOTSTRAPPED:
+        return
+    for env_path in _ENV_SOURCE_PATHS:
+        for key, value in _parse_env_file(env_path).items():
+            os.environ.setdefault(key, value)
+    _ENV_BOOTSTRAPPED = True
+
+
 def _load_root_env() -> Dict[str, str]:
+    _bootstrap_env_from_files()
     env = dict(os.environ)
-    env.update(_parse_env_file(REPO_ROOT / ".env"))
     return env
 
 
@@ -1279,7 +1386,11 @@ def _prepare_secret_entries(
     gitlab = secrets_data.get("gitlab", {}) or {}
     oidc = secrets_data.get("oidc", {}) or {}
     grafana = secrets_data.get("grafana", {}) or {}
+    outline = secrets_data.get("outline", {}) or {}
+    benthos = secrets_data.get("benthos", {}) or {}
     database_creds = secrets_data.get("database", {}) or {}
+    auth_manager = secrets_data.get("auth-manager", {}) or {}
+    authentik = secrets_data.get("authentik", {}) or {}
 
     mattermost = dict(mattermost_raw)
     datasource_password = database_creds.get("mattermost-password") or ""
@@ -1338,9 +1449,21 @@ def _prepare_secret_entries(
         ("database/penpot-password", database_creds.get("penpot-password"), "root", "postgres", "0440", None),
         ("database/n8n-password", database_creds.get("n8n-password"), "root", "postgres", "0440", None),
         ("database/prometheus-password", database_creds.get("prometheus-password"), "root", "postgres", "0440", None),
+        ("database/authentik-password", database_creds.get("authentik-password"), "root", "postgres", "0440", None),
         ("grafana/secret-key", grafana.get("secret-key"), "grafana", "grafana", "0400", None),
         ("grafana/db-password", grafana.get("db-password"), "grafana", "grafana", "0400", None),
         ("grafana/admin-password", database_creds.get("grafana-password"), "grafana", "grafana", "0400", None),
+        ("outline/webhook-secret", outline.get("webhook-secret"), "root", "root", "0400", "/run/secrets/outline/webhook-secret"),
+        ("benthos/gitlab-webhook-secret", benthos.get("gitlab-webhook-secret"), "root", "root", "0400", "/run/secrets/benthos/gitlab-webhook-secret"),
+        ("auth-manager/signing-key", auth_manager.get("signing-key"), "root", "root", "0400", "/run/secrets/auth-manager/signing-key"),
+        ("auth-manager/pomerium-shared-secret", auth_manager.get("pomerium-shared-secret"), "root", "root", "0400", "/run/secrets/auth-manager/pomerium-shared-secret"),
+        ("auth-manager/mattermost-admin-token", auth_manager.get("mattermost-admin-token"), "root", "root", "0400", "/run/secrets/auth-manager/mattermost-admin-token"),
+        ("authentik/secret-key", authentik.get("secret-key"), "root", "root", "0400", "/run/secrets/authentik/secret-key"),
+        ("authentik/bootstrap-password", authentik.get("bootstrap-password"), "root", "root", "0400", "/run/secrets/authentik/bootstrap-password"),
+        ("authentik/google-client-id", authentik.get("google-client-id"), "root", "root", "0400", "/run/secrets/authentik/google-client-id"),
+        ("authentik/google-client-secret", authentik.get("google-client-secret"), "root", "root", "0400", "/run/secrets/authentik/google-client-secret"),
+        ("authentik/github-client-id", authentik.get("github-client-id"), "root", "root", "0400", "/run/secrets/authentik/github-client-id"),
+        ("authentik/github-client-secret", authentik.get("github-client-secret"), "root", "root", "0400", "/run/secrets/authentik/github-client-secret"),
     ]
 
     entries: List[Dict[str, str]] = []
@@ -1365,6 +1488,10 @@ def _prepare_secret_entries(
         "mattermost": mattermost,
         "gitlab": gitlab,
         "grafana": grafana,
+        "auth_manager": auth_manager,
+        "outline": outline,
+        "benthos": benthos,
+        "authentik": authentik,
         "database": database_creds,
         "datasource_password": datasource_password,
     }
@@ -1809,6 +1936,8 @@ def build_image(
         f"🛠️  Building qcow2 image via Nix ({selected_attr}) with IdP '{idp_payload['provider']}'..."
     )
     build_cmd = platform.get_nix_build_command()
+    build_cmd.extend(["--option", "eval-cache", "false"])
+    build_cmd.append("--impure")
     build_cmd.extend(["--show-trace", f".#{selected_attr}"])
     env = os.environ.copy()
     env["RAVE_POMERIUM_CONFIG_JSON"] = json.dumps(idp_payload)
@@ -1817,9 +1946,9 @@ def build_image(
         click.echo("❌ nix build failed. Scroll up for details.")
         sys.exit(result.returncode)
 
-    image_src = repo_root / "result" / "nixos.qcow2"
-    if not image_src.exists():
-        click.echo("❌ Build succeeded but result/nixos.qcow2 is missing.")
+    image_src = _locate_result_image(repo_root)
+    if image_src is None:
+        click.echo("❌ Build succeeded but result/nixos.qcow2 is missing (and alternate store lookup failed).")
         sys.exit(1)
 
     if stamped_path.exists() or stamped_path.is_symlink():
@@ -1864,7 +1993,68 @@ def build_image(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.symlink_to(relative_target)
 
+    auto_register_name: Optional[str] = None
+    if attr is None:
+        auto_register_name = profile
+
+    if auto_register_name:
+        ports_template = {}
+        if hasattr(vm_manager, "port_config"):
+            ports_template.update(vm_manager.port_config)
+        else:
+            ports_template.update(VMManager.DEFAULT_PORTS)
+        image_for_registration = output_path if output_path.exists() else stamped_path
+        try:
+            _auto_register_vm_entry(
+                vm_manager,
+                auto_register_name,
+                profile,
+                image_for_registration,
+                http_port=ports_template.get("http", VMManager.DEFAULT_PORTS["http"]),
+                https_port=ports_template.get("https", VMManager.DEFAULT_PORTS["https"]),
+                ssh_port=ports_template.get("ssh", VMManager.DEFAULT_PORTS["ssh"]),
+                status_port=ports_template.get("test", VMManager.DEFAULT_PORTS["test"]),
+            )
+            click.echo(f"🗂️  Registered VM metadata as '{auto_register_name}' (image: {image_for_registration}).")
+        except Exception as exc:
+            click.echo(f"⚠️  Could not auto-register VM metadata for '{auto_register_name}': {exc}")
+    else:
+        click.echo("ℹ️  Skipping VM metadata registration for custom attribute builds. Run 'rave vm launch-local' to register manually.")
+
     click.echo("✅ Image build complete.")
+
+def _auto_register_vm_entry(
+    vm_manager: VMManager,
+    name: str,
+    profile: str,
+    image_path: Path,
+    *,
+    http_port: int,
+    https_port: int,
+    ssh_port: int,
+    status_port: int,
+) -> None:
+    """Ensure ~/.config/rave/vms/<name>.json exists for launch-local VMs."""
+
+    ports = {
+        "http": http_port,
+        "https": https_port,
+        "ssh": ssh_port,
+        "test": status_port,
+    }
+    existing = vm_manager._load_vm_config(name) or {}
+    updated = dict(existing)
+    updated["name"] = name
+    updated["profile"] = profile
+    updated["profile_attr"] = PROFILE_ATTRS.get(profile, profile)
+    updated["image_path"] = str(image_path)
+    updated["ports"] = ports
+    updated["updated_at"] = time.time()
+    if "created_at" not in updated:
+        updated["created_at"] = time.time()
+    updated["auto_registered"] = True
+    vm_manager._save_vm_config(name, updated)
+
 
 @vm.command(name="launch-local")
 @click.option(
@@ -1898,6 +2088,27 @@ def build_image(
 @click.option("--ssh-port", default=2224, show_default=True, help="Forward host port to guest :22")
 @click.option("--status-port", default=8889, show_default=True, help="Forward host port to guest :8080")
 @click.option("--no-backup", is_flag=True, default=False, help="Skip creating the initial image backup")
+@click.option(
+    "--daemonize/--no-daemonize",
+    default=False,
+    show_default=True,
+    help="Run QEMU in the background and keep CLI exit separate from the VM lifecycle.",
+)
+@click.option(
+    "--pidfile",
+    default=None,
+    help="Custom pidfile path when using --daemonize (default: /tmp/rave-<name>.pid)",
+)
+@click.option(
+    "--serial-log-file",
+    default=None,
+    help="Where to write the guest serial console when daemonized (default: /tmp/rave-<name>-serial.log)",
+)
+@click.option(
+    "--monitor-socket",
+    default=None,
+    help="Unix socket for the QEMU monitor when daemonized (default: /tmp/rave-<name>-monitor.sock)",
+)
 @click.pass_context
 def launch_local(
     ctx,
@@ -1911,9 +2122,14 @@ def launch_local(
     ssh_port: int,
     status_port: int,
     no_backup: bool,
+    daemonize: bool,
+    pidfile: Optional[str],
+    serial_log_file: Optional[str],
+    monitor_socket: Optional[str],
 ):
     """Boot the development VM image locally with QEMU."""
     platform: PlatformManager = ctx.obj["platform"]
+    vm_manager: VMManager = ctx.obj["vm_manager"]
     repo_root = Path.cwd()
 
     if image is None:
@@ -1926,8 +2142,8 @@ def launch_local(
         sys.exit(1)
 
     port_forwards = [
-        (http_port, 80),
-        (https_port, 443),
+        (http_port, VMManager.GUEST_HTTP_PORT),
+        (https_port, VMManager.GUEST_HTTPS_PORT),
         (ssh_port, 22),
         (status_port, 8080),
     ]
@@ -1972,18 +2188,25 @@ def launch_local(
         click.echo("❌ Unable to locate qemu-system-x86_64. Install QEMU first.")
         sys.exit(1)
 
-    pidfile = Path(f"/tmp/rave-{name}.pid")
-    try:
-        if pidfile.exists() or pidfile.is_symlink():
-            pidfile.unlink()
-        pidfile.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
-
     backup_path = image_path.with_suffix(image_path.suffix + ".backup")
     if not no_backup and not backup_path.exists():
         click.echo(f"💾 Creating backup at {backup_path}")
         shutil.copy2(image_path, backup_path)
+
+    # Record/update ~/.config/rave/vms/<name>.json so other commands (oauth, user) work.
+    try:
+        _auto_register_vm_entry(
+            vm_manager,
+            name,
+            profile,
+            image_path,
+            http_port=http_port,
+            https_port=https_port,
+            ssh_port=ssh_port,
+            status_port=status_port,
+        )
+    except Exception as exc:
+        click.echo(f"⚠️  Could not register VM metadata for '{name}': {exc}")
 
     click.echo("🖥️  Launching RAVE VM...")
     click.echo(f"   Image : {image_path}")
@@ -2025,15 +2248,55 @@ def launch_local(
         netdev,
         "-device",
         "virtio-net-pci,netdev=net0",
-        "-pidfile",
-        str(pidfile),
         "-display",
         "none",
-        "-serial",
-        "stdio",
-        "-name",
-        name,
     ]
+
+    if daemonize:
+        default_pidfile = Path(pidfile).expanduser() if pidfile else Path(f"/tmp/rave-{name}.pid")
+        default_serial = (
+            Path(serial_log_file).expanduser()
+            if serial_log_file
+            else Path(f"/tmp/rave-{name}-serial.log")
+        )
+        default_monitor = (
+            Path(monitor_socket).expanduser()
+            if monitor_socket
+            else Path(f"/tmp/rave-{name}-monitor.sock")
+        )
+        for extra in (default_pidfile, default_serial, default_monitor):
+            try:
+                if extra.exists():
+                    extra.unlink()
+                extra.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+        cmd.extend(
+            [
+                "-daemonize",
+                "-pidfile",
+                str(default_pidfile),
+                "-serial",
+                f"file:{default_serial}",
+                "-monitor",
+                f"unix:{default_monitor},server,nowait",
+                "-name",
+                name,
+            ]
+        )
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            click.echo("❌ Failed to start QEMU (see output above).")
+            sys.exit(result.returncode)
+        click.echo(
+            f"✅ VM started in the background (pidfile: {default_pidfile}, serial log: {default_serial})"
+        )
+        click.echo(
+            f"   Stop it later with: kill $(cat {default_pidfile}) && rm -f {default_monitor}"
+        )
+        return
+
+    cmd.extend(["-serial", "stdio", "-name", name])
 
     try:
         os.execvp(qemu_binary, cmd)
@@ -2421,6 +2684,303 @@ def config(ctx, show: bool, set_http_port: Optional[int], set_https_port: Option
         save_config(config)
         click.echo(f"✅ Updated default ports: {', '.join(updates)}")
         click.echo("   Restart CLI for changes to take effect")
+
+# Disk Cleanup Commands
+@cli.group()
+@click.pass_context
+def gc(ctx):
+    """Disk cleanup helpers for artifacts and the Nix store."""
+
+    ctx.ensure_object(dict)
+
+
+@gc.command(name="images")
+@click.option(
+    "--keep",
+    type=click.IntRange(min=0),
+    default=2,
+    show_default=True,
+    help="Keep this many newest QCOW images per directory",
+)
+@click.option(
+    "--directory",
+    "directories",
+    multiple=True,
+    type=str,
+    help="Directory containing QCOW artifacts (defaults to artifacts/qcow/*)",
+)
+@click.option(
+    "--pattern",
+    "patterns",
+    multiple=True,
+    help="Glob filter (repeat to match multiple patterns). Defaults to *.qcow2",
+)
+@click.option(
+    "--min-age-hours",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Only delete artifacts older than this many hours",
+)
+@click.option(
+    "--include-symlinks",
+    is_flag=True,
+    default=False,
+    help="Allow deleting QCOW symlinks (default: skip)",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Ignore protections for running VMs or profile symlinks",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Preview deletions without removing files",
+)
+@click.pass_context
+def gc_images(
+    ctx,
+    keep: int,
+    directories: Sequence[str],
+    patterns: Sequence[str],
+    min_age_hours: int,
+    include_symlinks: bool,
+    force: bool,
+    dry_run: bool,
+):
+    """Prune older QCOW artefacts to reclaim disk space."""
+
+    repo_root = REPO_ROOT
+    vm_manager: VMManager = ctx.obj["vm_manager"]
+
+    if keep < 0:
+        raise click.BadParameter("--keep must be >= 0")
+
+    candidate_dirs: List[Path] = []
+    if directories:
+        for raw in directories:
+            candidate_dirs.append(_resolve_repo_path(raw))
+    else:
+        qcow_root = repo_root / "artifacts" / "qcow"
+        candidate_dirs.append(qcow_root)
+        if qcow_root.exists():
+            for child in sorted(qcow_root.iterdir()):
+                if child.is_dir():
+                    candidate_dirs.append(child)
+
+    seen_dirs = set()
+    target_dirs: List[Path] = []
+    for path in candidate_dirs:
+        canonical = _canonical_path(path)
+        if canonical in seen_dirs:
+            continue
+        seen_dirs.add(canonical)
+        target_dirs.append(path)
+
+    missing_dirs = [path for path in target_dirs if not path.exists()]
+    for path in missing_dirs:
+        click.echo(f"⚠️  Directory {path} not found; skipping.")
+
+    scan_dirs = [path for path in target_dirs if path.exists() and path.is_dir()]
+    if not scan_dirs:
+        raise click.ClickException(
+            "No QCOW directories found. Use --directory to target custom folders."
+        )
+
+    pattern_list = list(patterns)
+
+    def _matches(name: str) -> bool:
+        if pattern_list:
+            return any(fnmatch.fnmatch(name, pat) for pat in pattern_list)
+        return name.endswith(".qcow2") or ".qcow2." in name
+
+    click.echo(
+        f"🧹 Scanning {len(scan_dirs)} QCOW directories (keep {keep}/dir, min-age {min_age_hours}h)."
+    )
+
+    entries_by_dir: Dict[Path, List[Dict[str, Any]]] = defaultdict(list)
+    for directory in scan_dirs:
+        try:
+            for candidate in sorted(directory.iterdir()):
+                if candidate.is_dir():
+                    continue
+                if candidate.is_symlink() and not include_symlinks:
+                    continue
+                if not _matches(candidate.name):
+                    continue
+                try:
+                    stat_info = candidate.lstat() if candidate.is_symlink() else candidate.stat()
+                except (FileNotFoundError, PermissionError) as exc:
+                    click.echo(f"⚠️  Skipping {candidate}: {exc}")
+                    continue
+                entry = {
+                    "path": candidate,
+                    "size": 0 if candidate.is_symlink() else stat_info.st_size,
+                    "mtime": stat_info.st_mtime,
+                    "is_symlink": candidate.is_symlink(),
+                }
+                entries_by_dir[candidate.parent].append(entry)
+        except FileNotFoundError:
+            click.echo(f"⚠️  Directory {directory} disappeared during scan; skipping.")
+
+    total_candidates = sum(len(items) for items in entries_by_dir.values())
+    if total_candidates == 0:
+        click.echo("ℹ️  No matching QCOW images found in the selected directories.")
+        return
+
+    protections: Dict[str, List[str]] = {}
+    if not force:
+        protections = _discover_protected_images(vm_manager, scan_dirs)
+
+    now_ts = time.time()
+    min_age_seconds = min_age_hours * 3600
+
+    deletions: List[Dict[str, Any]] = []
+    skipped_recent = 0
+    skipped_protected = 0
+
+    for directory, entries in entries_by_dir.items():
+        entries.sort(key=lambda item: (item["mtime"], item["path"].name), reverse=True)
+        keep_count = keep if keep >= 0 else 0
+        to_consider = entries[keep_count:]
+        if not to_consider:
+            continue
+        for entry in to_consider:
+            if min_age_seconds and (now_ts - entry["mtime"]) < min_age_seconds:
+                skipped_recent += 1
+                continue
+            if not force and protections:
+                canonical = _canonical_path(entry["path"])
+                reasons = protections.get(canonical)
+                if reasons:
+                    click.echo(
+                        f"🔒 Skipping {entry['path']} (protected by {', '.join(reasons)})"
+                    )
+                    skipped_protected += 1
+                    continue
+            deletions.append(entry)
+
+    if not deletions:
+        click.echo("ℹ️  Nothing to prune with the current criteria.")
+        if skipped_recent and min_age_hours:
+            click.echo(
+                f"   • {skipped_recent} image(s) are newer than {min_age_hours} hour(s)."
+            )
+        if skipped_protected and not force:
+            click.echo(
+                "   • Some images are still referenced by active VMs or profile symlinks."
+            )
+        return
+
+    deletions.sort(key=lambda item: (item["mtime"], item["path"].name))
+
+    freed_bytes = 0
+    removed = 0
+    for entry in deletions:
+        timestamp = datetime.datetime.fromtimestamp(entry["mtime"]).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+        size_label = _human_size(entry["size"])
+        verb = "Would remove" if dry_run else "Removing"
+        click.echo(f"🗑️  {verb} {entry['path']} ({size_label}, modified {timestamp})")
+        if dry_run:
+            freed_bytes += entry["size"]
+            removed += 1
+            continue
+        try:
+            entry["path"].unlink()
+            freed_bytes += entry["size"]
+            removed += 1
+        except FileNotFoundError:
+            click.echo(f"⚠️  {entry['path']} already removed")
+        except PermissionError as exc:
+            click.echo(f"❌ Failed to remove {entry['path']}: {exc}")
+
+    summary_prefix = "ℹ️" if dry_run else "✅"
+    action_word = "would be removed" if dry_run else "removed"
+    click.echo(
+        f"{summary_prefix} {removed} image(s) {action_word}; reclaimed approximately {_human_size(freed_bytes)}."
+    )
+    if skipped_recent and min_age_hours:
+        click.echo(
+            f"   • Skipped {skipped_recent} image(s) newer than {min_age_hours} hour(s)."
+        )
+    if skipped_protected and not force:
+        click.echo(
+            "   • Use --force to override protection for active VMs or update the symlink targets."
+        )
+
+
+@gc.command(name="store")
+@click.option(
+    "--wipe-history",
+    default="30d",
+    show_default=True,
+    help="Run 'nix profile wipe-history --older-than <VALUE>' (set to 0 to skip)",
+)
+@click.option(
+    "--optimize/--no-optimize",
+    default=True,
+    show_default=True,
+    help="Run 'nix store optimise' after garbage collection",
+)
+@click.option(
+    "--legacy-collect/--no-legacy-collect",
+    default=True,
+    show_default=True,
+    help="Also run 'nix-collect-garbage -d' when available",
+)
+@click.option("--dry-run", is_flag=True, help="Print commands without executing them")
+def gc_store(
+    wipe_history: str,
+    optimize: bool,
+    legacy_collect: bool,
+    dry_run: bool,
+):
+    """Run Nix store garbage collection with sensible defaults."""
+
+    nix_binary = shutil.which("nix")
+    if not nix_binary:
+        raise click.ClickException("Nix binary not found on PATH.")
+
+    commands: List[Tuple[List[str], str]] = []
+    commands.append(([nix_binary, "store", "gc"], "nix store gc"))
+
+    duration = (wipe_history or "").strip().lower()
+    if duration and duration not in {"0", "none", "skip"}:
+        commands.append(
+            (
+                [nix_binary, "profile", "wipe-history", "--older-than", duration],
+                f"nix profile wipe-history --older-than {duration}",
+            )
+        )
+
+    if optimize:
+        commands.append(([nix_binary, "store", "optimise"], "nix store optimise"))
+
+    if legacy_collect:
+        legacy_binary = shutil.which("nix-collect-garbage")
+        if legacy_binary:
+            commands.append(([legacy_binary, "-d"], "nix-collect-garbage -d"))
+        else:
+            click.echo("⚠️  nix-collect-garbage not found; skipping legacy cleanup.")
+
+    click.echo("🧽 Preparing Nix store cleanup...")
+    for command, label in commands:
+        formatted = " ".join(shlex.quote(part) for part in command)
+        if dry_run:
+            click.echo(f"   • Would run: {formatted}")
+            continue
+        click.echo(f"   • {formatted}")
+        result = subprocess.run(command)
+        if result.returncode != 0:
+            raise click.ClickException(f"'{label}' failed with exit code {result.returncode}.")
+
+    if dry_run:
+        click.echo("ℹ️  Dry run complete; no commands executed.")
+    else:
+        click.echo("✅ Nix store cleanup finished.")
 
 # User Management Commands
 @cli.group()
@@ -2872,10 +3432,81 @@ def oauth_redirects(ctx, company: Optional[str], provider: Optional[str],
                 include_loopback=include_loopback,
             )
             click.echo(f"  {meta['label']} redirect URIs:")
-            for uri in redirect_uris:
-                click.echo(f"    - {uri}")
+        for uri in redirect_uris:
+            click.echo(f"    - {uri}")
 
         click.echo()
+
+
+def _resolve_repo_path(value: str) -> Path:
+    """Resolve a path relative to the repository root."""
+
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path
+
+
+def _canonical_path(path: Path) -> str:
+    """Return a canonical string representation for path comparisons."""
+
+    try:
+        return str(path.expanduser().resolve())
+    except FileNotFoundError:
+        return str(path.expanduser().absolute())
+
+
+def _human_size(num_bytes: int) -> str:
+    """Format byte counts with binary units."""
+
+    units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+    value = float(num_bytes)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{num_bytes} B"
+
+
+def _discover_protected_images(vm_manager: VMManager, directories: Sequence[Path]) -> Dict[str, List[str]]:
+    """Return a map of canonical image paths that must not be removed."""
+
+    protections: Dict[str, List[str]] = {}
+
+    for company_name in _list_company_names():
+        config = vm_manager._load_vm_config(company_name)
+        if not config:
+            continue
+        image_path = config.get("image_path")
+        if not image_path:
+            continue
+        canonical = _canonical_path(Path(image_path))
+        reasons = protections.setdefault(canonical, [])
+        label = f"VM '{company_name}'"
+        if label not in reasons:
+            reasons.append(label)
+
+    for directory in directories:
+        if not directory.exists() or not directory.is_dir():
+            continue
+        for candidate in directory.iterdir():
+            if not candidate.is_symlink():
+                continue
+            if ".qcow2" not in candidate.name:
+                continue
+            try:
+                target = candidate.resolve()
+            except FileNotFoundError:
+                continue
+            canonical = _canonical_path(target)
+            reasons = protections.setdefault(canonical, [])
+            label = f"symlink {candidate}"
+            if label not in reasons:
+                reasons.append(label)
+
+    return protections
 
 
 @oauth.command('bootstrap')

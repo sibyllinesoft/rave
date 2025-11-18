@@ -171,6 +171,12 @@ rave overrides apply --company <name> --json-output  # Sync overrides and emit J
 - Metadata presets (`--preset traefik`, `--preset gitlab`, etc.) append opinionated pattern blocks so new layers inherit the correct restart/reload semantics automatically (options: traefik, gitlab, mattermost, pomerium, authentik).
 - `--dry-run` first runs `nix flake check` (override with `--nix-check-cmd` or skip via `--skip-nix-check`), optionally executes extra `--preflight-cmd` commands (placeholders: `{company}`, `{layers}`), then streams the layer into the VM in preview mode, printing the plan without touching the filesystem. Add `--json-output` to capture the resulting plan for automation.
 
+## 🧹 Disk Cleanup
+
+- `rave gc images --keep 2 --dry-run` scans `artifacts/qcow/` (or any path passed via `--directory`) and shows which QCOW files would be deleted while protecting images that are still referenced by VM configs or symlinks. Add `--min-age-hours 24` to avoid touching fresh builds, or `--force` if you intentionally want to remove files that are still referenced.
+- `rave gc store --dry-run` prints the Nix commands that will run (`nix store gc`, `nix profile wipe-history --older-than 30d`, `nix store optimise`, and `nix-collect-garbage -d`). Drop `--dry-run` once you're comfortable, or adjust `--wipe-history`, `--no-optimize`, or `--no-legacy-collect` to fit your environment.
+- Both subcommands are safe to place in cron/systemd timers to keep the repo’s artifacts and the Nix store from consuming hundreds of gigabytes.
+
 ### Secrets
 ```bash
 rave secrets init                            # Bootstrap SOPS + Age locally

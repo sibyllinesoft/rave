@@ -732,11 +732,13 @@ let
 
   services = mkMerge serviceSets;
 
+  rootService = if authentikEnabled then "authentik" else "dashboard";
+
   routerSets =
     [
-      { "dashboard-root" = {
+      { "root" = {
           rule = "${hostRule host} && (Path(`/`) || Path(`/index.html`))";
-          service = "dashboard";
+          service = rootService;
         };
       }
     ]
@@ -872,6 +874,14 @@ let
           rule = "${hostRule authentikHostName} && ${pathPrefixRule authentikPath}";
           service = "authentik";
           middlewares = defaultSecurityMiddlewares;
+        };
+      }
+    ]
+    ++ optionals (authentikEnabled && authentikSeparateHost) [
+      { "authentik-fallback" = {
+          rule = hostRule host;
+          service = "authentik";
+          priority = -10;
         };
       }
     ]
@@ -1032,8 +1042,8 @@ in
 
       systemd.services.gitlab-workhorse-proxy = {
         description = "Proxy gitlab-workhorse unix socket";
-        after = [ "gitlab-workhorse.socket" ];
-        requires = [ "gitlab-workhorse.socket" ];
+        after = [ "gitlab-workhorse.service" ];
+        requires = [ "gitlab-workhorse.service" ];
         unitConfig.Sockets = "gitlab-workhorse-proxy.socket";
         serviceConfig = {
           ExecStart = "${pkgs.systemd}/lib/systemd/systemd-socket-proxyd /run/gitlab/gitlab-workhorse.socket";

@@ -29,6 +29,8 @@ class VMManager:
         "ssh": 2224,
         "test": 8889
     }
+    GUEST_HTTP_PORT = 80
+    GUEST_HTTPS_PORT = 443
 
     # Data-plane service forwarding (host -> guest)
     DATA_PLANE_SERVICE_GUEST_PORTS = {
@@ -848,8 +850,8 @@ exit
         # Start VM with platform-specific launcher
         ports = config["ports"]
         port_forwards = [
-            (ports['http'], 80),
-            (ports['https'], 443),
+            (ports['http'], self.GUEST_HTTP_PORT),
+            (ports['https'], self.GUEST_HTTPS_PORT),
             (ports['ssh'], 22),
             (ports['test'], 8080)
         ]
@@ -1056,14 +1058,14 @@ exit
         if not self._is_vm_running(company_name):
             return {"success": False, "error": f"VM '{company_name}' is not running"}
 
-        safe_layer = re.sub(r"[^A-Za-z0-9_.-]", "_", layer_name)
-        
         # SSH with keypair (if available) or password fallback
         ports = config["ports"]
         keypair_path = config.get("keypair")
         
         # Try SSH with multiple authentication methods
         known_host_flags = [
+            "-F",
+            "/dev/null",
             "-o",
             "StrictHostKeyChecking=no",
             "-o",

@@ -82,6 +82,31 @@ will omit the Pomerium instructions.
 - `services.rave.authentik.email.*` — enable SMTP notifications.
 - `services.rave.authentik.extraEnv` — pass additional `AUTHENTIK_*` settings.
 
+## 7. Enabling Google/GitHub login buttons
+
+Authentik now ships with two managed OAuth sources out of the box:
+
+- `google` – uses the official Google OAuth/OIDC endpoints.
+- `github` – talks to github.com (you can override the URLs for GHE).
+
+Add the following entries to `config/secrets.yaml` (encrypted via `sops`) so the CLI can
+install them into `/run/secrets/authentik/**` during `rave secrets install`:
+
+```yaml
+authentik:
+  google-client-id: <Google OAuth client ID>
+  google-client-secret: <Google OAuth client secret>
+  github-client-id: <GitHub OAuth client ID>
+  github-client-secret: <GitHub OAuth client secret>
+```
+
+On boot the VM runs a helper that reads those secrets and reconciles the corresponding
+Authentik `OAuthSource` objects (including binding them to the default authentication flow and
+identification stage), so the login buttons appear automatically. To tweak or add further
+providers, override `services.rave.authentik.oauthSources` in Nix. Each entry lets you disable
+the source, change the scopes, point at alternative endpoints (GitHub Enterprise, Okta, etc.),
+or add custom stages/flows.
+
 Drop an override module into `config/overrides` or pass `--arg modules` to `nix build` if you need
 per-tenant tweaks.
 

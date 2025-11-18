@@ -466,8 +466,8 @@ in
     systemd.services."gitlab-mattermost-oauth" = {
       description = "Ensure GitLab OAuth client for Mattermost exists";
       wantedBy = [ "multi-user.target" ];
-      after = [ "gitlab-db-config.service" "gitlab.service" ];
-      wants = [ "gitlab.service" ];
+      after = [ "gitlab-db-config.service" "gitlab-workhorse.service" ];
+      wants = [ "gitlab-workhorse.service" ];
       requires = [ "gitlab-db-config.service" ];
       serviceConfig = {
         Type = "oneshot";

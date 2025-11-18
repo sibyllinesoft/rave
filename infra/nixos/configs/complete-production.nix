@@ -88,7 +88,7 @@ let
   authentikPublicUrl = "https://auth.localtest.me:${baseHttpsPort}/";
   authentikHostPort = 9130;
   authentikMetricsPort = 9131;
-  authentikDockerArchivePath = ../../artifacts/docker/authentik-server-2024.6.2.tar;
+  authentikDockerArchivePath = ../../../artifacts/docker/authentik-server-2024.6.2.tar;
   authentikDockerArchive =
     if builtins.pathExists authentikDockerArchivePath then
       builtins.path {
@@ -159,29 +159,22 @@ let
       secret = "/run/secrets/database/prometheus-password";
       fallback = "prometheus_pass";
       dependent = "prometheus-postgres-exporter";
-      extraScript = ''
-        DSN_FILE=/run/secrets/database/prometheus-dsn.env
-        mkdir -p /run/secrets/database
-        printf 'DATA_SOURCE_NAME=postgresql://prometheus:%s@localhost:5432/postgres?sslmode=disable\n' "$PASSWORD" > "$DSN_FILE"
-        chown prometheus-postgres-exporter:prometheus-postgres-exporter "$DSN_FILE"
-        chmod 0400 "$DSN_FILE"
-      '';
+      extraScript =
+        lib.optionalString (config.services.rave.monitoring.exporters.postgres.dsnEnvFile != null) ''
+          DSN_FILE=/run/secrets/database/prometheus-dsn.env
+          mkdir -p /run/secrets/database
+          printf 'DATA_SOURCE_NAME=postgresql://prometheus:%s@localhost:5432/postgres?sslmode=disable\n' "$PASSWORD" > "$DSN_FILE"
+          chown prometheus-postgres-exporter:prometheus-postgres-exporter "$DSN_FILE"
+          chmod 0400 "$DSN_FILE"
+        '';
     }
   ] ++ lib.optionals config.services.rave.authentik.enable [
     {
-      name = "authentik-server";
+      name = "authentik";
       role = "authentik";
       secret = "/run/secrets/database/authentik-password";
       fallback = authentikDbPassword;
       dependent = "authentik-server";
-      extraScript = "";
-    }
-    {
-      name = "authentik-worker";
-      role = "authentik";
-      secret = "/run/secrets/database/authentik-password";
-      fallback = authentikDbPassword;
-      dependent = "authentik-worker";
       extraScript = "";
     }
   ];
@@ -317,7 +310,7 @@ in
   };
 
   services.rave.auth-manager = {
-    enable = true;
+    enable = lib.mkDefault (config.services.rave.pomerium.enable);
     listenAddress = "0.0.0.0:8088";
     openFirewall = true;
     sourceIdp = "gitlab";
@@ -334,7 +327,7 @@ in
   };
 
   services.rave.pomerium = {
-    enable = lib.mkDefault true;
+    enable = lib.mkDefault false;
     publicUrl = pomeriumBaseUrl;
     httpPort = config.services.rave.ports.https;
     tls = {
@@ -560,7 +553,7 @@ in
 # SOPS configuration - DISABLE built-in activation to prevent conflicts
 # Only use our custom sops-init service which runs after AGE key is available
 sops = lib.mkIf false {
-  defaultSopsFile = ../../config/secrets.yaml;
+  defaultSopsFile = ../../../config/secrets.yaml;
   age.keyFile = "/var/lib/sops-nix/key.txt";
   validateSopsFiles = false;
   secrets = {
@@ -659,7 +652,7 @@ sops = lib.mkIf false {
 
   security.rave.sopsBootstrap = {
     enable = config.services.rave.gitlab.useSecrets;
-    sopsFile = ../../config/secrets.yaml;
+    sopsFile = ../../../config/secrets.yaml;
     secretMappings = [
       { selector = "[\"mattermost\"][\"admin-username\"]"; path = "/run/secrets/mattermost/admin-username"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"mattermost\"][\"admin-email\"]"; path = "/run/secrets/mattermost/admin-email"; owner = "root"; group = "root"; mode = "0400"; }
@@ -1008,7 +1001,7 @@ RUBY
   services.rave.gitlab = {
     enable = true;
     host = "localhost";
-    useSecrets = false;
+    useSecrets = true;
     publicUrl = gitlabExternalUrl;
     externalPort = lib.toInt baseHttpsPort;
     databaseSeedFile = gitlabSchemaSeed;
