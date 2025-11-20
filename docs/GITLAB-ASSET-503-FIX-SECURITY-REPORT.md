@@ -1,5 +1,7 @@
 # GitLab Asset 503 Error Fix - Security Analysis & Solution Report
 
+> _Note: The legacy `gitlab-complete/` Docker Compose stack referenced in this report has been removed from the repository. Paths are preserved here for archival context only._
+
 ## Executive Summary
 
 I have successfully diagnosed and implemented a comprehensive security-hardened fix for the persistent 503 errors affecting GitLab static assets. The root cause was identified as misconfigured rate limiting rules that were incorrectly blocking legitimate asset requests intended only for authentication endpoints.

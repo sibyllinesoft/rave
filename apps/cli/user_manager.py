@@ -2,21 +2,25 @@
 
 import copy
 import json
+import textwrap
 import re
-import subprocess
 import time
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from platform_utils import PlatformManager
+from process_utils import ProcessError, run_command
 from vm_manager import VMManager
 
 
 class UserManager:
     """Manages users via GitLab OAuth integration."""
     
-    def __init__(self):
-        self.config_dir = Path.home() / ".config" / "rave"
+    def __init__(self, config_dir: Optional[Path] = None):
+        platform = PlatformManager()
+        self.config_dir = Path(config_dir) if config_dir else platform.get_config_dir()
         self.users_file = self.config_dir / "users.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.supported_providers = {"google_oauth2", "github"}
@@ -74,7 +78,7 @@ class UserManager:
     def _execute_gitlab_command(self, company_vm: str, command: List[str]) -> Dict[str, any]:
         """Execute GitLab management command in VM."""
         # This would SSH into the VM and execute gitlab-rails commands
-        vm_manager = VMManager(Path.home() / ".config" / "rave" / "vms")
+        vm_manager = VMManager(self.config_dir / "vms")
         config = vm_manager._load_vm_config(company_vm)
         
         if not config:
@@ -94,16 +98,262 @@ class UserManager:
         ]
 
         try:
-            result = subprocess.run(
+            result = run_command(
                 ssh_cmd,
-                input=ruby_script,
-                capture_output=True,
-                text=True,
-                check=True
+                input_data=ruby_script,
+                check=True,
             )
             return {"success": True, "output": result.stdout}
-        except subprocess.CalledProcessError as e:
-            return {"success": False, "error": f"GitLab command failed: {e.stderr}"}
+        except ProcessError as exc:
+            return {
+                "success": False,
+                "error": f"GitLab command failed: {exc.result.stderr or exc.result.stdout}",
+            }
+
+    def _execute_authentik_python(self, company_vm: str, script: str) -> Dict[str, any]:
+        """Run a short Python script inside the authentik-server container via SSH."""
+        vm_manager = VMManager(self.config_dir / "vms")
+        config = vm_manager._load_vm_config(company_vm)
+
+        if not config:
+            return {"success": False, "error": f"VM '{company_vm}' not found"}
+        if not vm_manager._is_vm_running(company_vm):
+            return {"success": False, "error": f"VM '{company_vm}' is not running"}
+
+        ports = config["ports"]
+        ssh_cmd: List[str]
+        keypair = config.get("keypair")
+        if keypair:
+            ssh_cmd = [
+                "ssh",
+                "-i",
+                keypair,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-p",
+                str(ports["ssh"]),
+                "root@localhost",
+                "docker",
+                "exec",
+                "-i",
+                "authentik-server",
+                "python",
+                "-",
+            ]
+        else:
+            ssh_cmd = [
+                "sshpass",
+                "-p",
+                "debug123",
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-p",
+                str(ports["ssh"]),
+                "root@localhost",
+                "docker",
+                "exec",
+                "-i",
+                "authentik-server",
+                "python",
+                "-",
+            ]
+
+        try:
+            result = run_command(
+                ssh_cmd,
+                input_data=script,
+                check=True,
+            )
+            return {"success": True, "output": result.stdout}
+        except ProcessError as exc:
+            return {
+                "success": False,
+                "error": exc.result.stderr or exc.result.stdout or "authentik exec failed",
+            }
+
+    def sync_authentik_sources(
+        self,
+        company: Optional[str] = None,
+        *,
+        gitlab_base_url: Optional[str] = None,
+        google_client_id: Optional[str] = None,
+        google_client_secret: Optional[str] = None,
+        github_client_id: Optional[str] = None,
+        github_client_secret: Optional[str] = None,
+        gitlab_client_id: Optional[str] = None,
+        gitlab_client_secret: Optional[str] = None,
+    ) -> Dict[str, any]:
+        """Create/update Authentik OAuth sources inside the running VM."""
+
+        payload = {
+            "google": {
+                "id": google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID"),
+                "secret": google_client_secret or os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET"),
+            },
+            "github": {
+                "id": github_client_id or os.environ.get("GITHUB_OAUTH_CLIENT_ID"),
+                "secret": github_client_secret or os.environ.get("GITHUB_OAUTH_CLIENT_SECRET"),
+            },
+            "gitlab": {
+                "id": gitlab_client_id or os.environ.get("GITLAB_OAUTH_CLIENT_ID"),
+                "secret": gitlab_client_secret or os.environ.get("GITLAB_OAUTH_CLIENT_SECRET"),
+                "base_url": gitlab_base_url,
+            },
+        }
+
+        script = textwrap.dedent(
+            """
+            import json, os, django
+            os.environ.setdefault("DJANGO_SETTINGS_MODULE", "authentik.root.settings")
+            django.setup()
+
+            from authentik.sources.oauth.models import OAuthSource
+            payload = json.loads(r'''__PAYLOAD__''')
+
+            provider_meta = {
+                "google": {
+                    "name": "Google",
+                    "provider_type": "google",
+                    "id_path": "/run/secrets/authentik/google-client-id",
+                    "secret_path": "/run/secrets/authentik/google-client-secret",
+                    "extra_scopes": ["openid", "email", "profile"],
+                    "urls": {
+                        "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+                        "access_token_url": "https://oauth2.googleapis.com/token",
+                        "profile_url": "https://openidconnect.googleapis.com/v1/userinfo",
+                        "oidc_well_known_url": "https://accounts.google.com/.well-known/openid-configuration",
+                    },
+                },
+                "github": {
+                    "name": "GitHub",
+                    "provider_type": "github",
+                    "id_path": "/run/secrets/authentik/github-client-id",
+                    "secret_path": "/run/secrets/authentik/github-client-secret",
+                    "extra_scopes": ["read:user", "user:email"],
+                    "urls": {
+                        "authorization_url": "https://github.com/login/oauth/authorize",
+                        "access_token_url": "https://github.com/login/oauth/access_token",
+                        "profile_url": "https://api.github.com/user",
+                    },
+                },
+                "gitlab": {
+                    "name": "GitLab",
+                    "provider_type": "gitlab",
+                    "id_path": "/run/secrets/authentik/gitlab-client-id",
+                    "secret_path": "/run/secrets/authentik/gitlab-client-secret",
+                    "extra_scopes": [],
+                    "urls": {
+                        "authorization_url": None,
+                        "access_token_url": None,
+                        "profile_url": None,
+                    },
+                },
+            }
+
+            def read_secret(path: str):
+                try:
+                    data = open(path, "r", encoding="utf-8").read().strip()
+                except FileNotFoundError:
+                    return None
+                except Exception:
+                    return None
+                return data or None
+
+            results = {"providers": {}, "binding": {}}
+            created_sources = []
+
+            for key, meta in provider_meta.items():
+                cfg = payload.get(key) or {}
+                client_id = (cfg.get("id") or "").strip()
+                client_secret = (cfg.get("secret") or "").strip()
+
+                if not client_id:
+                    client_id = read_secret(meta["id_path"])
+                if not client_secret:
+                    client_secret = read_secret(meta["secret_path"])
+
+                if not client_id or not client_secret:
+                    results["providers"][key] = {"status": "skipped", "reason": "missing credentials"}
+                    continue
+
+                defaults = {
+                    "name": meta["name"],
+                    "provider_type": meta["provider_type"],
+                    "consumer_key": client_id,
+                    "consumer_secret": client_secret,
+                    "enabled": True,
+                }
+                urls = meta.get("urls") or {}
+                for field, value in urls.items():
+                    if value:
+                        defaults[field] = value
+                scopes = meta.get("extra_scopes") or []
+                defaults["additional_scopes"] = " ".join(scopes)
+                obj, created = OAuthSource.objects.update_or_create(slug=key, defaults=defaults)
+                created_sources.append(obj)
+                results["providers"][key] = {"status": "created" if created else "updated"}
+
+            try:
+                from authentik.stages.identification.models import IdentificationStage
+
+                stage = IdentificationStage.objects.filter(name__icontains="default").first()
+                if not stage:
+                    results["binding"] = {"status": "skipped", "reason": "no identification stage"}
+                else:
+                    if stage.sources.count() == 0:
+                        results["binding"] = {"status": "open-list"}
+                    else:
+                        added = []
+                        for source in created_sources:
+                            if source not in stage.sources.all():
+                                stage.sources.add(source)
+                                added.append(source.slug)
+                        if added:
+                            stage.save()
+                        results["binding"] = {
+                            "status": "updated" if added else "unchanged",
+                            "added": added,
+                        }
+            except Exception as exc:
+                results["binding"] = {"status": "error", "reason": str(exc)}
+
+            print(json.dumps(results))
+            """
+        ).replace("__PAYLOAD__", json.dumps(payload))
+
+        target_vm = company or "localhost"
+        exec_result = self._execute_authentik_python(target_vm, script)
+        if not exec_result.get("success"):
+            return exec_result
+
+        output = (exec_result.get("output") or "").strip()
+        if not output:
+            return {"success": False, "error": "Empty response from Authentik while syncing sources"}
+
+        try:
+            parsed = json.loads(output.splitlines()[-1])
+        except json.JSONDecodeError as exc:
+            return {
+                "success": False,
+                "error": f"Unable to parse Authentik sync output: {exc}",
+                "raw_output": output,
+            }
+
+        provider_status = parsed.get("providers") or {}
+        configured = {
+            key: value for key, value in provider_status.items() if value.get("status") in {"created", "updated"}
+        }
+
+        return {
+            "success": True,
+            "providers": provider_status,
+            "configured_count": len(configured),
+            "binding": parsed.get("binding"),
+            "raw_output": output,
+        }
     
     def add_user(
         self,
@@ -767,3 +1017,104 @@ class UserManager:
             
         except Exception as e:
             return {"success": False, "error": f"Failed to export users: {e}"}
+
+    # --- Authentik allowlist sync -------------------------------------------------
+    def sync_authentik_allowlist(
+        self,
+        company: Optional[str] = None,
+        extra_domains: Optional[List[str]] = None,
+        derive_domains: bool = True,
+    ) -> Dict[str, any]:
+        """Push an Authentik login allowlist derived from rave users (and optional domains)."""
+        users_data = self._load_users()
+        users = users_data.get("users", [])
+
+        if company:
+            users = [u for u in users if u.get("company") == company]
+
+        allowed_emails = sorted({u["email"].lower() for u in users if u.get("email")})
+        domains: List[str] = []
+        if derive_domains:
+            domains = sorted({email.split("@", 1)[-1].lower() for email in allowed_emails if "@" in email})
+        if extra_domains:
+            domains = sorted(set(domains).union({d.lower() for d in extra_domains if d}))
+
+        # No allowlist -> nothing to sync; treated as success
+        if not allowed_emails and not domains:
+            return {
+                "success": True,
+                "synced_emails": 0,
+                "synced_domains": 0,
+                "info": "Allowlist empty; Authentik left unchanged.",
+            }
+
+        payload_json = json.dumps({"emails": allowed_emails, "domains": domains})
+
+        script = """
+import json, os, django
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "authentik.root.settings")
+django.setup()
+from authentik.policies.expression.models import ExpressionPolicy
+from authentik.policies.models import PolicyBinding
+from authentik.flows.models import Flow
+data = json.loads(r'''{payload_json}''')
+emails = set(data.get("emails") or [])
+domains = set((d or "").lower() for d in data.get("domains") or [])
+
+if not emails and not domains:
+    print("no-allowlist")
+    raise SystemExit(0)
+
+expr = f\"\"\"\
+email = ''
+try:
+    email = (request.context.get('email') or '').lower()
+except Exception:
+    pass
+if not email and 'user' in locals() and user:
+    email = (getattr(user, 'email', '') or '').lower()
+if not email:
+    return True  # allow the flow to proceed until we have an email
+domain = email.split('@')[-1]
+if email in {{emails!r}}:
+    return True
+if domain in {{domains!r}}:
+    return True
+return False
+\"\"\"
+
+policy, _ = ExpressionPolicy.objects.get_or_create(
+    name="rave-allowed-users",
+    defaults={{"expression": expr, "execution_logging": False}},
+)
+policy.expression = expr
+policy.save()
+
+flows = [
+    "default-authentication-flow",
+    "default-source-authentication",
+    "default-authentication-flow-passwordless",
+]
+for slug in flows:
+    flow = Flow.objects.filter(slug=slug).first()
+    if not flow:
+        continue
+    PolicyBinding.objects.update_or_create(
+        target=flow,
+        policy=policy,
+        defaults={{"order": -100, "negate": False, "timeout": 0}},
+    )
+
+print(f"synced-emails={{len(emails)}} domains={{len(domains)}}")
+""".format(payload_json=payload_json)
+        target_vm = company or "localhost"
+        exec_result = self._execute_authentik_python(target_vm, script)
+        if not exec_result.get("success"):
+            return exec_result
+
+        return {
+            "success": True,
+            "synced_emails": len(allowed_emails),
+            "synced_domains": len(domains),
+            "output": exec_result.get("output"),
+        }

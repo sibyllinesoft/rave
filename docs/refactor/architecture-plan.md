@@ -59,7 +59,7 @@
 ### D. Documentation System
 | Goal | Deliverables | Definition of Done |
 | --- | --- | --- |
-| Build Divio-aligned docs | - Create `docs/index.md` referencing Tutorials, How-to, Reference, Explanation subtrees. <br>- Convert `WORKING-SETUP.md`, `COMPLETE-BUILD.md`, etc. into the right buckets, eliminating duplicates. | Doc site (MkDocs or mdBook) categorizes content; README links to it as the source of truth. |
+| Build Divio-aligned docs | - Create `docs/index.md` referencing Tutorials, How-to, Reference, Explanation subtrees. <br>- Convert `docs/architecture/WORKING-SETUP.md`, `docs/architecture/COMPLETE-BUILD.md`, etc. into the right buckets, eliminating duplicates. | Doc site (MkDocs or mdBook) categorizes content; README links to it as the source of truth. |
 | Auto-generate CLI reference | - Use Click’s `rave --help` output to render command reference under the Reference section. | CLI docs regenerate via `poetry run docs:cli`. |
 | Operational runbooks | - Produce a unified How-to for “Provision new tenant” covering CLI + secrets + testing. | Agents can follow a single link to stand up environments without bouncing among multiple markdown files. |
 
@@ -72,7 +72,7 @@
 
 ### F. Migration & Cleanup
 1. **Inventory legacy files** – Create `legacy/README.md` listing what stays for historical reference vs. scheduled deletion dates.
-2. **Deprecate unused scripts** – Flag each script in `build-scripts/` and `scripts/` as “supported” or “sunset” inside a SCRIPT_CATALOG.md.
+2. **Deprecate unused scripts** – Flag each script in `scripts/build/` and `scripts/` as “supported” or “sunset” inside a SCRIPT_CATALOG.md.
 3. **Archive QCOW snapshots** – Publish current golden image to OCI bucket or release asset, remove it from Git history, and replace with download instructions.
 
 ## 4. Execution Phasing

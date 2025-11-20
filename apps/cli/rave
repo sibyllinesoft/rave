@@ -10,7 +10,6 @@ import json
 import shlex
 import shutil
 import socket
-import subprocess
 import tempfile
 import textwrap
 import builtins
@@ -36,12 +35,19 @@ from vm_manager import VMManager
 from user_manager import UserManager
 from oauth_manager import OAuthManager
 from platform_utils import PlatformManager
+from process_utils import ProcessError, run_command
 from override_manager import (
     DEFAULT_LAYER_PRIORITY,
     METADATA_PRESETS,
     OverrideManager,
     OverrideManagerError,
 )
+
+# Platform + config locations
+PLATFORM = PlatformManager()
+CONFIG_DIR = PLATFORM.get_config_dir()
+CONFIG_FILE = CONFIG_DIR / "config.json"
+VMS_DIR = CONFIG_DIR / "vms"
 
 # Constants for secrets management
 DEFAULT_AGE_KEY_PATH = Path.home() / ".config" / "sops" / "age" / "keys.txt"
@@ -76,17 +82,15 @@ def _load_profile_metadata_from_flake() -> Optional[Dict[str, Dict[str, Any]]]:
 
     repo_root = REPO_ROOT
     try:
-        result = subprocess.run(
+        result = run_command(
             [nix_path, "eval", "--json", ".#profileMetadata"],
             cwd=repo_root,
-            capture_output=True,
-            text=True,
-            check=False,
+            check=True,
         )
-    except Exception:
+    except ProcessError:
         return None
 
-    if result.returncode != 0 or not result.stdout.strip():
+    if not result.stdout.strip():
         return None
 
     try:
@@ -163,13 +167,8 @@ def _detect_chroot_store_root() -> Optional[Path]:
         return None
 
     try:
-        result = subprocess.run(
-            ["nix", "config", "show", "--json"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError:
+        result = run_command(["nix", "config", "show", "--json"], check=True)
+    except ProcessError:
         return None
 
     try:
@@ -336,7 +335,7 @@ _ENV_SOURCE_PATHS = [
     Path.cwd() / ".env",
     REPO_ROOT / ".env",
     CLI_DIR.parent / ".env",
-    Path.home() / ".config" / "rave" / ".env",
+    CONFIG_DIR / ".env",
 ]
 _ENV_BOOTSTRAPPED = False
 
@@ -398,19 +397,15 @@ def _run_local_command(command: str, description: str) -> None:
     if not parts:
         raise click.ClickException(f"{description} command is empty")
     try:
-        result = subprocess.run(
-            parts,
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        raise click.ClickException(f"Failed to run {description}: {exc}")
-
+        result = run_command(parts, cwd=REPO_ROOT)
+    except ProcessError as exc:
+        stderr = exc.result.stderr.strip()
+        stdout = exc.result.stdout.strip()
+        details = exc.result or exc
+        detail_text = stderr or stdout or str(exc)
+        raise click.ClickException(f"{description} failed: {detail_text}") from exc
     if result.returncode != 0:
-        stderr = result.stderr.strip()
-        stdout = result.stdout.strip()
-        details = stderr or stdout or f"exit code {result.returncode}"
+        details = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
         raise click.ClickException(f"{description} failed: {details}")
 
 
@@ -733,11 +728,6 @@ def _render_gcloud_command(
     return "\n".join(lines)
 
 
-# Global configuration
-CONFIG_DIR = Path.home() / ".config" / "rave"
-CONFIG_FILE = CONFIG_DIR / "config.json"
-VMS_DIR = CONFIG_DIR / "vms"
-
 def ensure_config_dir():
     """Ensure configuration directory exists."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -773,9 +763,9 @@ def cli(ctx):
     # Extract port configuration from config file
     port_config = config.get('default_ports', {})
     ctx.obj['vm_manager'] = VMManager(VMS_DIR, port_config)
-    ctx.obj['user_manager'] = UserManager()
-    ctx.obj['oauth_manager'] = OAuthManager()
-    ctx.obj['platform'] = PlatformManager()
+    ctx.obj['user_manager'] = UserManager(CONFIG_DIR)
+    ctx.obj['oauth_manager'] = OAuthManager(CONFIG_DIR)
+    ctx.obj['platform'] = PLATFORM
     ctx.obj['override_manager'] = OverrideManager(REPO_ROOT)
 
     default_provider = _get_default_provider(ctx)
@@ -1096,11 +1086,11 @@ def bootstrap(ctx):
         click.echo("ℹ️  mkcert already present")
 
     try:
-        subprocess.run(["mkcert", "-install"], check=True)
-    except subprocess.CalledProcessError as exc:
+        run_command(["mkcert", "-install"], check=True, capture_output=False)
+    except ProcessError as exc:
         click.echo("❌ mkcert failed to install the local CA")
-        if exc.stderr:
-            click.echo(f"   → {exc.stderr.strip()}")
+        if exc.result.stderr:
+            click.echo(f"   → {exc.result.stderr.strip()}")
         sys.exit(1)
 
     caroot = platform.mkcert_caroot()
@@ -1149,12 +1139,11 @@ def issue(ctx, company_name: str, domains: List[str]):
         ]
 
         try:
-            subprocess.run(mkcert_cmd, check=True, capture_output=True)
-        except subprocess.CalledProcessError as exc:
-            stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else exc.stderr
+            run_command(mkcert_cmd, check=True)
+        except ProcessError as exc:
             click.echo("❌ mkcert failed to issue the certificate")
-            if stderr:
-                click.echo(f"   → {stderr.strip()}")
+            if exc.result.stderr:
+                click.echo(f"   → {exc.result.stderr.strip()}")
             sys.exit(1)
 
         caroot = platform.mkcert_caroot()
@@ -1207,13 +1196,11 @@ def _ensure_binary(name: str, install_hint: str) -> bool:
 def _extract_public_key(key_path: Path) -> Optional[str]:
     """Return the Age public key for a private key file."""
     try:
-        output = subprocess.check_output(
-            ["age-keygen", "-y", str(key_path)],
-            text=True
-        ).strip()
-    except subprocess.CalledProcessError as exc:
+        result = run_command(["age-keygen", "-y", str(key_path)], check=True)
+        output = result.stdout.strip()
+    except ProcessError as exc:
         click.echo("❌ Failed to derive Age public key")
-        click.echo(f"   {exc}")
+        click.echo(f"   {exc.result.stderr or exc.result.stdout or exc}")
         return None
 
     if "Public key:" in output:
@@ -1298,14 +1285,10 @@ def init(key_file: str, secrets_file: str):
     if not key_path.exists():
         click.echo(f"🗝️  Generating Age key at {key_path}")
         try:
-            subprocess.run([
-                "age-keygen",
-                "-o",
-                str(key_path)
-            ], check=True)
-        except subprocess.CalledProcessError as exc:
+            run_command(["age-keygen", "-o", str(key_path)], check=True, capture_output=False)
+        except ProcessError as exc:
             click.echo("❌ Failed to generate Age key")
-            click.echo(f"   {exc}")
+            click.echo(f"   {exc.result.stderr or exc.result.stdout or exc}")
             sys.exit(1)
         key_path.chmod(0o600)
     else:
@@ -1329,13 +1312,10 @@ def init(key_file: str, secrets_file: str):
             env = os.environ.copy()
             env["SOPS_AGE_KEY_FILE"] = str(key_path)
             try:
-                subprocess.run([
-                    "sops",
-                    str(secrets_path)
-                ], check=True, env=env)
-            except subprocess.CalledProcessError as exc:
+                run_command(["sops", str(secrets_path)], check=True, env=env, capture_output=False)
+            except ProcessError as exc:
                 click.echo("❌ sops exited with an error")
-                click.echo(f"   {exc}")
+                click.echo(f"   {exc.result.stderr or exc.result.stdout or exc}")
 
     guidance = textwrap.dedent(
         f"""
@@ -1353,21 +1333,14 @@ def _load_decrypted_secrets(secrets_path: Path, age_key_path: Path) -> Optional[
     env.setdefault("SOPS_AGE_KEY_FILE", str(age_key_path))
 
     try:
-        output = subprocess.check_output(
-            [
-                "sops",
-                "-d",
-                "--output-type",
-                "json",
-                str(secrets_path),
-            ],
-            text=True,
+        result = run_command(
+            ["sops", "-d", "--output-type", "json", str(secrets_path)],
             env=env,
         )
-        return json.loads(output)
-    except subprocess.CalledProcessError as exc:
+        return json.loads(result.stdout)
+    except ProcessError as exc:
         click.echo("⚠️ Unable to decrypt secrets file")
-        click.echo(f"   {exc}")
+        click.echo(f"   {exc.result.stderr or exc.result.stdout or exc}")
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         click.echo("⚠️ Failed to load secrets metadata")
         click.echo(f"   {exc}")
@@ -1941,10 +1914,11 @@ def build_image(
     build_cmd.extend(["--show-trace", f".#{selected_attr}"])
     env = os.environ.copy()
     env["RAVE_POMERIUM_CONFIG_JSON"] = json.dumps(idp_payload)
-    result = subprocess.run(build_cmd, cwd=repo_root, env=env)
-    if result.returncode != 0:
+    try:
+        run_command(build_cmd, cwd=repo_root, env=env, check=True, capture_output=False)
+    except ProcessError as exc:
         click.echo("❌ nix build failed. Scroll up for details.")
-        sys.exit(result.returncode)
+        sys.exit(exc.result.returncode or 1)
 
     image_src = _locate_result_image(repo_root)
     if image_src is None:
@@ -2284,10 +2258,11 @@ def launch_local(
                 name,
             ]
         )
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
+        try:
+            run_command(cmd, capture_output=False, check=True)
+        except ProcessError as exc:
             click.echo("❌ Failed to start QEMU (see output above).")
-            sys.exit(result.returncode)
+            sys.exit(exc.result.returncode or 1)
         click.echo(
             f"✅ VM started in the background (pidfile: {default_pidfile}, serial log: {default_serial})"
         )
@@ -2973,9 +2948,12 @@ def gc_store(
             click.echo(f"   • Would run: {formatted}")
             continue
         click.echo(f"   • {formatted}")
-        result = subprocess.run(command)
-        if result.returncode != 0:
-            raise click.ClickException(f"'{label}' failed with exit code {result.returncode}.")
+        try:
+            run_command(command, capture_output=False, check=True)
+        except ProcessError as exc:
+            raise click.ClickException(
+                f"'{label}' failed with exit code {exc.result.returncode or 1}."
+            ) from exc
 
     if dry_run:
         click.echo("ℹ️  Dry run complete; no commands executed.")
@@ -3318,6 +3296,97 @@ def sync(ctx):
         click.echo(f"❌ Error syncing users: {e}")
         sys.exit(1)
 
+@user.command(name="sync-authentik")
+@click.option('--company', help='Company/VM name (defaults to localhost)')
+@click.option(
+    '--domain',
+    'domains',
+    multiple=True,
+    help='Additional allowed email domains (repeatable).',
+)
+@click.option(
+    '--no-derive-domains',
+    is_flag=True,
+    help="Don't derive allowed domains from user emails; only use explicit --domain values.",
+)
+@click.option(
+    '--setup-sources/--skip-sources',
+    default=True,
+    show_default=True,
+    help='Also ensure Authentik OAuth sources exist (Google/GitHub/GitLab) inside the VM.',
+)
+@click.option(
+    '--gitlab-base-url',
+    help='Override GitLab base URL for the Authentik source (defaults to https://localhost:<https-port>/gitlab when detectable).',
+)
+@click.pass_context
+def sync_authentik(
+    ctx,
+    company: Optional[str],
+    domains: Tuple[str, ...],
+    no_derive_domains: bool,
+    setup_sources: bool,
+    gitlab_base_url: Optional[str],
+):
+    """Push the Authentik login allowlist from locally managed users."""
+    user_manager = ctx.obj['user_manager']
+    vm_manager: VMManager = ctx.obj['vm_manager']
+
+    target = company or "localhost"
+    click.echo(f"🔐 Syncing Authentik allowlist to VM '{target}'...")
+    try:
+        result = user_manager.sync_authentik_allowlist(
+            company=company,
+            extra_domains=list(domains),
+            derive_domains=not no_derive_domains,
+        )
+        if result.get("success"):
+            click.echo(
+                f"✅ Authentik allowlist updated "
+                f"(emails: {result.get('synced_emails', 0)}, domains: {result.get('synced_domains', 0)})"
+            )
+            info = result.get("info")
+            if info:
+                click.echo(f"ℹ️  {info}")
+        else:
+            click.echo(f"❌ Failed to sync Authentik allowlist: {result.get('error')}")
+            sys.exit(1)
+
+        if setup_sources:
+            derived_gitlab_url = gitlab_base_url
+            if not derived_gitlab_url and company:
+                config = vm_manager._load_vm_config(company)
+                https_port = (config.get("ports") or {}).get("https") if config else None
+                if https_port:
+                    derived_gitlab_url = f"https://localhost:{https_port}/gitlab"
+
+            click.echo(f"🔗 Ensuring Authentik OAuth sources on '{target}'...")
+            src_result = user_manager.sync_authentik_sources(
+                company=company,
+                gitlab_base_url=derived_gitlab_url,
+            )
+            if not src_result.get("success"):
+                click.echo(f"❌ Failed to sync Authentik OAuth sources: {src_result.get('error')}")
+                sys.exit(1)
+
+            provider_states = src_result.get("providers") or {}
+            summary_parts = [
+                f"{name}:{details.get('status')}"
+                for name, details in provider_states.items()
+            ]
+            summary_text = ", ".join(summary_parts) if summary_parts else "no providers processed"
+            click.echo(f"✅ Authentik sources synced ({summary_text})")
+            binding = src_result.get("binding") or {}
+            if binding.get("status") == "updated":
+                added = binding.get("added") or []
+                if added:
+                    click.echo(f"   • Attached to identification stage: {', '.join(added)}")
+            elif binding.get("status") == "error":
+                click.echo(f"⚠️  Identification stage update error: {binding.get('reason')}")
+    except Exception as e:
+        click.echo(f"❌ Error syncing Authentik allowlist: {e}")
+        sys.exit(1)
+
 @user.command()
 @click.argument('file', type=click.Path())
 @click.option('--format', type=click.Choice(['csv', 'json']), default='csv', help='Export format')
@@ -3578,9 +3647,12 @@ def oauth_bootstrap(ctx, provider: str, company: Optional[str], project: Optiona
             if shutil.which('gcloud') is None:
                 raise click.ClickException("gcloud is not installed in PATH; cannot execute command.")
             click.echo("Executing gcloud command...")
-            result = subprocess.run(command_text, shell=True)
-            if result.returncode != 0:
-                raise click.ClickException("gcloud command failed; inspect the output above.")
+            try:
+                run_command(command_text, shell=True, capture_output=False, check=True)
+            except ProcessError as exc:
+                raise click.ClickException(
+                    "gcloud command failed; inspect the output above."
+                ) from exc
 
     else:
         click.echo("ℹ️  GitHub does not expose a public API to create OAuth Apps via gh.")

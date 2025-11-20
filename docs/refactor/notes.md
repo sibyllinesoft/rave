@@ -16,12 +16,12 @@
 ## Leads for Deeper Dives
 - Read `docs/explanation/architecture.md` + ADRs to map intended architecture vs. repo reality.
 - Trace CLI commands (especially `vm_manager.py`) to see how it orchestrates Nix builds, asset staging, and secret sync.
-- Inventory automation scripts in `scripts/` and `build-scripts/` to see which ones are obsolete vs. still wired into CI/CD.
+- Inventory automation scripts in `scripts/` and `scripts/build/` to see which ones are obsolete vs. still wired into CI/CD.
 
 ## Pass 2: CLI + VM Tooling
 - `apps/cli/rave` eagerly loads env files from `.env`, repo root, or `~/.config/rave/.env`, then wires subcommands backed by `VMManager`, `UserManager`, and `OAuthManager`.
 - `apps/cli/vm_manager.py` shells out to `nix` and QEMU via helper scripts, stores VM metadata under `~/.local/share/rave/vms/*.json`, and still offers sshpass fallback (implies inconsistent keypair story).
-- CLI requirements are minimal (`click`), yet the repo roots also expose shell scripts in `build-scripts/`/`scripts/` that partially overlap capabilities; need to map which are still invoked.
+- CLI requirements are minimal (`click`), yet the repo roots also expose shell scripts in `scripts/build/`/`scripts/` that partially overlap capabilities; need to map which are still invoked.
 
 ## Pass 3: Nix + Service Footprint
 - Single `infra/nixos/configs/complete-production.nix` wires every service (GitLab, Mattermost, Outline, n8n, Grafana, Prometheus, chat bridge bootstrappers) into one monolithic VM image; earlier README references dev/demo variants that no longer exist.
@@ -31,7 +31,7 @@
 ## Pass 4: Docs + Knowledge Base
 - Existing documentation spans root Markdown files plus `docs/**`, and messaging easily drifts (e.g., `docs/reference/services-overview.md` previously told readers to run `./run.sh start`; make sure future edits keep pointing at `./apps/cli/rave vm …`).
 - ADRs (`docs/adr/*.md`) document P0–P2 milestones but there is no ADR for later additions like chat-control or Outline/n8n inclusion.
-- Observed specialized guides (`COMPLETE-BUILD.md`, `WORKING-SETUP.md`, `PRODUCTION-SECRETS-GUIDE.md`) repeating environment bootstrap steps with slight variations—prime candidates for consolidation into a single operator guide.
+- Observed specialized guides (`docs/architecture/COMPLETE-BUILD.md`, `docs/architecture/WORKING-SETUP.md`, `docs/architecture/PRODUCTION-SECRETS-GUIDE.md`) repeating environment bootstrap steps with slight variations—prime candidates for consolidation into a single operator guide.
 
 ## Pass 5: Agent & Chat Bridge Stack
 - `infra/nixos/agents.nix` defines ~10 agent systemd services plus installers for chat-control libraries, but there is no corresponding source tree for each agent under version control—likely placeholders.
@@ -45,8 +45,8 @@
 - Infrastructure testing: NixOS manual/wiki highlight modularizing configs and using NixOS VM tests; nix.dev’s integration-testing tutorial can anchor a new CI lane for `nixosTests`.
 
 ## Pass 7: Divio Migration Sprint
-- Relocated `WORKING-SETUP.md` under `docs/tutorials/` and left a stub in the root so existing links keep working.
-- Authored `docs/how-to/provision-complete-vm.md`, merging the actionable parts of `COMPLETE-BUILD.md` and `PRODUCTION-SECRETS-GUIDE.md` into one operator playbook.
+- Relocated `docs/architecture/WORKING-SETUP.md` under `docs/tutorials/` and left a stub in the root so existing links keep working.
+- Authored `docs/how-to/provision-complete-vm.md`, merging the actionable parts of `docs/architecture/COMPLETE-BUILD.md` and `docs/architecture/PRODUCTION-SECRETS-GUIDE.md` into one operator playbook.
 - Tagged the legacy guides with pointers to the new pages and updated `docs/README.md` plus the tutorials/how-to indexes to reflect what is published vs. pending.
 
 ## Pass 8: Begin Service Modularization
@@ -78,7 +78,7 @@
 
 ## Pass 13: SOPS Bootstrap Polish + GitLab/Mattermost Docs
 - Fixed the new `security.rave.sopsBootstrap` helper script so it references shell variables correctly (`$selector` / `$dest`) and creates destination directories safely. This unblocks `nix flake check`, which previously failed while rendering the script.
-- Collapsed the legacy `GITLAB-MATTERMOST-INTEGRATION.md` file into a tiny pointer to the Divio how-to entry, reducing duplication.
+- Collapsed the legacy `docs/architecture/GITLAB-MATTERMOST-INTEGRATION.md` file into a tiny pointer to the Divio how-to entry, reducing duplication.
 - Refreshed `docs/how-to/gitlab-mattermost-integration.md` with module-aware instructions (pointing operators at `services.rave.mattermost` / `services.rave.gitlab`) and updated the development workflow to use flake profiles plus the CLI.
 
 ## Pass 14: Grafana & Friends Secret Hygiene

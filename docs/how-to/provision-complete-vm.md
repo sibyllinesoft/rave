@@ -17,7 +17,8 @@ This how-to combines the old "COMPLETE-BUILD" and "PRODUCTION-SECRETS-GUIDE" pla
    ```
 2. Ensure CLI requirements are installed (only needs to be done once per host):
    ```bash
-   cd apps/cli && pip install -r requirements.txt && cd -
+   curl -Ls https://astral.sh/uv/install.sh | sh
+   cd apps/cli && uv sync && source .venv/bin/activate && cd -
    ```
 3. Export your Age key so `sops` and Nix builds can decrypt secrets:
    ```bash
@@ -142,5 +143,5 @@ This wraps the same flake output, writes the stamped qcow to `artifacts/qcow/rel
 ## Related Docs
 - `docs/tutorials/working-setup.md` – end-to-end walkthrough for local devs.
 - `PRODUCTION-SECRETS-GUIDE.md` (legacy) – historical context on secret hardening.
-- `COMPLETE-BUILD.md` (legacy) – architecture deep dive for the full VM.
+- `docs/architecture/COMPLETE-BUILD.md` (legacy) – architecture deep dive for the full VM.
 - `docs/how-to/authentik.md` – enable the optional Authentik IdP layer and disable Pomerium when you only need Traefik.

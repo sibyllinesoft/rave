@@ -10,8 +10,9 @@ RAVE provides isolated, production-ready development VMs with GitLab, NATS JetSt
 ```bash
 # The RAVE CLI is the ONLY supported method for VM management
 # All direct QEMU commands are FORBIDDEN
-cd apps/cli && pip install -r requirements.txt
-export PATH="$PATH:$(pwd)"
+curl -Ls https://astral.sh/uv/install.sh | sh   # one-time uv install
+cd apps/cli && uv sync && source .venv/bin/activate
+export PATH="$PATH:$(pwd)"  # so `rave` resolves without a python -m prefix
 ```
 
 ### Create Your First Company Environment
@@ -39,6 +40,7 @@ rave vm logs acme-corp traefik --follow
 - Use `rave secrets install <company>` if you rotate credentials or need to refresh the Age key/secrets on an existing VM.
 - Run `rave secrets diff --secrets-file config/secrets.yaml` for a dry-run list of every secret file that would be written before touching a VM.
 - Before invoking `nix build` (or any command that reads the encrypted secrets), export `SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt` in your shell.
+- For GitHub Actions, store the CI private key in the `SOPS_AGE_KEY_CI` secret so workflows can decrypt `config/secrets.yaml` using the dedicated `ci_key` recipient defined in `.sops.yaml`.
 - When enabling external OAuth for GitLab, add `gitlab/oauth-provider-client-secret` (and its client ID) to `config/secrets.yaml` so the CLI can sync them into the VM.
 - End-to-end OIDC setup (Google/GitHub) is documented in `docs/oidc-setup.md`; the CLI now prints required redirect URIs and can apply provider credentials live.
 
@@ -87,8 +89,8 @@ rave/
 ├── services/              # Service-specific configurations
 ├── docs/                  # Documentation and reports
 ├── scripts/               # Utility and test scripts
-├── build-scripts/         # VM build automation
--├── demo-scripts/          # Demo and example scripts
+├── scripts/build/         # VM build automation
+-├── scripts/demo/          # Demo and example scripts
 ├── artifacts/             # Gitignored qcow images, logs, volume snapshots
 │   └── qcow/              # Canonical qcow images per profile + dated builds
 └── legacy/                # Archived assets kept for reference

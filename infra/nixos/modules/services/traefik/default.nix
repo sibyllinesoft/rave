@@ -449,7 +449,7 @@ let
 
 
   dashboardPort = cfg.dashboard.port;
-  gitlabWorkhorseProxyPort = 8123;
+  gitlabProxyPort = config.services.rave.gitlab.proxy.port or 8235;
 
   hostRule = domain: "Host(`" + domain + "`)";
   pathPrefixRule = path: "PathPrefix(`" + path + "`)";
@@ -631,7 +631,7 @@ let
       { "gitlab" = {
           loadBalancer = {
             passHostHeader = true;
-            servers = [ { url = "http://127.0.0.1:${toString gitlabWorkhorseProxyPort}"; } ];
+            servers = [ { url = "http://127.0.0.1:${toString gitlabProxyPort}"; } ];
           };
         };
       }
@@ -1023,9 +1023,9 @@ in
         after = mkAfter (
           [ "network.target" "rave-dashboard.service" ]
           ++ optional (!behindPomerium) "generate-localhost-certs.service"
-          ++ optional gitlabEnabled "gitlab-workhorse-proxy.socket"
+          ++ optional gitlabEnabled "gitlab-proxy-nginx.service"
         );
-        wants = [ "rave-dashboard.service" ] ++ optional gitlabEnabled "gitlab-workhorse-proxy.socket";
+        wants = [ "rave-dashboard.service" ] ++ optional gitlabEnabled "gitlab-proxy-nginx.service";
         requires = optional (!behindPomerium) "generate-localhost-certs.service";
       };
 
@@ -1033,23 +1033,5 @@ in
         "d /var/log/traefik 0755 traefik traefik -"
       ];
     }
-    (mkIf gitlabEnabled {
-      systemd.sockets.gitlab-workhorse-proxy = {
-        description = "Expose gitlab-workhorse for Traefik";
-        wantedBy = [ "sockets.target" ];
-        listenStreams = [ "127.0.0.1:${toString gitlabWorkhorseProxyPort}" ];
-      };
-
-      systemd.services.gitlab-workhorse-proxy = {
-        description = "Proxy gitlab-workhorse unix socket";
-        after = [ "gitlab-workhorse.service" ];
-        requires = [ "gitlab-workhorse.service" ];
-        unitConfig.Sockets = "gitlab-workhorse-proxy.socket";
-        serviceConfig = {
-          ExecStart = "${pkgs.systemd}/lib/systemd/systemd-socket-proxyd /run/gitlab/gitlab-workhorse.socket";
-          NonBlocking = true;
-        };
-      };
-    })
   ]);
 }

@@ -16,6 +16,10 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from pydantic import ValidationError
+
+from models import VMConfigModel
+from process_utils import ProcessError, ProcessResult, run_command
 from platform_utils import PlatformManager
 
 
@@ -61,19 +65,31 @@ class VMManager:
         return self.vms_dir / f"{company_name}.json"
     
     def _load_vm_config(self, company_name: str) -> Optional[Dict]:
-        """Load VM configuration."""
+        """Load VM configuration and validate it with Pydantic."""
         config_path = self._get_vm_config_path(company_name)
         if not config_path.exists():
             return None
         try:
-            return json.loads(config_path.read_text())
+            raw = json.loads(config_path.read_text())
         except (json.JSONDecodeError, FileNotFoundError):
             return None
+
+        try:
+            validated = VMConfigModel.model_validate(raw)
+        except ValidationError as exc:
+            print(f"⚠️  VM config for '{company_name}' is invalid: {exc}")
+            return None
+        return validated.model_dump()
     
     def _save_vm_config(self, company_name: str, config: Dict):
-        """Save VM configuration."""
+        """Validate and persist a VM configuration."""
+        try:
+            validated = VMConfigModel.model_validate(config)
+        except ValidationError as exc:
+            raise ValueError(f"Unable to save VM config for {company_name}: {exc}") from exc
+
         config_path = self._get_vm_config_path(company_name)
-        config_path.write_text(json.dumps(config, indent=2))
+        config_path.write_text(json.dumps(validated.model_dump(), indent=2))
 
     def _build_ssh_command(
         self,
@@ -146,26 +162,26 @@ class VMManager:
             ssh_cmd = build_result["command"]
 
             try:
-                result = subprocess.run(
+                result_obj = run_command(
                     ssh_cmd,
-                    capture_output=True,
-                    text=True,
                     timeout=timeout,
                 )
-            except subprocess.TimeoutExpired:
+            except ProcessError as exc:
                 last_error = (
-                    f"{description} attempt {attempt} timed out after {timeout} seconds"
+                    exc.result.stderr.strip()
+                    or exc.result.stdout.strip()
+                    or f"{description} attempt {attempt} failed"
                 )
             else:
-                if result.returncode == 0:
-                    return {"success": True, "result": result}
+                if result_obj.returncode == 0:
+                    return {"success": True, "result": result_obj}
 
-                stderr = result.stderr.strip()
-                stdout = result.stdout.strip()
+                stderr = result_obj.stderr.strip()
+                stdout = result_obj.stdout.strip()
                 last_error = (
                     stderr
                     or stdout
-                    or f"{description} failed with exit code {result.returncode}"
+                    or f"{description} failed with exit code {result_obj.returncode}"
                 )
 
             if attempt < max_attempts:
@@ -197,34 +213,25 @@ class VMManager:
         ssh_cmd = build_result["command"]
 
         try:
-            result = subprocess.run(
+            result = run_command(
                 ssh_cmd,
-                input=data,
-                capture_output=True,
                 timeout=timeout,
+                capture_output=True,
+                text=False,
+                input_data=data,
             )
-        except subprocess.TimeoutExpired:
+        except ProcessError as exc:
             return {
                 "success": False,
-                "error": f"{description} timed out after {timeout} seconds",
-            }
-
-        stdout_text = result.stdout.decode(errors="replace") if isinstance(result.stdout, bytes) else result.stdout
-        stderr_text = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else result.stderr
-
-        if result.returncode != 0:
-            error = stderr_text.strip() or stdout_text.strip() or description
-            return {
-                "success": False,
-                "error": error,
-                "stdout": stdout_text,
-                "stderr": stderr_text,
+                "error": exc.result.stderr or exc.result.stdout or description,
+                "stdout": exc.result.stdout,
+                "stderr": exc.result.stderr,
             }
 
         return {
             "success": True,
-            "stdout": stdout_text,
-            "stderr": stderr_text,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
         }
 
     def _get_port_range(self, requested_ports: Optional[Dict[str, int]] = None) -> tuple:

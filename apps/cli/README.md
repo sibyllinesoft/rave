@@ -13,12 +13,10 @@ Comprehensive CLI for managing RAVE (Reproducible AI Virtual Environment) compan
 ## Installation
 
 ```bash
+curl -Ls https://astral.sh/uv/install.sh | sh   # install uv once per machine
 cd /home/nathan/Projects/rave/apps/cli
-pip install -r requirements.txt
-```
-
-Add to PATH:
-```bash
+uv sync
+source .venv/bin/activate
 export PATH="$PATH:/home/nathan/Projects/rave/apps/cli"
 ```
 

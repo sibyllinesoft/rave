@@ -105,6 +105,7 @@ This is normal for major version upgrades. The system is:
 - Establishing all service connections
 
 ### Services Health Check
+> _Legacy command reference: the `gitlab-complete` Docker Compose stack has been removed; keep these notes for historical troubleshooting only._
 ```bash
 # Check all services
 docker-compose -f gitlab-complete/docker-compose.yml ps

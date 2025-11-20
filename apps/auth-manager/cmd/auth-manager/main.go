@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -14,17 +15,20 @@ import (
 func main() {
 	cfg := config.FromEnv()
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("invalid configuration: %v", err)
+		slog.Error("invalid configuration", "err", err)
+		os.Exit(1)
 	}
 
-	srv := server.New(cfg, nil)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	srv := server.New(cfg, nil, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
 		if err := srv.Start(); err != nil {
-			log.Fatalf("server exited: %v", err)
+			logger.Error("server exited", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -32,6 +36,8 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("graceful shutdown failed: %v", err)
+		logger.Error("graceful shutdown failed", "err", err)
+	} else {
+		logger.Info("auth-manager shutdown complete")
 	}
 }

@@ -79,7 +79,7 @@ To report issues discovered during benchmarking:
 ## Updates to This Policy
 
 This benchmarking policy may be updated from time to time. The current version is available at:
-<PROJECT_URL>/blob/main/BENCHMARKING.md
+<PROJECT_URL>/blob/main/docs/architecture/BENCHMARKING.md
 
 Changes will be communicated through:
 - Project repository updates

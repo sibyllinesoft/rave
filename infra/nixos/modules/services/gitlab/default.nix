@@ -13,6 +13,7 @@ let
   redisUnit = redisPlatform.unit or "redis-main.service";
   pythonWithRequests = pkgs.python3.withPackages (ps: with ps; [ requests ]);
   boolToString = value: if value then "true" else "false";
+  publicUrlTrimmed = lib.removeSuffix "/" cfg.publicUrl;
 
   providerMeta = {
     google = {
@@ -36,6 +37,31 @@ let
       } // optionalAttrs (secretFile != null) {
         client_secret = { _secret = secretFile; };
       };
+    };
+    authentik = {
+      providerName = "openid_connect";
+      providerLabel = "Authentik";
+      args =
+        clientId: secretFile:
+        let
+          authCfg = cfg.oauth.authentik;
+          scopeList = lib.filter (s: s != "") (lib.splitString " " (authCfg.scope or "openid profile email"));
+        in {
+          name = "openid_connect";
+          label = authCfg.label or "Authentik";
+          scope = scopeList;
+          response_type = "code";
+          issuer = authCfg.issuer;
+          discovery = true;
+          client_options =
+            {
+              identifier = clientId;
+              redirect_uri = "${publicUrlTrimmed}/users/auth/openid_connect/callback";
+            }
+            // lib.optionalAttrs (secretFile != null) {
+              secret = { _secret = secretFile; };
+            };
+        };
     };
   };
 
@@ -68,6 +94,141 @@ let
     (pkgs.writeText "gitlab-api-token" "development-token");
 
   gitlabApiBaseUrl = "${lib.removeSuffix "/" cfg.publicUrl}/api/v4";
+  gitlabProxyPort = cfg.proxy.port;
+  gitlabProxyConfig = pkgs.writeText "gitlab-proxy-nginx.conf" ''
+user root;
+worker_processes auto;
+error_log /var/log/gitlab-proxy-nginx/error.log info;
+pid /run/gitlab-proxy-nginx/nginx.pid;
+
+events {
+  worker_connections 1024;
+}
+
+http {
+  include ${pkgs.nginx}/conf/mime.types;
+  default_type application/octet-stream;
+  sendfile on;
+  tcp_nopush on;
+  tcp_nodelay on;
+  keepalive_timeout 65;
+  map $http_x_forwarded_proto $forwarded_proto {
+    default $http_x_forwarded_proto;
+    "" $scheme;
+  }
+
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    "" close;
+  }
+  upstream gitlab_workhorse {
+    server unix:/run/gitlab/gitlab-workhorse.socket;
+  }
+
+  server {
+    listen 127.0.0.1:${toString gitlabProxyPort};
+    server_name gitlab-internal;
+    client_max_body_size 10G;
+    access_log /var/log/gitlab-proxy-nginx/access.log;
+
+    location = /gitlab {
+      return 301 /gitlab/;
+    }
+
+    location /gitlab/assets/ {
+      alias ${gitlabPackage}/share/gitlab/public/assets/;
+      expires 1y;
+      add_header Cache-Control "public";
+    }
+
+    location ~ ^/gitlab/-/ {
+      alias ${gitlabPackage}/share/gitlab/public/;
+      expires 1y;
+      add_header Cache-Control "public";
+      try_files $uri =404;
+    }
+
+    location ~ ^/gitlab/(uploads|files)/ {
+      proxy_pass http://gitlab_workhorse;
+      proxy_set_header Host $http_host;
+      proxy_set_header X-Forwarded-Host $http_host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $forwarded_proto;
+      proxy_set_header X-Forwarded-Ssl on;
+      proxy_set_header X-Forwarded-Port ${toString cfg.externalPort};
+      proxy_set_header X-Script-Name /gitlab;
+      proxy_set_header X-Forwarded-Prefix /gitlab;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_read_timeout 300s;
+      proxy_connect_timeout 300s;
+      proxy_send_timeout 300s;
+      proxy_cache_bypass $http_upgrade;
+    }
+
+    location ~ ^/gitlab/.*/-/(artifacts|archive|raw)/ {
+      proxy_pass http://gitlab_workhorse;
+      proxy_set_header Host $http_host;
+      proxy_set_header X-Forwarded-Host $http_host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $forwarded_proto;
+      proxy_set_header X-Forwarded-Ssl on;
+      proxy_set_header X-Forwarded-Port ${toString cfg.externalPort};
+      proxy_set_header X-Script-Name /gitlab;
+      proxy_set_header X-Forwarded-Prefix /gitlab;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_read_timeout 300s;
+      proxy_connect_timeout 300s;
+      proxy_send_timeout 300s;
+      proxy_request_buffering off;
+    }
+
+    location /gitlab/ {
+      proxy_pass http://gitlab_workhorse;
+      proxy_set_header Host $http_host;
+      proxy_set_header X-Forwarded-Host $http_host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $forwarded_proto;
+      proxy_set_header X-Forwarded-Ssl on;
+      proxy_set_header X-Forwarded-Port ${toString cfg.externalPort};
+      proxy_set_header X-Script-Name /gitlab;
+      proxy_set_header X-Forwarded-Prefix /gitlab;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_read_timeout 300s;
+      proxy_connect_timeout 300s;
+      proxy_send_timeout 300s;
+      proxy_cache_bypass $http_upgrade;
+    }
+
+    location /registry/ {
+      proxy_pass http://127.0.0.1:5000/;
+      proxy_set_header Host $http_host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $forwarded_proto;
+      proxy_set_header X-Forwarded-Port ${toString cfg.externalPort};
+      proxy_set_header Docker-Distribution-Api-Version registry/2.0;
+      client_max_body_size 0;
+      chunked_transfer_encoding on;
+    }
+
+    location /health/gitlab {
+      proxy_pass http://gitlab_workhorse/-/health;
+      proxy_set_header Host "localhost";
+      access_log off;
+    }
+  }
+}
+'';
+  gitlabProxyStartScript = pkgs.writeShellScript "gitlab-proxy-nginx-start" ''
+set -euo pipefail
+exec ${pkgs.nginx}/bin/nginx -p /var/lib/gitlab-proxy-nginx -g 'daemon off; error_log /var/log/gitlab-proxy-nginx/error.log info;' -c ${gitlabProxyConfig}
+'';
 
   ensureGitlabBenthosHookScript = pkgs.writeScript "ensure-gitlab-benthos-webhook.py" ''
 #!${pythonWithRequests}/bin/python3
@@ -263,6 +424,14 @@ in
         default = 8443;
         description = "Port advertised to clients for GitLab HTTPS.";
       };
+
+      proxy = {
+        port = mkOption {
+          type = types.int;
+          default = 8235;
+          description = "Loopback HTTP port that Traefik should target (served by the internal GitLab nginx helper).";
+        };
+      };
       
       runner = {
         enable = mkOption {
@@ -286,9 +455,9 @@ in
         };
 
         provider = mkOption {
-          type = types.enum [ "google" "github" ];
+          type = types.enum [ "google" "github" "authentik" ];
           default = "google";
-          description = ''OAuth/OIDC provider to delegate GitLab sign-in to. Supported values: "google" or "github".'';
+          description = ''OAuth/OIDC provider to delegate GitLab sign-in to. Supported values: "google", "github", or "authentik".'';
         };
 
         clientId = mkOption {
@@ -319,6 +488,34 @@ in
           type = types.bool;
           default = false;
           description = ''Allow the traditional GitLab username/password form. When disabled, users are forced through OAuth (root admins can still reach the form via `?auto_sign_in=false`).'';
+        };
+
+        authentik = mkOption {
+          type = types.nullOr (types.submodule {
+            options = {
+              slug = mkOption {
+                type = types.str;
+                default = "gitlab";
+                description = "Authentik application slug used for issuer/redirect construction.";
+              };
+              label = mkOption {
+                type = types.str;
+                default = "Authentik";
+                description = "Label shown on the GitLab sign-in button.";
+              };
+              scope = mkOption {
+                type = types.str;
+                default = "openid profile email";
+                description = "Space-delimited scope string requested from Authentik.";
+              };
+              issuer = mkOption {
+                type = types.str;
+                description = "OIDC issuer URL exposed by Authentik for this application.";
+              };
+            };
+          });
+          default = null;
+          description = "Parameters required when `provider = \"authentik\"`.";
         };
       };
 
@@ -419,6 +616,10 @@ in
       {
         assertion = cfg.oauth.clientSecretFile != null;
         message = "services.rave.gitlab.oauth.clientSecretFile must be set when OAuth is enabled.";
+      }
+      {
+        assertion = cfg.oauth.provider != "authentik" || cfg.oauth.authentik != null;
+        message = "services.rave.gitlab.oauth.authentik must be configured when provider = \"authentik\".";
       }
     ];
 
@@ -707,6 +908,27 @@ in
     networking.firewall.allowedTCPPorts = [ 
       8080  # GitLab
       5000  # Container registry
+    ];
+
+    systemd.services.gitlab-proxy-nginx = {
+      description = "GitLab loopback nginx helper";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "gitlab-workhorse.service" ];
+      requires = [ "gitlab-workhorse.service" ];
+      serviceConfig = {
+        ExecStart = gitlabProxyStartScript;
+        ExecReload = "${pkgs.nginx}/bin/nginx -p /var/lib/gitlab-proxy-nginx -c ${gitlabProxyConfig} -s reload";
+        ExecStop = "${pkgs.nginx}/bin/nginx -p /var/lib/gitlab-proxy-nginx -c ${gitlabProxyConfig} -s quit";
+        Restart = "on-failure";
+        RestartSec = 5;
+        RuntimeDirectory = "gitlab-proxy-nginx";
+        StateDirectory = "gitlab-proxy-nginx";
+        LogsDirectory = "gitlab-proxy-nginx";
+      };
+      restartTriggers = [ gitlabProxyConfig ];
+    };
+    systemd.tmpfiles.rules = [
+      "d /var/log/nginx 0755 root root -"
     ];
     
     # Service resource limits from P3

@@ -81,8 +81,24 @@ will omit the Pomerium instructions.
 - `services.rave.authentik.database.*` and `.redis.*` — point at external stores if needed.
 - `services.rave.authentik.email.*` — enable SMTP notifications.
 - `services.rave.authentik.extraEnv` — pass additional `AUTHENTIK_*` settings.
+- `services.rave.authentik.allowedEmails` / `allowedDomains` — optional allowlists enforced on the default authentication flows. Leave empty to trust your upstream IdP; populate to block self‑enrollment and restrict sign‑ins to known users/domains.
 
-## 7. Enabling Google/GitHub login buttons
+## 7. Automatically provision downstream apps
+
+`services.rave.authentik.applicationProviders` lets you declare first-party apps that should be
+available through Authentik the moment the VM boots. Each entry specifies a slug, the OIDC client
+ID/secret (read from `/run/secrets`), redirect URIs, scopes, and an Authentik portal tile. The
+`authentik-sync-oidc-applications.service` unit keeps those providers in sync by talking to the
+container over `docker exec`.
+
+Mattermost is wired up as the first consumer: `infra/nixos/configs/complete-production.nix`
+sets `services.rave.authentik.applicationProviders.mattermost` and the matching
+`services.rave.mattermost.openid` stanza. That combination disables the old GitLab button, updates
+`config.json` via `update-mattermost-config.py`, and points the login UI at Authentik out of the box.
+You can repeat the pattern for Grafana, Outline, or any other bundled service by adding more entries
+under `applicationProviders` and flipping each service module’s `openid` block.
+
+## 8. Enabling Google/GitHub login buttons
 
 Authentik now ships with two managed OAuth sources out of the box:
 
@@ -109,6 +125,30 @@ or add custom stages/flows.
 
 Drop an override module into `config/overrides` or pass `--arg modules` to `nix build` if you need
 per-tenant tweaks.
+
+### Whitelisting with CLI builds
+
+For small teams that rely on Google/GitHub directly instead of AD/Workspace, you can bake a
+whitelist into the VM at build time:
+
+```bash
+RAVE_AUTHENTIK_ALLOWED_EMAILS=alice@example.com,bob@shop.io \
+RAVE_AUTHENTIK_ALLOWED_DOMAINS=example.com,shop.io \
+  rave vm build-image --profile production
+```
+
+If both lists are empty (the default), Authentik will accept any identity your upstream IdP issues.
+
+At runtime you can also push an allowlist sourced from the RAVE CLI’s managed users:
+
+```bash
+rave user sync-authentik --company <vm-name> \
+  --domain example.com --domain shop.io
+```
+
+The command gathers emails from `~/.config/rave/users.json`, derives domains (unless you pass
+`--no-derive-domains`), and updates the Authentik expression policy inside the VM so only those
+emails/domains can sign in.
 
 That’s it—Authentik is now a first-class, always-on layer in the image, so downstream services can
 standardise on it while Pomerium remains an optional value add.

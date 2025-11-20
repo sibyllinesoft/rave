@@ -38,6 +38,10 @@ let
     then "/run/secrets/gitlab/oauth-mattermost-client-secret"
     else null;
   mattermostGitlabSecretFallback = "gloas-18f9021e792192dda9f50be4df02cee925db5d36a09bf6867a33762fb874d539";
+  mattermostOidcClientSecretFile =
+    if mattermostGitlabClientSecretFile != null
+    then mattermostGitlabClientSecretFile
+    else pkgs.writeText "mattermost-openid-secret" mattermostGitlabSecretFallback;
   mattermostAdminUsernameFile = if useSecrets
     then "/run/secrets/mattermost/admin-username"
     else pkgs.writeText "mattermost-admin-username" "admin";
@@ -73,6 +77,13 @@ let
   n8nBasicAuthPassword = "n8n-basic-admin-password";
   n8nBasePath = "/n8n";
   mattermostInternalBaseUrl = "http://127.0.0.1:8065";
+  gitlabOidcSlug = "gitlab";
+  gitlabOidcClientId = "rave-gitlab";
+  gitlabOidcClientSecretFallback = "gitlab-oidc-secret";
+  gitlabOidcClientSecretFile = if useSecrets
+    then "/run/secrets/gitlab/oauth-provider-client-secret"
+    else pkgs.writeText "gitlab-oidc-client-secret" gitlabOidcClientSecretFallback;
+  gitlabOidcIssuer = "${authentikPublicUrl}application/o/${gitlabOidcSlug}/";
   grafanaHttpPort = config.services.rave.monitoring.grafana.httpPort;
   grafanaDbPassword = config.services.rave.monitoring.grafana.database.password;
   pomeriumRouteHost = "https://localhost:${baseHttpsPort}";
@@ -307,6 +318,40 @@ in
       database = config.services.rave.redis.allocations.authentik or 12;
     };
     email.enable = false;
+    applicationProviders = {
+      mattermost = {
+        enable = true;
+        slug = "mattermost";
+        displayName = "Mattermost";
+        clientId = mattermostGitlabClientId;
+        clientSecretFile = mattermostOidcClientSecretFile;
+        redirectUris = [ "${mattermostPublicUrl}/signup/openid/complete" ];
+        scopes = [ "openid" "profile" "email" ];
+        signingKeyName = "authentik Internal JWT Certificate";
+        application = {
+          slug = "mattermost";
+          name = "Mattermost";
+          launchUrl = mattermostPublicUrl;
+          description = "Mattermost chat via Authentik";
+        };
+      };
+      gitlab = {
+        enable = true;
+        slug = gitlabOidcSlug;
+        displayName = "GitLab";
+        clientId = gitlabOidcClientId;
+        clientSecretFile = gitlabOidcClientSecretFile;
+        redirectUris = [ "${gitlabExternalUrl}/users/auth/openid_connect/callback" ];
+        scopes = [ "openid" "profile" "email" ];
+        signingKeyName = "authentik Internal JWT Certificate";
+        application = {
+          slug = "gitlab";
+          name = "GitLab";
+          launchUrl = gitlabExternalUrl;
+          description = "GitLab via Authentik";
+        };
+      };
+    };
   };
 
   services.rave.auth-manager = {
@@ -489,6 +534,7 @@ in
       hookUsername = "gitlab-ci";
     };
     gitlab = {
+      enable = false;
       baseUrl = gitlabExternalUrl;
       internalUrl = gitlabInternalHttpUrl;
       apiBaseUrl = "${gitlabExternalUrl}/api/v4";
@@ -497,6 +543,19 @@ in
       clientSecretFallback = mattermostGitlabSecretFallback;
       apiTokenFile = gitlabApiTokenFile;
       applicationName = "RAVE Mattermost";
+    };
+    openid = {
+      enable = true;
+      clientId = mattermostGitlabClientId;
+      clientSecretFile = mattermostOidcClientSecretFile;
+      clientSecretFallback = mattermostGitlabSecretFallback;
+      scope = "openid profile email";
+      discoveryEndpoint = "${authentikPublicUrl}application/o/mattermost/.well-known/openid-configuration";
+      authEndpoint = "${authentikPublicUrl}application/o/authorize/";
+      tokenEndpoint = "${authentikPublicUrl}application/o/token/";
+      userApiEndpoint = "${authentikPublicUrl}application/o/userinfo/";
+      buttonText = "Sign in with Authentik";
+      buttonColor = "#0C6DFF";
     };
     callsPlugin = {
       enable = true;
@@ -1008,14 +1067,17 @@ RUBY
     runner.enable = false;
     oauth = {
       enable = true;
-      provider = "google";
-      clientId = googleOauthClientId;
-      clientSecretFile = if config.services.rave.gitlab.useSecrets
-        then "/run/secrets/gitlab/oauth-provider-client-secret"
-        else pkgs.writeText "gitlab-oauth-client-secret" "development-client-secret";
-      autoSignIn = false;
+      provider = "authentik";
+      clientId = gitlabOidcClientId;
+      clientSecretFile = gitlabOidcClientSecretFile;
+      autoSignIn = true;
       autoLinkUsers = true;
-      allowLocalSignin = true;
+      allowLocalSignin = false;
+      authentik = {
+        slug = gitlabOidcSlug;
+        scope = "openid profile email";
+        issuer = gitlabOidcIssuer;
+      };
     };
   };
 

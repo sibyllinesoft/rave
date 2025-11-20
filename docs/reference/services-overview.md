@@ -109,14 +109,14 @@ To inspect a specific service such as Penpot:
 ## 📚 Documentation
 
 - **GitLab**: See existing GitLab documentation in the project
-- **Penpot**: See `gitlab-complete/PENPOT-README.md` for detailed Penpot guide
+- **Penpot**: See `docs/how-to/provision-complete-vm.md#penpot` for detailed guidance
 - **Architecture**: See `docs/explanation/architecture.md` for system architecture details
 
 ## 🔧 Customization
 
 Both services can be customized via their respective configuration files:
-- **GitLab**: `gitlab-complete/docker-compose.yml` (GITLAB_OMNIBUS_CONFIG)
-- **Penpot**: Environment variables in the same `docker-compose.yml`
+- **GitLab**: `infra/nixos/modules/services/gitlab/default.nix`
+- **Penpot**: `infra/nixos/modules/services/penpot/default.nix`
 - **Traefik**: Front-door ingress managed via `infra/nixos/modules/services/traefik/default.nix`
 
 Your development environment is now a complete platform for both design and development work!

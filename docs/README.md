@@ -14,7 +14,7 @@ RAVE now follows the Divio documentation model so contributors and AI agents can
 | Existing File | Target Category | Notes |
 | --- | --- | --- |
 | `WORKING-SETUP.md` | Tutorial | ✅ Moved to `docs/tutorials/working-setup.md` (root file is now a pointer) |
-| `COMPLETE-BUILD.md` | Explanation/How-to | Mostly covered by `docs/how-to/provision-complete-vm.md`; keep for deep-dive context until trimmed |
+| `docs/architecture/COMPLETE-BUILD.md` | Explanation/How-to | Mostly covered by `docs/how-to/provision-complete-vm.md`; keep for deep-dive context until trimmed |
 | `PRODUCTION-SECRETS-GUIDE.md` | How-to | Superseded by the provisioning guide; carve out a future \"Rotate Secrets\" doc |
 | `docs/ARCHITECTURE.md` | Explanation | ✅ Lives at `docs/explanation/architecture.md` (root file is a pointer) |
 | `docs/SERVICES-OVERVIEW.md` | Reference | ✅ Lives at `docs/reference/services-overview.md`; refresh content for CLI-first workflow |

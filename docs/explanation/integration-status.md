@@ -99,9 +99,9 @@
 ## 📚 Documentation
 
 ### Created Documentation
-1. **GITLAB-MATTERMOST-INTEGRATION.md**: Complete user guide
+1. **docs/architecture/GITLAB-MATTERMOST-INTEGRATION.md**: Complete user guide
 2. **test-integration.sh**: Automated testing script
-3. **INTEGRATION-STATUS.md**: This status report
+3. **docs/architecture/INTEGRATION-STATUS.md**: This status report
 
 ### Configuration Files
 - **infra/nixos/configs/complete-production.nix**: Main integration config

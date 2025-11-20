@@ -3,23 +3,27 @@ OAuth Manager - Shows status of pre-configured OAuth integrations
 OAuth configurations are baked into the VM, this just provides visibility.
 """
 
-import subprocess
 from pathlib import Path
 from typing import Dict, Optional
+
+from process_utils import ProcessError, run_command
+from platform_utils import PlatformManager
 
 
 class OAuthManager:
     """Manages OAuth integration status (read-only, configs are baked in)."""
     
-    def __init__(self):
-        pass
+    def __init__(self, config_dir: Optional[Path] = None):
+        platform = PlatformManager()
+        self.config_dir = Path(config_dir) if config_dir else platform.get_config_dir()
+        self.vms_dir = self.config_dir / "vms"
     
     def _check_vm_oauth_status(self, company_name: str, service: str) -> Dict[str, any]:
         """Check OAuth status for a service in a VM."""
         # Import here to avoid circular dependency
         from vm_manager import VMManager
         
-        vm_manager = VMManager(Path.home() / ".config" / "rave" / "vms")
+        vm_manager = VMManager(self.vms_dir)
         config = vm_manager._load_vm_config(company_name)
         
         if not config:
@@ -45,34 +49,32 @@ class OAuthManager:
             return {"configured": False, "status": f"Unknown service: {service}"}
         
         try:
-            result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                # Parse response to determine if GitLab OAuth is configured
-                if service == "penpot":
-                    configured = "gitlab" in result.stdout.lower()
-                elif service == "element":
-                    configured = any(
-                        marker in result.stdout
-                        for marker in ("google_oauth2", "github", "oauth2_generic")
-                    )
-                else:
-                    configured = False
-                
-                return {
-                    "configured": configured,
-                    "provider": "gitlab" if configured else "none",
-                    "status": "configured" if configured else "not configured"
-                }
-            else:
-                return {"configured": False, "status": "service not accessible"}
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            return {"configured": False, "status": "check failed"}
+            result = run_command(check_cmd, timeout=10)
+        except ProcessError:
+            return {"configured": False, "status": "service not accessible"}
+
+        # Parse response to determine if GitLab OAuth is configured
+        if service == "penpot":
+            configured = "gitlab" in result.stdout.lower()
+        elif service == "element":
+            configured = any(
+                marker in result.stdout
+                for marker in ("google_oauth2", "github", "oauth2_generic")
+            )
+        else:
+            configured = False
+
+        return {
+            "configured": configured,
+            "provider": "gitlab" if configured else "none",
+            "status": "configured" if configured else "not configured"
+        }
     
     def get_status(self, service: Optional[str] = None) -> Dict[str, any]:
         """Get OAuth configuration status."""
         # Get all VMs
         from vm_manager import VMManager
-        vm_manager = VMManager(Path.home() / ".config" / "rave" / "vms")
+        vm_manager = VMManager(self.vms_dir)
         vm_statuses = vm_manager.status_all_vms()
         
         if not vm_statuses:

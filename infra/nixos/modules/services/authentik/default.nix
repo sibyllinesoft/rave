@@ -317,9 +317,194 @@ let
     if oauthSourceEntries == [] then null
     else pkgs.writeText "authentik-oauth-sources.json" (builtins.toJSON oauthSourceEntries);
 
+  applicationProviderSubmodule = types.submodule (
+    { name, ... }:
+    {
+      options = {
+        enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Whether to manage this Authentik OAuth2 provider + application.";
+        };
+
+        slug = mkOption {
+          type = types.str;
+          default = name;
+          description = "Slug used for Authentik routes.";
+        };
+
+        displayName = mkOption {
+          type = types.str;
+          default = capitalize name;
+          description = "Display name shown inside Authentik.";
+        };
+
+        clientId = mkOption {
+          type = types.str;
+          description = "OAuth2 client ID presented to downstream apps.";
+        };
+
+        clientSecretFile = mkOption {
+          type = pathOrString;
+          description = "Path containing the OAuth2 client secret.";
+        };
+
+        redirectUris = mkOption {
+          type = types.listOf types.str;
+          description = "Allowed redirect URIs for the application.";
+        };
+
+        scopes = mkOption {
+          type = types.listOf types.str;
+          default = [ "openid" "profile" "email" ];
+          description = "Scopes granted to the downstream application.";
+        };
+
+        includeClaimsInIdToken = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Embed user claims in ID tokens.";
+        };
+
+        propertyMappings = mkOption {
+          type = types.listOf types.str;
+          default = [
+            "goauthentik.io/providers/oauth2/scope-openid"
+            "goauthentik.io/providers/oauth2/scope-email"
+            "goauthentik.io/providers/oauth2/scope-profile"
+          ];
+          description = "Managed property mappings to attach.";
+        };
+
+        issuerMode = mkOption {
+          type = types.enum [ "per_provider" "global" ];
+          default = "per_provider";
+          description = "Issuer mode for the provider.";
+        };
+
+        subMode = mkOption {
+          type = types.enum [ "hashed_user_id" "user_id" "user_uuid" "user_username" "user_email" "user_upn" ];
+          default = "user_email";
+          description = "Subject identifier mode.";
+        };
+
+        clientType = mkOption {
+          type = types.enum [ "confidential" "public" ];
+          default = "confidential";
+          description = "OAuth2 client type.";
+        };
+
+        authorizationFlow = mkOption {
+          type = types.str;
+          default = "default-provider-authorization-explicit-consent";
+          description = "Authorization flow slug to attach.";
+        };
+
+        signingKeyName = mkOption {
+          type = types.nullOr types.str;
+          default = "authentik Internal JWT Certificate";
+          description = "Signing key name used for tokens.";
+        };
+
+        managed = mkOption {
+          type = types.str;
+          default = "rave:application:${name}";
+          description = "Managed identifier prefix for cleanup.";
+        };
+
+        application = mkOption {
+          type = types.submodule {
+            options = {
+              slug = mkOption {
+                type = types.str;
+                default = name;
+                description = "Application slug.";
+              };
+              name = mkOption {
+                type = types.str;
+                default = capitalize name;
+                description = "Application display name.";
+              };
+              launchUrl = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Optional launch URL exposed in the Authentik portal.";
+              };
+              description = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Optional description.";
+              };
+              icon = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Optional icon URL.";
+              };
+              openInNewTab = mkOption {
+                type = types.bool;
+                default = true;
+                description = "Open launch URL in a new tab.";
+              };
+              policyMode = mkOption {
+                type = types.enum [ "any" "all" ];
+                default = "any";
+                description = "Application policy mode.";
+              };
+              group = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Optional Authentik group to bind.";
+              };
+            };
+          };
+          description = "Metadata for the Authentik application.";
+        };
+      };
+    }
+  );
+
+  activeApplicationProviders =
+    lib.filterAttrs (_: provider: provider.enable) cfg.applicationProviders;
+
+  applicationProviderEntries =
+    lib.mapAttrsToList (
+      _: provider:
+        {
+          slug = provider.slug;
+          name = provider.displayName;
+          clientId = provider.clientId;
+          clientSecretFile = toString provider.clientSecretFile;
+          redirectUris = provider.redirectUris;
+          scopes = provider.scopes;
+          includeClaimsInIdToken = provider.includeClaimsInIdToken;
+          propertyMappings = provider.propertyMappings;
+          issuerMode = provider.issuerMode;
+          subMode = provider.subMode;
+          clientType = provider.clientType;
+          authorizationFlow = provider.authorizationFlow;
+          signingKeyName = provider.signingKeyName;
+          application = {
+            slug = provider.application.slug;
+            name = provider.application.name;
+            launchUrl = provider.application.launchUrl;
+            description = provider.application.description;
+            icon = provider.application.icon;
+            openInNewTab = provider.application.openInNewTab;
+            policyMode = provider.application.policyMode;
+            group = provider.application.group;
+          };
+        }
+    ) activeApplicationProviders;
+
+  applicationProvidersManifest =
+    if applicationProviderEntries == [] then null
+    else pkgs.writeText "authentik-oidc-applications.json" (builtins.toJSON applicationProviderEntries);
+
   syncOAuthSourcesScript =
     if oauthSourcesManifest == null then null else
       let
+        allowedEmailsJson = builtins.toJSON cfg.allowedEmails;
+        allowedDomainsJson = builtins.toJSON cfg.allowedDomains;
         scriptLines = [
           "#!${pkgs.python3}/bin/python3"
           "import json"
@@ -331,6 +516,8 @@ let
           "manifest_path = pathlib.Path(\"${oauthSourcesManifest}\")"
           "manifest = json.loads(manifest_path.read_text())"
           "payload = []"
+          "allowed_emails = json.loads(r'''${allowedEmailsJson}''')"
+          "allowed_domains = json.loads(r'''${allowedDomainsJson}''')"
           ""
           "for entry in manifest:"
           "    client_id_path = pathlib.Path(entry[\"clientIdFile\"])"
@@ -375,8 +562,12 @@ let
           "from authentik.enterprise.stages.source.models import SourceStage"
           "from authentik.core.models import Source as CoreSource"
           "from authentik.flows.models import Flow, FlowStageBinding"
+          "from authentik.policies.expression.models import ExpressionPolicy"
+          "from authentik.policies.models import PolicyBinding"
           ""
           "payload = json.loads(r'''__PAYLOAD__''')"
+          "allowed_emails = json.loads(r'''__ALLOWED_EMAILS__''')"
+          "allowed_domains = json.loads(r'''__ALLOWED_DOMAINS__''')"
           ""
           "managed_slugs = []"
           "for entry in payload:"
@@ -427,6 +618,147 @@ let
           "    if not created and binding.order > desired_order:"
           "        binding.order = desired_order"
           "        binding.save()"
+          ""
+          "# Optional allowlist enforcement on core authentication flows"
+          "if allowed_emails or allowed_domains:"
+          "    emails = {email.lower() for email in allowed_emails}"
+          "    domains = {domain.lower() for domain in allowed_domains}"
+          "    expr = f\"\"\""
+          "email = ''"
+          "try:"
+          "    email = (request.context.get('email') or '').lower()"
+          "except Exception:"
+          "    pass"
+          "if not email and 'user' in locals() and user:"
+          "    email = (getattr(user, 'email', '') or '').lower()"
+          "if not email:"
+          "    return False"
+          "domain = email.split('@')[-1]"
+          "if email in {emails}:"
+          "    return True"
+          "if domain in {domains}:"
+          "    return True"
+          "return False"
+          "\"\"\""
+          "    policy, _ = ExpressionPolicy.objects.get_or_create(name=\"rave-allowed-users\", defaults={\"expression\": expr, \"is_active\": True})"
+          "    policy.expression = expr"
+          "    policy.is_active = True"
+          "    policy.save()"
+          "    for flow_slug in (\"default-authentication-flow\", \"default-source-authentication\", \"default-authentication-flow-passwordless\"):"
+          "        flow = Flow.objects.filter(slug=flow_slug).first()"
+          "        if flow:"
+          "            PolicyBinding.objects.update_or_create(target=flow, policy=policy, defaults={\"order\": -100, \"negate\": False, \"timeout\": 0})"
+          "\"\"\""
+          ""
+          "inner_script = inner_template.replace(\"__PAYLOAD__\", json.dumps(payload))"
+          "inner_script = inner_script.replace(\"__ALLOWED_EMAILS__\", json.dumps(allowed_emails))"
+          "inner_script = inner_script.replace(\"__ALLOWED_DOMAINS__\", json.dumps(allowed_domains))"
+          ""
+          "for attempt in range(12):"
+          "    proc = subprocess.run(["
+          "        \"${pkgs.docker}/bin/docker\","
+          "        \"exec\","
+          "        \"-i\","
+          "        \"authentik-server\","
+          "        \"python\","
+          "        \"-\","
+          "    ], input=inner_script, text=True)"
+          "    if proc.returncode == 0:"
+          "        break"
+          "    time.sleep(5)"
+          "else:"
+          "    sys.exit(proc.returncode)"
+        ];
+        scriptText = (lib.concatStringsSep "\n" scriptLines) + "\n";
+      in pkgs.writeScript "sync-authentik-oauth-sources" scriptText;
+
+  syncOidcApplicationsScript =
+    if applicationProvidersManifest == null then null else
+      let
+        scriptLines = [
+          "#!${pkgs.python3}/bin/python3"
+          "import json"
+          "import pathlib"
+          "import subprocess"
+          "import sys"
+          "import time"
+          ""
+          "manifest_path = pathlib.Path(\"${applicationProvidersManifest}\")"
+          "manifest = json.loads(manifest_path.read_text())"
+          "payload = []"
+          ""
+          "for entry in manifest:"
+          "    secret_path = pathlib.Path(entry[\"clientSecretFile\"])"
+          "    if not secret_path.exists():"
+          "        print(f\"[authentik-sync] missing secret for provider {entry['slug']}: {secret_path}\", file=sys.stderr)"
+          "        continue"
+          "    client_secret = secret_path.read_text().strip()"
+          "    if not client_secret:"
+          "        print(f\"[authentik-sync] empty secret for provider {entry['slug']}\", file=sys.stderr)"
+          "        continue"
+          "    payload.append({"
+          "        **entry,"
+          "        \"clientSecret\": client_secret,"
+          "    })"
+          ""
+          "if not payload:"
+          "    print(\"[authentik-sync] no application providers to apply\", file=sys.stderr)"
+          "    sys.exit(0)"
+          ""
+          "inner_template = \"\"\"import json"
+          "import os"
+          "import django"
+          "os.environ.setdefault(\"DJANGO_SETTINGS_MODULE\", \"authentik.root.settings\")"
+          "django.setup()"
+          "from django.db import transaction"
+          "from authentik.providers.oauth2.models import OAuth2Provider"
+          "from authentik.core.models import Application, Group, PropertyMapping"
+          "from authentik.crypto.models import CertificateKeyPair"
+          "from authentik.flows.models import Flow"
+          ""
+          "payload = json.loads(r'''__PAYLOAD__''')"
+          ""
+          "for entry in payload:"
+          "    identifier = entry[\"slug\"]"
+          "    with transaction.atomic():"
+          "        provider, _ = OAuth2Provider.objects.get_or_create(name=entry[\"name\"], defaults={\"client_id\": entry[\"clientId\"]})"
+          "        provider.name = entry[\"name\"]"
+          "        provider.client_type = entry[\"clientType\"]"
+          "        provider.client_id = entry[\"clientId\"]"
+          "        provider.client_secret = entry[\"clientSecret\"]"
+          "        provider.redirect_uris = \"\\\\n\".join(entry[\"redirectUris\"])"
+          "        provider.scope = \" \".join(entry.get(\"scopes\") or [])"
+          "        provider.include_claims_in_id_token = entry[\"includeClaimsInIdToken\"]"
+          "        provider.issuer_mode = entry[\"issuerMode\"]"
+          "        provider.sub_mode = entry[\"subMode\"]"
+          "        flow = Flow.objects.filter(slug=entry[\"authorizationFlow\"]).first()"
+          "        if flow:"
+          "            provider.authorization_flow = flow"
+          "        signing_key_name = entry.get(\"signingKeyName\")"
+          "        if signing_key_name:"
+          "            key = CertificateKeyPair.objects.filter(name=signing_key_name).first()"
+          "            if key:"
+          "                provider.signing_key = key"
+          "        mappings = entry.get(\"propertyMappings\") or []"
+          "        if mappings:"
+          "            provider.property_mappings.set(PropertyMapping.objects.filter(managed__in=mappings))"
+          "        provider.save()"
+          ""
+          "        app_data = entry.get(\"application\") or {}"
+          "        if app_data:"
+          "            application, _ = Application.objects.get_or_create(slug=app_data.get(\"slug\") or identifier, defaults={\"name\": app_data.get(\"name\") or provider.name})"
+          "            application.name = app_data.get(\"name\") or application.name"
+          "            application.provider = provider"
+          "            application.meta_launch_url = app_data.get(\"launchUrl\")"
+          "            application.meta_icon = app_data.get(\"icon\")"
+          "            application.meta_description = app_data.get(\"description\")"
+          "            application.open_in_new_tab = app_data.get(\"openInNewTab\", True)"
+          "            application.policy_engine_mode = app_data.get(\"policyMode\") or application.policy_engine_mode"
+          "            group_name = app_data.get(\"group\")"
+          "            if group_name:"
+          "                group = Group.objects.filter(name=group_name).first()"
+          "                application.group = group"
+          "            application.save()"
           "\"\"\""
           ""
           "inner_script = inner_template.replace(\"__PAYLOAD__\", json.dumps(payload))"
@@ -447,7 +779,7 @@ let
           "    sys.exit(proc.returncode)"
         ];
         scriptText = (lib.concatStringsSep "\n" scriptLines) + "\n";
-      in pkgs.writeScript "sync-authentik-oauth-sources" scriptText;
+      in pkgs.writeScript "sync-authentik-oidc-applications" scriptText;
 
   waitForAuthentikContainer = pkgs.writeShellScript "wait-authentik-container" ''
     attempt=0
@@ -752,6 +1084,27 @@ in
         Each entry references client ID/secret files under /run/secrets and will be imported automatically.
       '';
     };
+
+    applicationProviders = mkOption {
+      type = types.attrsOf applicationProviderSubmodule;
+      default = {};
+      description = ''
+        Declarative OAuth2 providers/applications (e.g., Mattermost) that Authentik should create automatically.
+        Client secrets are read from the provided file paths on the host and synchronized into Authentik on boot.
+      '';
+    };
+
+    allowedEmails = mkOption {
+      type = types.listOf types.str;
+      default = [];
+      description = "Optional allowlist of exact email addresses permitted to sign in through Authentik (applied to the default auth flow). Empty list means allow all.";
+    };
+
+    allowedDomains = mkOption {
+      type = types.listOf types.str;
+      default = [];
+      description = "Optional allowlist of email domains permitted to sign in through Authentik (case-insensitive). Empty list means allow all.";
+    };
   };
 
   config = mkIf cfg.enable {
@@ -818,7 +1171,8 @@ in
       requires = [ "docker.service" "postgresql.service" redisUnit "docker-pull-authentik.service" ];
       wants =
         [ "authentik-worker.service" ]
-        ++ lib.optional (syncOAuthSourcesScript != null) "authentik-sync-oauth-sources.service";
+        ++ lib.optional (syncOAuthSourcesScript != null) "authentik-sync-oauth-sources.service"
+        ++ lib.optional (syncOidcApplicationsScript != null) "authentik-sync-oidc-applications.service";
       serviceConfig = {
         Type = "simple";
         Restart = "on-failure";
@@ -903,6 +1257,21 @@ ${volumeRunArgs}${commonEnvArgs}
         Restart = "on-failure";
         RestartSec = 10;
         ExecStart = syncOAuthSourcesScript;
+      };
+    };
+
+    systemd.services.authentik-sync-oidc-applications = lib.mkIf (syncOidcApplicationsScript != null) {
+      description = "Synchronize Authentik OIDC application providers";
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "authentik-server.service" ];
+      bindsTo = [ "authentik-server.service" ];
+      after = [ "authentik-server.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStartPre = waitForAuthentikContainer;
+        Restart = "on-failure";
+        RestartSec = 10;
+        ExecStart = syncOidcApplicationsScript;
       };
     };
   };

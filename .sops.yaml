@@ -7,6 +7,7 @@ keys:
   - &team_key_1 age1pnd2ym48q79gxt0qdxapyz3e3uj8vn4ddlyy5tctwgejdfytsymsj20z2e  # Team Lead Key (generated 2024-11-24)
   # - &team_key_2 age1exampleexampleexampleexampleexampleexampleexampleexample  # DevOps Key
   # - &team_key_3 age1exampleexampleexampleexampleexampleexampleexampleexample  # Security Key
+  - &ci_key age1r9ekew8ulxn9p8xy6ux69s49ynavvg9c00vvh3ur3ngl9877au6ql4l4a6  # GitHub Actions CI (store private key in SOPS_AGE_KEY_CI)
   
   # Production deployment key (generated on production server)
   # - &prod_key age1exampleexampleexampleexampleexampleexampleexampleexample
@@ -17,6 +18,7 @@ creation_rules:
     key_groups:
     - age:
       - *team_key_1
+      - *ci_key
       # - *team_key_2
       # - *team_key_3
       # - *prod_key
@@ -26,12 +28,14 @@ creation_rules:
     key_groups:
     - age:
       - *team_key_1
+      - *ci_key
       # - *team_key_2
       
   - path_regex: secrets-staging\.yaml$
     key_groups:
     - age:
       - *team_key_1
+      - *ci_key
       # - *team_key_2
       # - *team_key_3
       
@@ -39,6 +43,7 @@ creation_rules:
     key_groups:
     - age:
       - *team_key_1
+      - *ci_key
       # - *team_key_3
       # - *prod_key
 

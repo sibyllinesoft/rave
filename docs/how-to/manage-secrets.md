@@ -22,6 +22,9 @@ Copy the public key (the string starting with `age1…`). Keep the `.agekey` fil
 3. Append the key to every `creation_rules` stanza that should decrypt `config/secrets.yaml`. Usually it is enough to update the first rule with `path_regex: secrets\.yaml$`.
 4. Save the file.
 
+### GitHub Actions / CI Recipient
+The repository now ships with a dedicated Age public key for the GitHub Actions pipeline (`*ci_key` in `.sops.yaml`). Keep the matching private key in the `SOPS_AGE_KEY_CI` GitHub secret (or the equivalent CI secret store) so workflow jobs can decrypt `config/secrets.yaml` during image builds. Regenerate the key pair if you rotate CI credentials and re-run `sops updatekeys config/secrets.yaml` so the encrypted payload includes the new recipient.
+
 ## 3. Export the Private Key for Tooling
 `sops` and Nix builds read the private key path from `SOPS_AGE_KEY_FILE`. Set it before editing or building:
 ```bash

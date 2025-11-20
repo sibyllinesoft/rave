@@ -1,5 +1,7 @@
 # GitLab Nginx 404 Fix - COMPLETE ✅
 
+> _Legacy note: instructions mention the deprecated `gitlab-complete/` Docker Compose stack, which has since been removed from the repository._
+
 ## Problem Identified
 The nginx container was serving 404 errors because:
 1. **Database Migration Failure**: GitLab was failing to start due to corrupted database schema causing migration errors:

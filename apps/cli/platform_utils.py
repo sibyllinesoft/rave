@@ -5,9 +5,10 @@ Handles differences between macOS, Linux, and potentially Windows
 import os
 import platform
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from process_utils import ProcessError, run_command
 
 class PlatformManager:
     def __init__(self):
@@ -68,14 +69,10 @@ class PlatformManager:
         else:
             # Check if flakes are enabled
             try:
-                result = subprocess.run(
-                    ["nix", "flake", "--help"], 
-                    capture_output=True, 
-                    text=True
-                )
+                result = run_command(["nix", "flake", "--help"], check=False)
                 if result.returncode != 0:
                     warnings.append("Nix flakes not enabled - run: echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf")
-            except:
+            except ProcessError:
                 warnings.append("Could not verify Nix flakes support")
         
         # Check QEMU
@@ -98,14 +95,10 @@ class PlatformManager:
         if self.is_macos():
             # Check if HVF is available
             try:
-                result = subprocess.run(
-                    ["sysctl", "-n", "kern.hv_support"],
-                    capture_output=True,
-                    text=True
-                )
+                result = run_command(["sysctl", "-n", "kern.hv_support"], check=False)
                 if result.stdout.strip() != "1":
                     warnings.append("Hypervisor Framework not available - VM performance will be poor")
-            except:
+            except ProcessError:
                 warnings.append("Could not check Hypervisor Framework support")
         elif self.is_linux():
             if not Path("/dev/kvm").exists():
@@ -155,9 +148,9 @@ class PlatformManager:
 
         for step in install_steps:
             try:
-                result = subprocess.run(step, check=True, capture_output=True, text=True)
-            except subprocess.CalledProcessError as exc:
-                stderr = exc.stderr.strip() if exc.stderr else "unknown error"
+                run_command(step, check=True)
+            except ProcessError as exc:
+                stderr = exc.result.stderr.strip() if exc.result.stderr else "unknown error"
                 return {
                     "success": False,
                     "error": f"Failed to run '{' '.join(step)}': {stderr}"
@@ -178,13 +171,8 @@ class PlatformManager:
             return None
 
         try:
-            result = subprocess.run(
-                ["mkcert", "-CAROOT"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError:
+            result = run_command(["mkcert", "-CAROOT"], check=True)
+        except ProcessError:
             return None
 
         return Path(result.stdout.strip())
@@ -204,15 +192,10 @@ class PlatformManager:
             
         # Check if age-keygen has generated keys
         try:
-            result = subprocess.run(
-                ["age-keygen", "-y", str(age_key_file)],
-                capture_output=True,
-                text=True,
-                check=False
-            )
+            result = run_command(["age-keygen", "-y", str(age_key_file)], check=False)
             if result.returncode == 0:
                 return age_key_file.parent
-        except (subprocess.SubprocessError, FileNotFoundError):
+        except (ProcessError, FileNotFoundError):
             pass
             
         return None
@@ -300,8 +283,13 @@ class PlatformManager:
             return Path("/tmp")
     
     def get_config_dir(self) -> Path:
-        """Get platform-appropriate configuration directory."""
+        """Get platform-appropriate configuration directory honoring XDG on Linux."""
         if self.is_macos():
-            return Path.home() / "Library" / "Application Support" / "rave"
+            base = Path.home() / "Library" / "Application Support"
         else:
-            return Path.home() / ".config" / "rave"
+            xdg_root = os.environ.get("XDG_CONFIG_HOME")
+            if xdg_root:
+                base = Path(xdg_root).expanduser()
+            else:
+                base = Path.home() / ".config"
+        return base / "rave"

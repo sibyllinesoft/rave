@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -24,45 +26,55 @@ import (
 
 // Server owns the HTTP surface area for the auth-manager control plane.
 type Server struct {
-	cfg            config.Config
-	shadowStore    shadow.Store
-	httpServer     *http.Server
-	pomeriumSecret []byte
-	mmClient       *mattermost.Client
-	tokenIssuer    *tokens.Issuer
-	metricsRegistry    *prometheus.Registry
-	mattermostSessions prometheus.Counter
-	tokensIssued       prometheus.Counter
-	mattermostProxy       *httputil.ReverseProxy
-	mattermostPublicURL   *url.URL
-	mattermostPathPrefix  string
+	cfg                    config.Config
+	shadowStore            shadow.Store
+	httpServer             *http.Server
+	pomeriumSecret         []byte
+	mmClient               *mattermost.Client
+	tokenIssuer            *tokens.Issuer
+	metricsRegistry        *prometheus.Registry
+	mattermostSessions     prometheus.Counter
+	tokensIssued           prometheus.Counter
+	mattermostProxy        *httputil.ReverseProxy
+	mattermostPublicURL    *url.URL
+	mattermostPathPrefix   string
 	mattermostCookieDomain string
 	mattermostCookiePath   string
 	mattermostCookieSecure bool
+	logger                 *slog.Logger
+	mmBreaker              *circuitBreaker
 }
 
 // New wires up the HTTP server, routes, and store. A nil store falls back to the
 // in-memory implementation so developers can run the binary without extra
 // dependencies.
-func New(cfg config.Config, store shadow.Store) *Server {
-	if store == nil {
-		store = newStoreFromConfig(cfg)
+func New(cfg config.Config, store shadow.Store, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.Default()
 	}
 
-	mux := http.NewServeMux()
 	srv := &Server{
 		cfg:            cfg,
-		shadowStore:    store,
+		logger:         logger,
 		pomeriumSecret: pomerium.DecodeSharedSecret(cfg.PomeriumSharedSecret),
+		mmBreaker:      newCircuitBreaker(5, 30*time.Second),
 	}
+	if store == nil {
+		store = srv.newStoreFromConfig()
+	}
+	srv.shadowStore = store
+
+	mux := http.NewServeMux()
 
 	publicURL, err := url.Parse(cfg.MattermostURL)
 	if err != nil {
-		log.Fatalf("auth-manager: invalid mattermost URL %q: %v", cfg.MattermostURL, err)
+		logger.Error("invalid mattermost URL", "url", cfg.MattermostURL, "err", err)
+		panic(err)
 	}
 	internalURL, err := url.Parse(cfg.MattermostInternalURL)
 	if err != nil {
-		log.Fatalf("auth-manager: invalid mattermost internal URL %q: %v", cfg.MattermostInternalURL, err)
+		logger.Error("invalid mattermost internal URL", "url", cfg.MattermostInternalURL, "err", err)
+		panic(err)
 	}
 	srv.mattermostPublicURL = publicURL
 	srv.mattermostPathPrefix = normalizePathPrefix(publicURL.Path)
@@ -74,16 +86,15 @@ func New(cfg config.Config, store shadow.Store) *Server {
 	srv.mattermostCookieSecure = strings.EqualFold(publicURL.Scheme, "https")
 	srv.mattermostProxy = newMattermostProxy(internalURL, srv.mattermostPathPrefix)
 	if srv.mattermostProxy != nil {
-		srv.mattermostProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			respondError(w, http.StatusBadGateway, err)
-		}
+		srv.mattermostProxy.ErrorHandler = srv.handleProxyError
 	}
 
 	if cfg.MattermostAdminToken != "" {
 		srv.mmClient = mattermost.NewClient(cfg.MattermostInternalURL, cfg.MattermostAdminToken)
 	}
 	if issuer, err := tokens.NewIssuer(cfg.SigningKey); err != nil {
-		log.Fatalf("auth-manager: invalid signing key: %v", err)
+		logger.Error("invalid signing key", "err", err)
+		panic(err)
 	} else {
 		srv.tokenIssuer = issuer
 	}
@@ -115,7 +126,7 @@ func New(cfg config.Config, store shadow.Store) *Server {
 
 	srv.httpServer = &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      logRequest(mux),
+		Handler:      srv.logRequest(mux),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -126,7 +137,7 @@ func New(cfg config.Config, store shadow.Store) *Server {
 
 // Start begins serving HTTP requests.
 func (s *Server) Start() error {
-	log.Printf("auth-manager listening on %s (idp=%s, mattermost=%s)", s.cfg.ListenAddr, s.cfg.SourceIDP, s.cfg.MattermostURL)
+	s.logger.Info("auth-manager listening", "addr", s.cfg.ListenAddr, "idp", s.cfg.SourceIDP, "mattermost", s.cfg.MattermostURL)
 	if err := s.cfg.Validate(); err != nil {
 		return err
 	}
@@ -149,7 +160,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]any{
+	s.respondJSON(w, http.StatusOK, map[string]any{
 		"status":       "ok",
 		"source_idp":   s.cfg.SourceIDP,
 		"mattermost":   s.cfg.MattermostURL,
@@ -162,11 +173,11 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if s.shadowStore != nil {
 		if err := s.shadowStore.HealthCheck(ctx); err != nil {
-			respondError(w, http.StatusServiceUnavailable, err)
+			s.respondError(w, http.StatusServiceUnavailable, err)
 			return
 		}
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"status": "ready"})
+	s.respondJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 }
 
 func (s *Server) handleShadowUsers(w http.ResponseWriter, r *http.Request) {
@@ -174,10 +185,10 @@ func (s *Server) handleShadowUsers(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		users, err := s.shadowStore.List(r.Context())
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
+			s.respondError(w, http.StatusInternalServerError, err)
 			return
 		}
-		respondJSON(w, http.StatusOK, map[string]any{"shadow_users": users})
+		s.respondJSON(w, http.StatusOK, map[string]any{"shadow_users": users})
 	case http.MethodPost:
 		var payload struct {
 			Provider   string            `json:"provider"`
@@ -187,7 +198,7 @@ func (s *Server) handleShadowUsers(w http.ResponseWriter, r *http.Request) {
 			Attributes map[string]string `json:"attributes"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			respondError(w, http.StatusBadRequest, err)
+			s.respondError(w, http.StatusBadRequest, err)
 			return
 		}
 		if payload.Provider == "" || payload.Subject == "" {
@@ -212,7 +223,7 @@ func (s *Server) handleShadowUsers(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if payload.Provider == "" || payload.Subject == "" {
-			respondError(w, http.StatusBadRequest, errors.New("provider and subject are required"))
+			s.respondError(w, http.StatusBadRequest, errors.New("provider and subject are required"))
 			return
 		}
 		user, err := s.shadowStore.Upsert(r.Context(), shadow.Identity{
@@ -222,18 +233,18 @@ func (s *Server) handleShadowUsers(w http.ResponseWriter, r *http.Request) {
 			Name:     payload.Name,
 		}, payload.Attributes)
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
+			s.respondError(w, http.StatusInternalServerError, err)
 			return
 		}
-		respondJSON(w, http.StatusCreated, user)
+		s.respondJSON(w, http.StatusCreated, user)
 	default:
 		w.Header().Set("Allow", "GET, POST")
-		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		s.respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
 }
 
 func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusNotImplemented, map[string]string{
+	s.respondJSON(w, http.StatusNotImplemented, map[string]string{
 		"error": "oauth exchange pipeline not yet implemented",
 	})
 }
@@ -241,17 +252,23 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMattermostProxy(w http.ResponseWriter, r *http.Request) {
 	identity, ok := pomerium.IdentityFromContext(r.Context())
 	if !ok {
-		respondError(w, http.StatusUnauthorized, errors.New("pomerium identity missing from context"))
+		s.respondError(w, http.StatusUnauthorized, errors.New("pomerium identity missing from context"))
 		return
 	}
 
 	if s.mmClient == nil || s.mattermostProxy == nil {
-		respondError(w, http.StatusNotImplemented, errors.New("mattermost client not configured"))
+		s.respondError(w, http.StatusNotImplemented, errors.New("mattermost client not configured"))
+		return
+	}
+
+	if s.mmBreaker != nil && !s.mmBreaker.allow() {
+		wait := s.mmBreaker.remaining()
+		s.respondError(w, http.StatusServiceUnavailable, fmt.Errorf("mattermost temporarily unavailable, retry in %s", wait.Truncate(time.Second)))
 		return
 	}
 
 	if identity.Email == "" {
-		respondError(w, http.StatusBadRequest, errors.New("pomerium identity missing email claim"))
+		s.respondError(w, http.StatusBadRequest, errors.New("pomerium identity missing email claim"))
 		return
 	}
 
@@ -267,9 +284,11 @@ func (s *Server) handleMattermostProxy(w http.ResponseWriter, r *http.Request) {
 	if !hasMattermostCookie(r) {
 		session, err := s.ensureMattermostSession(r.Context(), identity)
 		if err != nil {
-			respondError(w, http.StatusBadGateway, err)
+			s.recordMattermostFailure(err)
+			s.respondError(w, http.StatusBadGateway, err)
 			return
 		}
+		s.recordMattermostSuccess()
 		for _, cookie := range s.buildMattermostCookies(session.UserID, session.Token) {
 			http.SetCookie(w, cookie)
 			r.AddCookie(requestCookieFor(cookie))
@@ -277,32 +296,35 @@ func (s *Server) handleMattermostProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mattermostProxy.ServeHTTP(w, r)
+	s.recordMattermostSuccess()
 }
 
 func (s *Server) handleMattermostLegacy(w http.ResponseWriter, r *http.Request) {
 	identity, ok := pomerium.IdentityFromContext(r.Context())
 	if !ok {
-		respondError(w, http.StatusUnauthorized, errors.New("pomerium identity missing from context"))
+		s.respondError(w, http.StatusUnauthorized, errors.New("pomerium identity missing from context"))
 		return
 	}
 
 	if s.mmClient == nil {
-		respondError(w, http.StatusNotImplemented, errors.New("mattermost client not configured"))
+		s.respondError(w, http.StatusNotImplemented, errors.New("mattermost client not configured"))
 		return
 	}
 
 	if identity.Email == "" {
-		respondError(w, http.StatusBadRequest, errors.New("pomerium identity missing email claim"))
+		s.respondError(w, http.StatusBadRequest, errors.New("pomerium identity missing email claim"))
 		return
 	}
 
 	session, err := s.ensureMattermostSession(r.Context(), identity)
 	if err != nil {
-		respondError(w, http.StatusBadGateway, err)
+		s.recordMattermostFailure(err)
+		s.respondError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.recordMattermostSuccess()
 
-	respondJSON(w, http.StatusOK, map[string]any{
+	s.respondJSON(w, http.StatusOK, map[string]any{
 		"session": session,
 	})
 }
@@ -415,7 +437,7 @@ func (s *Server) requirePomerium(next http.HandlerFunc) http.HandlerFunc {
 			if errors.Is(err, pomerium.ErrInvalidAssertion) {
 				status = http.StatusForbidden
 			}
-			respondError(w, status, err)
+			s.respondError(w, status, err)
 			return
 		}
 		ctx := pomerium.WithIdentity(r.Context(), identity)
@@ -425,13 +447,13 @@ func (s *Server) requirePomerium(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) handleTokenIssue(w http.ResponseWriter, r *http.Request) {
 	if s.tokenIssuer == nil {
-		respondError(w, http.StatusInternalServerError, errors.New("token issuer not configured"))
+		s.respondError(w, http.StatusInternalServerError, errors.New("token issuer not configured"))
 		return
 	}
 
 	identity, ok := pomerium.IdentityFromContext(r.Context())
 	if !ok {
-		respondError(w, http.StatusUnauthorized, errors.New("pomerium identity missing from context"))
+		s.respondError(w, http.StatusUnauthorized, errors.New("pomerium identity missing from context"))
 		return
 	}
 
@@ -442,7 +464,7 @@ func (s *Server) handleTokenIssue(w http.ResponseWriter, r *http.Request) {
 		Claims     map[string]interface{} `json:"claims"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		respondError(w, http.StatusBadRequest, err)
+		s.respondError(w, http.StatusBadRequest, err)
 		return
 	}
 	if payload.Subject == "" {
@@ -458,13 +480,13 @@ func (s *Server) handleTokenIssue(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.tokenIssuer.Issue(payload.Subject, payload.Audience, ttl, payload.Claims)
 	if err != nil {
-		respondError(w, http.StatusBadRequest, err)
+		s.respondError(w, http.StatusBadRequest, err)
 		return
 	}
 	if s.tokensIssued != nil {
 		s.tokensIssued.Inc()
 	}
-	respondJSON(w, http.StatusOK, map[string]any{
+	s.respondJSON(w, http.StatusOK, map[string]any{
 		"token":         token.Value,
 		"expires_at":    token.ExpiresAt.Format(time.RFC3339Nano),
 		"subject":       payload.Subject,
@@ -476,7 +498,7 @@ func (s *Server) handleTokenIssue(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTokenValidate(w http.ResponseWriter, r *http.Request) {
 	if s.tokenIssuer == nil {
-		respondError(w, http.StatusInternalServerError, errors.New("token issuer not configured"))
+		s.respondError(w, http.StatusInternalServerError, errors.New("token issuer not configured"))
 		return
 	}
 
@@ -484,55 +506,78 @@ func (s *Server) handleTokenValidate(w http.ResponseWriter, r *http.Request) {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		respondError(w, http.StatusBadRequest, err)
+		s.respondError(w, http.StatusBadRequest, err)
 		return
 	}
 	if payload.Token == "" {
-		respondError(w, http.StatusBadRequest, errors.New("token is required"))
+		s.respondError(w, http.StatusBadRequest, errors.New("token is required"))
 		return
 	}
 
 	claims, err := s.tokenIssuer.Validate(payload.Token)
 	if err != nil {
-		respondError(w, http.StatusUnauthorized, err)
+		s.respondError(w, http.StatusUnauthorized, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{
+	s.respondJSON(w, http.StatusOK, map[string]any{
 		"claims": claims,
 	})
 }
 
-func respondJSON(w http.ResponseWriter, status int, payload any) {
+func (s *Server) respondJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		log.Printf("write response: %v", err)
+		s.logger.Error("write response", "err", err)
 	}
 }
 
-func respondError(w http.ResponseWriter, status int, err error) {
-	respondJSON(w, status, map[string]string{"error": err.Error()})
+func (s *Server) respondError(w http.ResponseWriter, status int, err error) {
+	s.respondJSON(w, status, map[string]string{"error": err.Error()})
 }
 
-func logRequest(next http.Handler) http.Handler {
+func (s *Server) handleProxyError(w http.ResponseWriter, r *http.Request, err error) {
+	s.recordMattermostFailure(err)
+	s.respondError(w, http.StatusBadGateway, err)
+}
+
+func (s *Server) logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
+		s.logger.Info("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
 	})
 }
 
-func newStoreFromConfig(cfg config.Config) shadow.Store {
-	if cfg.DatabaseURL == "" {
+func (s *Server) recordMattermostFailure(err error) {
+	if s.mmBreaker == nil {
+		return
+	}
+	if opened := s.mmBreaker.recordFailure(); opened {
+		s.logger.Error("mattermost circuit opened", "cooldown", s.mmBreaker.remaining(), "err", err)
+	} else {
+		s.logger.Warn("mattermost operation failed", "err", err)
+	}
+}
+
+func (s *Server) recordMattermostSuccess() {
+	if s.mmBreaker == nil {
+		return
+	}
+	s.mmBreaker.recordSuccess()
+}
+
+func (s *Server) newStoreFromConfig() shadow.Store {
+	if s.cfg.DatabaseURL == "" {
 		return shadow.NewMemoryStore()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	store, err := shadow.NewPostgresStore(ctx, cfg.DatabaseURL)
+	store, err := shadow.NewPostgresStore(ctx, s.cfg.DatabaseURL)
 	if err != nil {
-		log.Printf("auth-manager: failed to init postgres store (%v); falling back to in-memory store", err)
+		s.logger.Error("failed to init postgres store, falling back to memory", "err", err)
 		return shadow.NewMemoryStore()
 	}
 	return store
@@ -553,6 +598,64 @@ func newMattermostProxy(target *url.URL, publicPrefix string) *httputil.ReverseP
 		}
 	}
 	return proxy
+}
+
+type circuitBreaker struct {
+	mu           sync.Mutex
+	failureCount int
+	threshold    int
+	cooldown     time.Duration
+	openUntil    time.Time
+}
+
+func newCircuitBreaker(threshold int, cooldown time.Duration) *circuitBreaker {
+	return &circuitBreaker{threshold: threshold, cooldown: cooldown}
+}
+
+func (c *circuitBreaker) allow() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.openUntil.IsZero() {
+		now := time.Now()
+		if now.Before(c.openUntil) {
+			return false
+		}
+		c.openUntil = time.Time{}
+		c.failureCount = 0
+	}
+	return true
+}
+
+func (c *circuitBreaker) remaining() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.openUntil.IsZero() {
+		return 0
+	}
+	d := time.Until(c.openUntil)
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+func (c *circuitBreaker) recordSuccess() {
+	c.mu.Lock()
+	c.failureCount = 0
+	c.openUntil = time.Time{}
+	c.mu.Unlock()
+}
+
+func (c *circuitBreaker) recordFailure() (opened bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failureCount++
+	if c.failureCount >= c.threshold {
+		c.openUntil = time.Now().Add(c.cooldown)
+		c.failureCount = 0
+		return true
+	}
+	return false
 }
 
 func normalizePathPrefix(prefix string) string {

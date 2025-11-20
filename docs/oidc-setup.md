@@ -4,7 +4,7 @@ This guide explains how to wire external OAuth/OIDC providers (Google or GitHub)
 
 ## Prerequisites
 
-- RAVE CLI installed and on your `PATH` (`pip install -r apps/cli/requirements.txt`).
+- RAVE CLI installed and on your `PATH` (`cd apps/cli && uv sync && source .venv/bin/activate`).
 - VM(s) already created via `rave vm create` and currently running (`rave vm start <company>`).
 - `sops` available with access to the age key that can decrypt `config/secrets.yaml`.
 - For Google Cloud: the `gcloud` CLI authenticated against the project that will host the OAuth client.

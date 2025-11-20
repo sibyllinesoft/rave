@@ -33,8 +33,14 @@ let
   gitlabSecretFile = cfg.gitlab.clientSecretFile;
   hasGitlabSecretFile = gitlabSecretFile != null && gitlabSecretFile != "";
 
+  openIdSecretFile = cfg.openid.clientSecretFile;
+  openIdSecretPath =
+    if openIdSecretFile == null || openIdSecretFile == ""
+    then ""
+    else toString openIdSecretFile;
+
   gitlabSettingsJSON = builtins.toJSON {
-    Enable = true;
+    Enable = cfg.gitlab.enable;
     EnableSync = true;
     AuthEndpoint = "${cfg.gitlab.baseUrl}/oauth/authorize";
     TokenEndpoint = "${cfg.gitlab.internalUrl}/oauth/token";
@@ -42,6 +48,19 @@ let
     Id = cfg.gitlab.clientId;
     Scope = cfg.gitlab.oauthScopes;
     SkipTLSVerification = true;
+  };
+
+  openIdSettingsJSON = builtins.toJSON {
+    Enable = cfg.openid.enable;
+    Id = cfg.openid.clientId;
+    Secret = cfg.openid.clientSecretFallback;
+    Scope = cfg.openid.scope;
+    DiscoveryEndpoint = cfg.openid.discoveryEndpoint;
+    AuthEndpoint = cfg.openid.authEndpoint;
+    TokenEndpoint = cfg.openid.tokenEndpoint;
+    UserAPIEndpoint = cfg.openid.userApiEndpoint;
+    ButtonText = cfg.openid.buttonText;
+    ButtonColor = cfg.openid.buttonColor;
   };
 
   envFilePath =
@@ -53,7 +72,7 @@ let
       MM_SQLSETTINGS_DRIVERNAME=postgres
       MM_SQLSETTINGS_DATASOURCE=${cfg.databaseDatasource}
       MM_BLEVESETTINGS_INDEXDIR=/var/lib/mattermost/bleve-indexes
-      MM_GITLABSETTINGS_ENABLE=true
+      MM_GITLABSETTINGS_ENABLE=${lib.boolToString cfg.gitlab.enable}
       MM_GITLABSETTINGS_ID=${cfg.gitlab.clientId}
       MM_GITLABSETTINGS_SECRET=${cfg.gitlab.clientSecretFallback}
       MM_GITLABSETTINGS_SCOPE=${cfg.gitlab.oauthScopes}
@@ -61,6 +80,15 @@ let
       MM_GITLABSETTINGS_TOKENENDPOINT=${cfg.gitlab.internalUrl}/oauth/token
       MM_GITLABSETTINGS_USERAPIENDPOINT=${cfg.gitlab.internalUrl}/api/v4/user
       MM_GITLABSETTINGS_SKIPTLSVERIFICATION=true
+      MM_OPENIDSETTINGS_ENABLE=${lib.boolToString cfg.openid.enable}
+      MM_OPENIDSETTINGS_ID=${cfg.openid.clientId}
+      MM_OPENIDSETTINGS_SCOPE=${cfg.openid.scope}
+      MM_OPENIDSETTINGS_DISCOVERYENDPOINT=${cfg.openid.discoveryEndpoint}
+      MM_OPENIDSETTINGS_AUTHENDPOINT=${cfg.openid.authEndpoint}
+      MM_OPENIDSETTINGS_TOKENENDPOINT=${cfg.openid.tokenEndpoint}
+      MM_OPENIDSETTINGS_USERAPIENDPOINT=${cfg.openid.userApiEndpoint}
+      MM_OPENIDSETTINGS_BUTTONTEXT=${cfg.openid.buttonText}
+      MM_OPENIDSETTINGS_BUTTONCOLOR=${cfg.openid.buttonColor}
     '';
 
   callsPluginUrl = if cfg.callsPlugin.downloadUrl == null
@@ -76,11 +104,15 @@ ${builtins.readFile ./ensure-gitlab-mattermost-ci.py}
 
   updateMattermostScript = pkgs.writeText "update-mattermost-config.py"
     (lib.replaceStrings
-      [ "@SITE_URL@" "@BRAND_TEXT@" "@GITLAB_SETTINGS@" "@GITLAB_SECRET_FALLBACK@" ]
+      [ "@SITE_URL@" "@BRAND_TEXT@" "@GITLAB_SETTINGS@" "@GITLAB_SECRET_FALLBACK@" "@GITLAB_ENABLED_DEFAULT@" "@OPENID_SETTINGS@" "@OPENID_ENABLED_DEFAULT@" "@OPENID_SECRET_FALLBACK@" ]
       [ (builtins.toJSON cfg.publicUrl)
         (builtins.toJSON brandHtmlValue)
         gitlabSettingsJSON
         (builtins.toJSON cfg.gitlab.clientSecretFallback)
+        (if cfg.gitlab.enable then "True" else "False")
+        openIdSettingsJSON
+        (if cfg.openid.enable then "True" else "False")
+        (builtins.toJSON cfg.openid.clientSecretFallback)
       ]
       (builtins.readFile ./update-mattermost-config.py));
 
@@ -190,6 +222,12 @@ in
     };
 
     gitlab = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Whether to configure GitLab as an OAuth provider inside Mattermost.";
+      };
+
       baseUrl = mkOption {
         type = types.str;
         default = "https://localhost:8443/gitlab";
@@ -242,6 +280,74 @@ in
         type = types.str;
         default = "RAVE Mattermost";
         description = "Display name used for the GitLab OAuth application.";
+      };
+    };
+
+    openid = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable OpenID Connect login (e.g., via Authentik).";
+      };
+
+      clientId = mkOption {
+        type = types.str;
+        default = "mattermost";
+        description = "OpenID client ID registered in Authentik.";
+      };
+
+      clientSecretFile = mkOption {
+        type = types.nullOr pathOrString;
+        default = null;
+        description = "Path containing the OpenID client secret.";
+      };
+
+      clientSecretFallback = mkOption {
+        type = types.str;
+        default = "mattermost-openid-secret";
+        description = "Fallback secret used when clientSecretFile is not set.";
+      };
+
+      scope = mkOption {
+        type = types.str;
+        default = "openid profile email";
+        description = "Space-delimited scope string requested from the IdP.";
+      };
+
+      discoveryEndpoint = mkOption {
+        type = types.str;
+        default = "";
+        description = "OIDC discovery endpoint.";
+      };
+
+      authEndpoint = mkOption {
+        type = types.str;
+        default = "";
+        description = "Explicit authorization endpoint (optional when discovery is set).";
+      };
+
+      tokenEndpoint = mkOption {
+        type = types.str;
+        default = "";
+        description = "Token endpoint URL.";
+      };
+
+      userApiEndpoint = mkOption {
+        type = types.str;
+        default = "";
+        description = "User info endpoint URL.";
+      };
+
+      buttonText = mkOption {
+        type = types.str;
+        default = "Sign in with OpenID";
+        description = "Label for the login button.";
+      };
+
+      buttonColor = mkOption {
+        type = types.str;
+        default = "#145DBF";
+        description = "Hex color for the login button.";
       };
     };
 
@@ -359,6 +465,11 @@ in
   };
 
   config = mkIf cfg.enable {
+    assertions = lib.optional cfg.openid.enable {
+      assertion = (cfg.openid.clientSecretFile != null) || (cfg.openid.clientSecretFallback != null && cfg.openid.clientSecretFallback != "");
+      message = "services.rave.mattermost.openid.clientSecretFile (or clientSecretFallback) must be provided when OpenID is enabled.";
+    };
+
     systemd.tmpfiles.rules = [
       "d /var/lib/mattermost 0755 mattermost mattermost -"
       "d /var/lib/mattermost/plugins 0755 mattermost mattermost -"
@@ -393,6 +504,7 @@ in
         };
 
         GitLabSettings = builtins.fromJSON gitlabSettingsJSON;
+        OpenIdSettings = builtins.fromJSON openIdSettingsJSON;
 
         PluginSettings = (
           {
@@ -441,12 +553,27 @@ in
         export GITLAB_AUTH_BASE=${lib.escapeShellArg cfg.gitlab.baseUrl}
         export GITLAB_API_BASE=${lib.escapeShellArg cfg.gitlab.internalUrl}
         export GITLAB_CLIENT_ID=${lib.escapeShellArg cfg.gitlab.clientId}
+        export GITLAB_ENABLED=${if cfg.gitlab.enable then "1" else "0"}
         export GITLAB_SCOPE=${lib.escapeShellArg cfg.gitlab.oauthScopes}
         export GITLAB_REDIRECT=${lib.escapeShellArg gitlabRedirectUri}
         ${optionalString hasGitlabSecretFile ''
         export GITLAB_SECRET_FILE=${lib.escapeShellArg gitlabSecretFile}
         ''}${optionalString (!hasGitlabSecretFile) ''
         export GITLAB_SECRET=${lib.escapeShellArg cfg.gitlab.clientSecretFallback}
+        ''}
+        export OPENID_ENABLED=${if cfg.openid.enable then "1" else "0"}
+        export OPENID_CLIENT_ID=${lib.escapeShellArg cfg.openid.clientId}
+        export OPENID_SCOPE=${lib.escapeShellArg cfg.openid.scope}
+        export OPENID_DISCOVERY=${lib.escapeShellArg cfg.openid.discoveryEndpoint}
+        export OPENID_AUTH_ENDPOINT=${lib.escapeShellArg cfg.openid.authEndpoint}
+        export OPENID_TOKEN_ENDPOINT=${lib.escapeShellArg cfg.openid.tokenEndpoint}
+        export OPENID_USER_ENDPOINT=${lib.escapeShellArg cfg.openid.userApiEndpoint}
+        export OPENID_BUTTON_TEXT=${lib.escapeShellArg cfg.openid.buttonText}
+        export OPENID_BUTTON_COLOR=${lib.escapeShellArg cfg.openid.buttonColor}
+        ${optionalString (openIdSecretPath != "") ''
+        export OPENID_SECRET_FILE=${lib.escapeShellArg openIdSecretPath}
+        ''}${optionalString (openIdSecretPath == "") ''
+        export OPENID_SECRET=${lib.escapeShellArg cfg.openid.clientSecretFallback}
         ''}
         ${pkgs.python3}/bin/python3 ${updateMattermostScript}
         ${pkgs.coreutils}/bin/mkdir -p /var/lib/mattermost
@@ -461,9 +588,9 @@ in
       '')
     ];
 
-    systemd.services.mattermost.after = mkAfter [ "gitlab-mattermost-oauth.service" ];
+    systemd.services.mattermost.after = mkAfter (lib.optional cfg.gitlab.enable "gitlab-mattermost-oauth.service");
 
-    systemd.services."gitlab-mattermost-oauth" = {
+    systemd.services."gitlab-mattermost-oauth" = lib.mkIf cfg.gitlab.enable {
       description = "Ensure GitLab OAuth client for Mattermost exists";
       wantedBy = [ "multi-user.target" ];
       after = [ "gitlab-db-config.service" "gitlab-workhorse.service" ];
@@ -556,10 +683,9 @@ RUBY
       description = "Configure Mattermost builds channel and GitLab CI notifications";
       wantedBy = [ "multi-user.target" ];
       after = [
-        "gitlab-mattermost-oauth.service"
         "gitlab.service"
         "mattermost.service"
-      ];
+      ] ++ lib.optional cfg.gitlab.enable "gitlab-mattermost-oauth.service";
       requires = [ "gitlab.service" "mattermost.service" ];
       serviceConfig = {
         Type = "oneshot";

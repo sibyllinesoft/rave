@@ -53,6 +53,7 @@ log/
 # Process ID files
 *.pid
 *.lock
+!apps/cli/uv.lock
 
 # -----------------------------------------------------------------------------
 # Docker & Container Artifacts
@@ -89,6 +90,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+!scripts/build/
 
 # Testing
 .pytest_cache/
