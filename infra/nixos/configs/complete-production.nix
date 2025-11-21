@@ -11,6 +11,13 @@ let
     then "/run/secrets/gitlab/db-password"
     else pkgs.writeText "gitlab-db-password" "gitlab-production-password";
   googleOauthClientId = "729118765955-7l2hgo3nrjaiol363cp8avf3m97shjo8.apps.googleusercontent.com";
+  googleOauthClientSecret = "google-oauth-client-secret";
+  googleOauthClientIdFile = if useSecrets
+    then "/run/secrets/authentik/google-client-id"
+    else pkgs.writeText "authentik-google-client-id" googleOauthClientId;
+  googleOauthClientSecretFile = if useSecrets
+    then "/run/secrets/authentik/google-client-secret"
+    else pkgs.writeText "authentik-google-client-secret" googleOauthClientSecret;
   gitlabExternalUrl = "https://localhost:${baseHttpsPort}/gitlab";
   gitlabInternalHttpsUrl = "https://localhost:${baseHttpsPort}/gitlab";
   gitlabInternalHttpUrl = "https://localhost:${baseHttpsPort}/gitlab";
@@ -54,6 +61,14 @@ let
   gitlabApiTokenFile = if useSecrets
     then "/run/secrets/gitlab/api-token"
     else pkgs.writeText "gitlab-api-token" "development-token";
+  githubOauthClientId = "github-client-id";
+  githubOauthClientSecret = "github-client-secret";
+  githubOauthClientIdFile = if useSecrets
+    then "/run/secrets/authentik/github-client-id"
+    else pkgs.writeText "authentik-github-client-id" githubOauthClientId;
+  githubOauthClientSecretFile = if useSecrets
+    then "/run/secrets/authentik/github-client-secret"
+    else pkgs.writeText "authentik-github-client-secret" githubOauthClientSecret;
   outlinePublicUrl = "https://outline.localhost:${baseHttpsPort}/";
   outlineDockerImage = "outlinewiki/outline:latest";
   outlineHostPort = 8310;
@@ -65,6 +80,11 @@ let
   outlineWebhookSecretFile = if useSecrets
     then "/run/secrets/outline/webhook-secret"
     else pkgs.writeText "outline-webhook-secret" outlineWebhookSecret;
+  outlineOidcClientId = "rave-outline";
+  outlineOidcClientSecretFile = if useSecrets
+    then "/run/secrets/outline/oidc-client-secret"
+    else pkgs.writeText "outline-oidc-client-secret" "outline-oidc-secret";
+  outlineIcon = "https://raw.githubusercontent.com/outline/brand/main/logo/outline-logo-mark-only.svg";
   benthosGitlabWebhookSecret = "benthos-gitlab-webhook-secret-d4fe4b589da0417287cc7f51f6d9987b";
   benthosGitlabWebhookSecretFile = if useSecrets
     then "/run/secrets/benthos/gitlab-webhook-secret"
@@ -76,6 +96,10 @@ let
   n8nEncryptionKey = "n8n-encryption-key-2d01b6dba90441e8a6f7ec2af3327ef2";
   n8nBasicAuthPassword = "n8n-basic-admin-password";
   n8nBasePath = "/n8n";
+  n8nOidcClientId = "rave-n8n";
+  n8nOidcClientSecretFile = if useSecrets
+    then "/run/secrets/n8n/oidc-client-secret"
+    else pkgs.writeText "n8n-oidc-client-secret" "n8n-oidc-secret";
   mattermostInternalBaseUrl = "http://127.0.0.1:8065";
   gitlabOidcSlug = "gitlab";
   gitlabOidcClientId = "rave-gitlab";
@@ -118,6 +142,14 @@ let
   authentikDbPasswordFile = if useSecrets
     then "/run/secrets/database/authentik-password"
     else pkgs.writeText "authentik-db-password" authentikDbPassword;
+  authentikGrafanaClientId = "rave-grafana";
+  authentikGrafanaClientSecretFile = if useSecrets
+    then "/run/secrets/grafana/oidc-client-secret"
+    else pkgs.writeText "grafana-oidc-client-secret" "grafana-oidc-secret";
+  penpotOidcClientId = "rave-penpot";
+  penpotOidcClientSecretFile = if useSecrets
+    then "/run/secrets/penpot/oidc-client-secret"
+    else pkgs.writeText "penpot-oidc-client-secret" "penpot-oidc-secret";
   traefikBackendPort = 9443;
   traefikBackendUrl = "http://127.0.0.1:${toString traefikBackendPort}";
   authManagerListenAddr = config.services.rave.auth-manager.listenAddress or ":8088";
@@ -349,6 +381,67 @@ in
           name = "GitLab";
           launchUrl = gitlabExternalUrl;
           description = "GitLab via Authentik";
+        };
+      };
+      grafana = {
+        enable = true;
+        slug = "grafana";
+        displayName = "Grafana";
+        clientId = authentikGrafanaClientId;
+        clientSecretFile = authentikGrafanaClientSecretFile;
+        redirectUris = [ "https://localhost:${baseHttpsPort}/grafana/login/generic_oauth" ];
+        scopes = [ "openid" "profile" "email" ];
+        application = {
+          slug = "grafana";
+          name = "Grafana";
+          launchUrl = "https://localhost:${baseHttpsPort}/grafana/";
+          description = "Grafana via Authentik";
+        };
+      };
+      penpot = {
+        enable = true;
+        slug = "penpot";
+        displayName = "Penpot";
+        clientId = penpotOidcClientId;
+        clientSecretFile = penpotOidcClientSecretFile;
+        redirectUris = [ "${penpotPublicUrl}/auth/oidc/callback" ];
+        scopes = [ "openid" "profile" "email" ];
+        application = {
+          slug = "penpot";
+          name = "Penpot";
+          launchUrl = penpotPublicUrl;
+          description = "Penpot via Authentik";
+        };
+      };
+      outline = {
+        enable = true;
+        slug = "outline";
+        displayName = "Outline";
+        clientId = outlineOidcClientId;
+        clientSecretFile = outlineOidcClientSecretFile;
+        redirectUris = [ "${outlinePublicUrl}auth/oidc.callback" ];
+        scopes = [ "openid" "profile" "email" ];
+        application = {
+          slug = "outline";
+          name = "Outline";
+          launchUrl = outlinePublicUrl;
+          description = "Outline wiki via Authentik";
+          icon = outlineIcon;
+        };
+      };
+      n8n = {
+        enable = true;
+        slug = "n8n";
+        displayName = "n8n";
+        clientId = n8nOidcClientId;
+        clientSecretFile = n8nOidcClientSecretFile;
+        redirectUris = [ "${n8nPublicUrl}/rest/oauth2-credential/callback" ];
+        scopes = [ "openid" "profile" "email" ];
+        application = {
+          slug = "n8n";
+          name = "n8n";
+          launchUrl = n8nPublicUrl;
+          description = "n8n automations via Authentik";
         };
       };
     };

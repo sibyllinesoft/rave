@@ -36,6 +36,9 @@
       allowedEmails = parseCsvEnv "RAVE_AUTHENTIK_ALLOWED_EMAILS";
       allowedDomains = parseCsvEnv "RAVE_AUTHENTIK_ALLOWED_DOMAINS";
     in {
+      # Serve front-door via auth.localtest.me so Authentik/GitLab/Mattermost share the same host
+      services.rave.traefik.host = lib.mkForce "auth.localtest.me";
+
       # Run the “full” stack but keep things working without external SOPS/AGE state.
       services.rave.gitlab.useSecrets = lib.mkForce false;
 
@@ -69,6 +72,9 @@
           profileUrl = "https://api.github.com/user";
         };
       };
+      # Ensure Authentik generates callbacks on the forwarded host/port we expose locally.
+      services.rave.authentik.publicUrl = lib.mkForce "https://auth.localtest.me:18443/";
+      services.rave.authentik.defaultExternalPort = lib.mkForce "18443";
       services.rave.authentik.allowedEmails = allowedEmails;
       services.rave.authentik.allowedDomains = allowedDomains;
 

@@ -106,11 +106,54 @@ let
     { name = "authentik-blueprints"; mount = "/blueprints"; }
   ];
 
+  # Minimal dark theme to keep the login card aligned with the rest of the UI.
+  raveDarkCss = pkgs.writeText "rave-dark.css" ''
+    :root {
+      --rave-login-bg: #0c111b;
+      --rave-card-bg: #0f1725;
+      --rave-card-border: #1c2535;
+      --rave-text: #e8edf7;
+    }
+
+    body, html, #app {
+      background: var(--rave-login-bg) !important;
+      color: var(--rave-text);
+    }
+
+    /* Authentik login card */
+    .pf-c-login__main {
+      background-color: var(--rave-card-bg) !important;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+      border: 1px solid var(--rave-card-border);
+    }
+
+    .pf-c-login__main-header,
+    .pf-c-login__main-body,
+    .pf-c-form-control {
+      background-color: transparent !important;
+      color: var(--rave-text) !important;
+    }
+
+    .pf-c-button.pf-m-primary {
+      background-color: #2563eb;
+      border-color: #2563eb;
+    }
+
+    .pf-c-button.pf-m-secondary {
+      color: var(--rave-text);
+      border-color: var(--rave-card-border);
+    }
+  '';
+
   volumeCreateCommands =
     map (vol: "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker volume create ${vol.name} >/dev/null || true'") dockerVolumeMounts;
 
   volumeRunArgs =
-    lib.concatStrings (map (vol: "            -v ${vol.name}:${vol.mount} \\\n") dockerVolumeMounts);
+    lib.concatStrings (
+      (map (vol: "            -v ${vol.name}:${vol.mount} \\\n") dockerVolumeMounts)
+      ++ [ "            -v ${raveDarkCss}:/templates/rave-dark.css:ro \\\n"
+           "            -v ${raveDarkCss}:/web/dist/custom.css:ro \\\n" ]
+    );
 
   formatDockerEnv = value: "            -e ${value} \\\n";
 
@@ -143,6 +186,8 @@ let
       "AUTHENTIK_ERROR_REPORTING__ENABLED=false"
       "AUTHENTIK_USE_X_FORWARDED_HOST=true"
       "AUTHENTIK_HTTP__TRUSTED_IPS=${lib.escapeShellArg "0.0.0.0/0"}"
+      # Force our login page to pull the custom dark CSS from the templates volume
+      "AUTHENTIK_UI__CUSTOM_CSS=/templates/rave-dark.css"
       "AUTHENTIK_ROOT_DOMAIN=${lib.escapeShellArg cfg.rootDomain}"
       "AUTHENTIK_COOKIE_DOMAIN=${lib.escapeShellArg cookieDomain}"
       "AUTHENTIK_DEFAULT_HTTP_SCHEME=${lib.escapeShellArg publicScheme}"
@@ -279,12 +324,16 @@ let
       slug = "google";
       providerType = "google";
       extraScopes = [ "openid" "email" "profile" ];
+      identificationStages = [ "default-authentication-identification" ];
+      authenticationFlow = "default-authentication-flow";
     };
     github = {
       displayName = "GitHub";
       slug = "github";
       providerType = "github";
       extraScopes = [ "read:user" "user:email" ];
+      identificationStages = [ "default-authentication-identification" ];
+      authenticationFlow = "default-authentication-flow";
     };
   };
 
@@ -623,7 +672,7 @@ let
           "if allowed_emails or allowed_domains:"
           "    emails = {email.lower() for email in allowed_emails}"
           "    domains = {domain.lower() for domain in allowed_domains}"
-          "    expr = f\"\"\""
+          "    expr = f'''"
           "email = ''"
           "try:"
           "    email = (request.context.get('email') or '').lower()"
@@ -639,7 +688,7 @@ let
           "if domain in {domains}:"
           "    return True"
           "return False"
-          "\"\"\""
+          "'''"
           "    policy, _ = ExpressionPolicy.objects.get_or_create(name=\"rave-allowed-users\", defaults={\"expression\": expr, \"is_active\": True})"
           "    policy.expression = expr"
           "    policy.is_active = True"
