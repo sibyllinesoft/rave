@@ -5,6 +5,8 @@
 let
   # Build-time port configuration (can be overridden via flake)
   baseHttpsPort = toString config.services.rave.ports.https;
+  # External host/port clients use to reach the VM front door (QEMU forwards host :18443 → guest :443).
+  externalHttpsBase = "https://auth.localtest.me:18443";
   
   useSecrets = config.services.rave.gitlab.useSecrets;
   gitlabDbPasswordFile = if useSecrets
@@ -19,12 +21,12 @@ let
   googleOauthClientSecretFile = if useSecrets
     then "/run/secrets/authentik/google-client-secret"
     else pkgs.writeText "authentik-google-client-secret" (if googleOauthClientSecret != "" then googleOauthClientSecret else "google-client-secret-placeholder");
-  gitlabExternalUrl = "https://localhost:${baseHttpsPort}/gitlab";
-  gitlabInternalHttpsUrl = "https://localhost:${baseHttpsPort}/gitlab";
-  gitlabInternalHttpUrl = "https://localhost:${baseHttpsPort}/gitlab";
+  gitlabExternalUrl = "${externalHttpsBase}/gitlab";
+  gitlabInternalHttpsUrl = gitlabExternalUrl;
+  gitlabInternalHttpUrl = gitlabExternalUrl;
   gitlabPackage = config.services.gitlab.packages.gitlab;
-  mattermostPublicUrl = "https://localhost:${baseHttpsPort}/mattermost";
-  penpotPublicUrl = "https://localhost:${baseHttpsPort}/penpot";
+  mattermostPublicUrl = "${externalHttpsBase}/mattermost";
+  penpotPublicUrl = "${externalHttpsBase}/penpot";
   localCertDir = config.security.rave.localCerts.certDir or "/var/lib/acme/localhost";
   localCaPath = "${localCertDir}/ca.pem";
   mattermostPath =
@@ -70,7 +72,7 @@ let
   githubOauthClientSecretFile = if useSecrets
     then "/run/secrets/authentik/github-client-secret"
     else pkgs.writeText "authentik-github-client-secret" (if githubOauthClientSecret != "" then githubOauthClientSecret else "github-client-secret-placeholder");
-  outlinePublicUrl = "https://outline.localhost:${baseHttpsPort}/";
+  outlinePublicUrl = "${externalHttpsBase}/outline/";
   outlineDockerImage = "outlinewiki/outline:latest";
   outlineHostPort = 8310;
   outlineDbPassword = "outline-production-password";
@@ -90,7 +92,7 @@ let
   benthosGitlabWebhookSecretFile = if useSecrets
     then "/run/secrets/benthos/gitlab-webhook-secret"
     else pkgs.writeText "benthos-gitlab-webhook-secret" benthosGitlabWebhookSecret;
-  n8nPublicUrl = "https://localhost:${baseHttpsPort}/n8n";
+  n8nPublicUrl = "${externalHttpsBase}/n8n";
   n8nDockerImage = "n8nio/n8n:latest";
   n8nHostPort = 5678;
   n8nDbPassword = "n8n-production-password";
@@ -111,9 +113,9 @@ let
   gitlabOidcIssuer = "${authentikPublicUrl}application/o/${gitlabOidcSlug}/";
   grafanaHttpPort = config.services.rave.monitoring.grafana.httpPort;
   grafanaDbPassword = config.services.rave.monitoring.grafana.database.password;
-  pomeriumRouteHost = "https://localhost:${baseHttpsPort}";
+  pomeriumRouteHost = externalHttpsBase;
   pomeriumBaseUrl = pomeriumRouteHost;
-  pomeriumRedirectUri = "https://localhost:${baseHttpsPort}/oauth2/callback";
+  pomeriumRedirectUri = "${externalHttpsBase}/oauth2/callback";
   pomeriumIdp = config.services.rave.pomerium.idp;
   pomeriumInlineSecret = pomeriumIdp.clientSecret or "";
   pomeriumSecretFile = pomeriumIdp.clientSecretFile;
@@ -121,7 +123,7 @@ let
     path = ../assets/gitlab-schema.sql;
     name = "gitlab-schema.sql";
   };
-  authentikPublicUrl = "https://auth.localtest.me:${baseHttpsPort}/";
+  authentikPublicUrl = "${externalHttpsBase}/";
   authentikHostPort = 9130;
   authentikMetricsPort = 9131;
   authentikDockerArchivePath = ../../../artifacts/docker/authentik-server-2024.6.2.tar;
@@ -161,6 +163,7 @@ let
     in lib.toInt (if maybePort == "" then "8088" else maybePort);
   authManagerLoopback = "http://127.0.0.1:${toString authManagerPort}";
   gitlabRailsRunner = "${config.system.path}/bin/gitlab-rails";
+  traefikHost = "auth.localtest.me";
 
   hasLocalPostgres = config.services.rave.postgresql.enable;
 
@@ -553,7 +556,7 @@ in
 
   services.rave.traefik = {
     enable = true;
-    host = "localhost";
+    host = traefikHost;
     chatDomain = null;
     behindPomerium = config.services.rave.pomerium.enable;
     backendPort = traefikBackendPort;
