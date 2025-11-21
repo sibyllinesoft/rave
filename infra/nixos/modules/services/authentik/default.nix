@@ -281,7 +281,7 @@ let
 
         enrollmentFlow = mkOption {
           type = types.nullOr types.str;
-          default = "default-enrollment-flow";
+          default = "default-source-enrollment";
           description = "Enrollment flow slug to attach to the source (optional).";
         };
 
