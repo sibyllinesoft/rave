@@ -12,9 +12,13 @@ let
   gitlabDbPasswordFile = if useSecrets
     then "/run/secrets/gitlab/db-password"
     else pkgs.writeText "gitlab-db-password" "gitlab-production-password";
-  # Populated from environment to avoid committing secrets; provide defaults only for local dev.
-  googleOauthClientId = lib.mkDefault (builtins.getEnv "GOOGLE_OAUTH_CLIENT_ID");
-  googleOauthClientSecret = lib.mkDefault (builtins.getEnv "GOOGLE_OAUTH_CLIENT_SECRET");
+  # Populated from environment to avoid committing secrets; provide safe placeholders for dev.
+  googleOauthClientId =
+    let val = builtins.getEnv "GOOGLE_OAUTH_CLIENT_ID";
+    in if val != "" then val else "google-client-id-placeholder";
+  googleOauthClientSecret =
+    let val = builtins.getEnv "GOOGLE_OAUTH_CLIENT_SECRET";
+    in if val != "" then val else "google-client-secret-placeholder";
   googleOauthClientIdFile = if useSecrets
     then "/run/secrets/authentik/google-client-id"
     else pkgs.writeText "authentik-google-client-id" (if googleOauthClientId != "" then googleOauthClientId else "google-client-id-placeholder");
@@ -64,8 +68,12 @@ let
   gitlabApiTokenFile = if useSecrets
     then "/run/secrets/gitlab/api-token"
     else pkgs.writeText "gitlab-api-token" "development-token";
-  githubOauthClientId = lib.mkDefault (builtins.getEnv "GITHUB_OAUTH_CLIENT_ID");
-  githubOauthClientSecret = lib.mkDefault (builtins.getEnv "GITHUB_OAUTH_CLIENT_SECRET");
+  githubOauthClientId =
+    let val = builtins.getEnv "GITHUB_OAUTH_CLIENT_ID";
+    in if val != "" then val else "github-client-id-placeholder";
+  githubOauthClientSecret =
+    let val = builtins.getEnv "GITHUB_OAUTH_CLIENT_SECRET";
+    in if val != "" then val else "github-client-secret-placeholder";
   githubOauthClientIdFile = if useSecrets
     then "/run/secrets/authentik/github-client-id"
     else pkgs.writeText "authentik-github-client-id" (if githubOauthClientId != "" then githubOauthClientId else "github-client-id-placeholder");
