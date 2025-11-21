@@ -1160,10 +1160,10 @@ RUBY
 
   services.rave.gitlab = {
     enable = true;
-    host = "localhost";
+    host = traefikHost;
     useSecrets = true;
     publicUrl = gitlabExternalUrl;
-    externalPort = lib.toInt baseHttpsPort;
+    externalPort = 18443;
     databaseSeedFile = gitlabSchemaSeed;
     runner.enable = false;
     oauth = {
