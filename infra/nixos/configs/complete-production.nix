@@ -10,14 +10,15 @@ let
   gitlabDbPasswordFile = if useSecrets
     then "/run/secrets/gitlab/db-password"
     else pkgs.writeText "gitlab-db-password" "gitlab-production-password";
-  googleOauthClientId = "729118765955-7l2hgo3nrjaiol363cp8avf3m97shjo8.apps.googleusercontent.com";
-  googleOauthClientSecret = "google-oauth-client-secret";
+  # Populated from environment to avoid committing secrets; provide defaults only for local dev.
+  googleOauthClientId = lib.mkDefault (builtins.getEnv "GOOGLE_OAUTH_CLIENT_ID");
+  googleOauthClientSecret = lib.mkDefault (builtins.getEnv "GOOGLE_OAUTH_CLIENT_SECRET");
   googleOauthClientIdFile = if useSecrets
     then "/run/secrets/authentik/google-client-id"
-    else pkgs.writeText "authentik-google-client-id" googleOauthClientId;
+    else pkgs.writeText "authentik-google-client-id" (if googleOauthClientId != "" then googleOauthClientId else "google-client-id-placeholder");
   googleOauthClientSecretFile = if useSecrets
     then "/run/secrets/authentik/google-client-secret"
-    else pkgs.writeText "authentik-google-client-secret" googleOauthClientSecret;
+    else pkgs.writeText "authentik-google-client-secret" (if googleOauthClientSecret != "" then googleOauthClientSecret else "google-client-secret-placeholder");
   gitlabExternalUrl = "https://localhost:${baseHttpsPort}/gitlab";
   gitlabInternalHttpsUrl = "https://localhost:${baseHttpsPort}/gitlab";
   gitlabInternalHttpUrl = "https://localhost:${baseHttpsPort}/gitlab";
@@ -61,14 +62,14 @@ let
   gitlabApiTokenFile = if useSecrets
     then "/run/secrets/gitlab/api-token"
     else pkgs.writeText "gitlab-api-token" "development-token";
-  githubOauthClientId = "github-client-id";
-  githubOauthClientSecret = "github-client-secret";
+  githubOauthClientId = lib.mkDefault (builtins.getEnv "GITHUB_OAUTH_CLIENT_ID");
+  githubOauthClientSecret = lib.mkDefault (builtins.getEnv "GITHUB_OAUTH_CLIENT_SECRET");
   githubOauthClientIdFile = if useSecrets
     then "/run/secrets/authentik/github-client-id"
-    else pkgs.writeText "authentik-github-client-id" githubOauthClientId;
+    else pkgs.writeText "authentik-github-client-id" (if githubOauthClientId != "" then githubOauthClientId else "github-client-id-placeholder");
   githubOauthClientSecretFile = if useSecrets
     then "/run/secrets/authentik/github-client-secret"
-    else pkgs.writeText "authentik-github-client-secret" githubOauthClientSecret;
+    else pkgs.writeText "authentik-github-client-secret" (if githubOauthClientSecret != "" then githubOauthClientSecret else "github-client-secret-placeholder");
   outlinePublicUrl = "https://outline.localhost:${baseHttpsPort}/";
   outlineDockerImage = "outlinewiki/outline:latest";
   outlineHostPort = 8310;
@@ -350,6 +351,10 @@ in
       database = config.services.rave.redis.allocations.authentik or 12;
     };
     email.enable = false;
+    oauthSources.google.clientIdFile = lib.mkForce googleOauthClientIdFile;
+    oauthSources.google.clientSecretFile = lib.mkForce googleOauthClientSecretFile;
+    oauthSources.github.clientIdFile = lib.mkForce githubOauthClientIdFile;
+    oauthSources.github.clientSecretFile = lib.mkForce githubOauthClientSecretFile;
     applicationProviders = {
       mattermost = {
         enable = true;
