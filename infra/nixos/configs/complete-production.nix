@@ -600,8 +600,9 @@ in
     enable = true;
     retentionTime = "3d";
     grafana = {
-      domain = "localhost";
-      publicUrl = "https://localhost:${baseHttpsPort}/grafana/";
+      # Serve Grafana on the shared front door host/port
+      domain = traefikHost;
+      publicUrl = "${externalHttpsBase}/grafana/";
       adminUser = "admin";
       adminPassword = "admin123";
       adminPasswordFile = if useSecrets then "/run/secrets/grafana/admin-password" else null;

@@ -853,6 +853,22 @@ let
         };
       }
     ]
+    ++ optionals (authentikEnabled && !authentikSeparateHost) [
+      { "authentik-api" = {
+          rule = "${hostRule host} && ${pathPrefixRule "/api/v3"}";
+          service = "authentik";
+          middlewares = defaultSecurityMiddlewares;
+        };
+      }
+    ]
+    ++ optionals (authentikEnabled && authentikSeparateHost) [
+      { "authentik-api-host" = {
+          rule = "${hostRule authentikHostName} && ${pathPrefixRule "/api/v3"}";
+          service = "authentik";
+          middlewares = defaultSecurityMiddlewares;
+        };
+      }
+    ]
     ++ optionals penpotEnabled [
       { "penpot" = {
           rule = "${hostRule host} && ${pathPrefixRule penpotPath}";

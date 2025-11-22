@@ -326,6 +326,7 @@ let
       extraScopes = [ "openid" "email" "profile" ];
       identificationStages = [ "default-authentication-identification" ];
       authenticationFlow = "default-authentication-flow";
+      enrollmentFlow = "default-source-enrollment";
     };
     github = {
       displayName = "GitHub";
@@ -334,6 +335,7 @@ let
       extraScopes = [ "read:user" "user:email" ];
       identificationStages = [ "default-authentication-identification" ];
       authenticationFlow = "default-authentication-flow";
+      enrollmentFlow = "default-source-enrollment";
     };
   };
 
@@ -648,25 +650,11 @@ let
           ""
           "OAuthSource.objects.filter(managed__startswith=\"rave:oauth:\").exclude(slug__in=managed_slugs).delete()"
           ""
-          "for entry in payload:"
-          "    core_source = CoreSource.objects.filter(slug=entry[\"slug\"]).first()"
-          "    if core_source is None:"
-          "        continue"
-          "    stage_name = f\"rave-oauth-source-{entry['slug']}\""
-          "    stage, _ = SourceStage.objects.get_or_create(name=stage_name, defaults={\"source\": core_source})"
-          "    if stage.source_id != core_source.pk:"
-          "        stage.source = core_source"
-          "        stage.save()"
-          "    flow_slug = entry.get(\"authenticationFlow\") or \"default-authentication-flow\""
-          "    flow = Flow.objects.filter(slug=flow_slug).first()"
-          "    if not flow:"
-          "        continue"
-          "    orders = list(FlowStageBinding.objects.filter(target=flow).values_list(\"order\", flat=True))"
-          "    desired_order = (min(orders) - 10) if orders else 0"
-          "    binding, created = FlowStageBinding.objects.get_or_create(target=flow, stage=stage, defaults={\"order\": desired_order})"
-          "    if not created and binding.order > desired_order:"
-          "        binding.order = desired_order"
-          "        binding.save()"
+  # Rely on the identification stage to present OAuth options; avoid per-source FlowStage bindings that auto-redirect."
+  "for entry in payload:"
+  "    core_source = CoreSource.objects.filter(slug=entry[\"slug\"]).first()"
+  "    if core_source is None:"
+  "        continue"
           ""
           "# Optional allowlist enforcement on core authentication flows"
           "if allowed_emails or allowed_domains:"
@@ -703,7 +691,8 @@ let
           "inner_script = inner_script.replace(\"__ALLOWED_EMAILS__\", json.dumps(allowed_emails))"
           "inner_script = inner_script.replace(\"__ALLOWED_DOMAINS__\", json.dumps(allowed_domains))"
           ""
-          "for attempt in range(12):"
+          # Give migrations ample time to finish so source tables exist.
+          "for attempt in range(24):"
           "    proc = subprocess.run(["
           "        \"${pkgs.docker}/bin/docker\","
           "        \"exec\","
@@ -812,7 +801,7 @@ let
           ""
           "inner_script = inner_template.replace(\"__PAYLOAD__\", json.dumps(payload))"
           ""
-          "for attempt in range(12):"
+          "for attempt in range(24):"
           "    proc = subprocess.run(["
           "        \"${pkgs.docker}/bin/docker\","
           "        \"exec\","

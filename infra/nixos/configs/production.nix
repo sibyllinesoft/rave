@@ -55,6 +55,7 @@
           clientIdFile = googleClientIdFile;
           clientSecretFile = googleClientSecretFile;
           extraScopes = [ "openid" "email" "profile" ];
+          enrollmentFlow = "default-source-enrollment";
           authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth";
           accessTokenUrl = "https://oauth2.googleapis.com/token";
           profileUrl = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -67,6 +68,7 @@
           clientIdFile = githubClientIdFile;
           clientSecretFile = githubClientSecretFile;
           extraScopes = [ "read:user" "user:email" ];
+          enrollmentFlow = "default-source-enrollment";
           authorizationUrl = "https://github.com/login/oauth/authorize";
           accessTokenUrl = "https://github.com/login/oauth/access_token";
           profileUrl = "https://api.github.com/user";
