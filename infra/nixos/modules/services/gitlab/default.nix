@@ -114,7 +114,7 @@ http {
   keepalive_timeout 65;
   map $http_x_forwarded_proto $forwarded_proto {
     default $http_x_forwarded_proto;
-    "" $scheme;
+    "" "https";
   }
 
   map $http_upgrade $connection_upgrade {
@@ -165,6 +165,7 @@ http {
       proxy_connect_timeout 300s;
       proxy_send_timeout 300s;
       proxy_cache_bypass $http_upgrade;
+      proxy_redirect http:// https://;
     }
 
     location ~ ^/gitlab/.*/-/(artifacts|archive|raw)/ {
@@ -203,6 +204,7 @@ http {
       proxy_connect_timeout 300s;
       proxy_send_timeout 300s;
       proxy_cache_bypass $http_upgrade;
+      proxy_redirect http://$http_host/gitlab/ https://$http_host/gitlab/;
     }
 
     location /registry/ {

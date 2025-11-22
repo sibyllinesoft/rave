@@ -539,6 +539,14 @@ let
           };
         };
       }
+      { "gitlab-redirect-https" = {
+          redirectRegex = {
+            regex = "^http://(.*)";
+            replacement = "https://$1";
+            permanent = true;
+          };
+        };
+      }
       { "gitlab-slash-redirect" = {
           redirectRegex = {
             regex = "^(https?://[^/]+/gitlab)$";
@@ -569,6 +577,13 @@ let
     ++ optionals n8nEnabled [
       { "n8n-headers" = {
           headers.customRequestHeaders."X-Forwarded-Prefix" = n8nNormalizedPath;
+        };
+      }
+      { "n8n-strip-prefix" = {
+          stripPrefix = {
+            prefixes = [ n8nNormalizedPath ];
+            forceSlash = true;
+          };
         };
       }
       { "n8n-buffering" = {
@@ -611,6 +626,13 @@ let
     ++ optionals penpotEnabled [
       { "penpot-headers" = {
           headers.customRequestHeaders."X-Forwarded-Prefix" = penpotPath;
+        };
+      }
+      { "penpot-strip-prefix" = {
+          stripPrefix = {
+            prefixes = [ penpotPath ];
+            forceSlash = true;
+          };
         };
       }
     ];
@@ -732,6 +754,7 @@ let
 
   services = mkMerge serviceSets;
 
+  # Everything should go through Authentik first.
   rootService = if authentikEnabled then "authentik" else "dashboard";
 
   routerSets =
@@ -746,13 +769,15 @@ let
       { "gitlab-main" = {
           rule = "${hostRule host} && ${pathPrefixRule "/gitlab"}";
           service = "gitlab";
-          middlewares = defaultSecurityMiddlewares ++ [ "gitlab-headers" "gitlab-buffering" ];
+          middlewares = defaultSecurityMiddlewares ++ [ "gitlab-headers" "gitlab-buffering" "gitlab-redirect-https" ];
+          priority = 80;
         };
       }
       { "gitlab-root-redirect" = {
           rule = "${hostRule host} && ${exactPathRule "/gitlab"}";
           service = "gitlab";
           middlewares = [ "gitlab-slash-redirect" ];
+          priority = 95;
         };
       }
       { "gitlab-registry" = {
@@ -773,6 +798,7 @@ let
           rule = "${hostRule host} && ${pathPrefixRule "/mattermost"}";
           service = "mattermost";
           middlewares = defaultSecurityMiddlewares ++ [ "mattermost-headers" "mattermost-buffering" ];
+          priority = 70;
         };
       }
     ]
@@ -797,7 +823,8 @@ let
       { "n8n" = {
           rule = "${hostRule host} && ${pathPrefixRule n8nNormalizedPath}";
           service = "n8n";
-          middlewares = defaultSecurityMiddlewares ++ [ "n8n-headers" "n8n-buffering" ];
+          middlewares = defaultSecurityMiddlewares ++ [ "n8n-strip-prefix" "n8n-headers" "n8n-buffering" ];
+          priority = 90;
         };
       }
     ]
@@ -806,6 +833,7 @@ let
           rule = "${hostRule host} && ${pathPrefixRule grafanaPath}";
           service = "grafana";
           middlewares = defaultSecurityMiddlewares ++ [ "grafana-headers" ];
+          priority = 75;
         };
       }
       { "prometheus" = {
@@ -828,6 +856,7 @@ let
           rule = "${hostRule host} && ${pathPrefixRule outlinePath}";
           service = "outline";
           middlewares = defaultSecurityMiddlewares ++ [ "outline-headers" ];
+          priority = 45;
         };
       }
     ]
@@ -847,7 +876,7 @@ let
     ]
     ++ optionals (outlineEnabled && outlinePath != "/" && !outlineSeparateHost) [
       { "outline-api" = {
-          rule = "${hostRule host} && ${pathPrefixRule "/api"}";
+          rule = "${hostRule host} && ${pathPrefixRule outlinePath}";
           service = "outline";
           middlewares = defaultSecurityMiddlewares ++ [ "outline-headers" ];
         };
@@ -873,7 +902,8 @@ let
       { "penpot" = {
           rule = "${hostRule host} && ${pathPrefixRule penpotPath}";
           service = "penpot";
-          middlewares = defaultSecurityMiddlewares ++ [ "penpot-headers" ];
+          middlewares = defaultSecurityMiddlewares ++ [ "penpot-strip-prefix" "penpot-headers" ];
+          priority = 85;
         };
       }
     ]
