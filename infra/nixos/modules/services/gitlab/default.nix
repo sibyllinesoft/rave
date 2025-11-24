@@ -989,7 +989,7 @@ in
       };
       script = ''
         set -euo pipefail
-        ${config.services.rave.gitlab.packages.gitlab}/bin/gitlab-rails runner - <<'RUBY'
+        ${gitlabPackage}/bin/gitlab-rails runner - <<'RUBY'
 org = Organizations::Organization.find_by(id: 1)
 if org.nil?
   org = Organizations::Organization.create!(
