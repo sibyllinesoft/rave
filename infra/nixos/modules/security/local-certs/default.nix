@@ -50,7 +50,7 @@ in
 
     commonName = mkOption {
       type = types.str;
-      default = "localhost";
+      default = "auth.localtest.me";
       description = "CN for the generated certificate.";
     };
 
@@ -68,7 +68,7 @@ in
 
     serverSubject = mkOption {
       type = types.str;
-      default = "/C=US/ST=CA/L=SF/O=RAVE/OU=Dev/CN=localhost";
+      default = "/C=US/ST=CA/L=SF/O=RAVE/OU=Dev/CN=auth.localtest.me";
       description = "Subject for the server certificate CSR.";
     };
 
@@ -86,7 +86,7 @@ ST = CA
 L = SF
 O = RAVE
 OU = Dev
-CN = localhost
+CN = auth.localtest.me
 
 [v3_req]
 keyUsage = critical, digitalSignature, keyEncipherment
@@ -94,10 +94,12 @@ extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 
 [alt_names]
-DNS.1 = localhost
-DNS.2 = rave.local
-DNS.3 = *.rave.local
-DNS.4 = outline.localhost
+DNS.1 = auth.localtest.me
+DNS.2 = *.localtest.me
+DNS.3 = localhost
+DNS.4 = rave.local
+DNS.5 = *.rave.local
+DNS.6 = outline.localhost
 IP.1 = 127.0.0.1
 IP.2 = ::1
 '';

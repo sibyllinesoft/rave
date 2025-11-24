@@ -5,8 +5,9 @@
 let
   # Build-time port configuration (can be overridden via flake)
   baseHttpsPort = toString config.services.rave.ports.https;
-  # External host/port clients use to reach the VM front door (QEMU forwards host :18443 → guest :443).
-  externalHttpsBase = "https://auth.localtest.me:18443";
+  # External host/port clients use to reach the VM front door (keep host in sync with Traefik host override).
+  externalHost = config.services.rave.traefik.host or "auth.localtest.me";
+  externalHttpsBase = "https://${externalHost}:${baseHttpsPort}";
   
   useSecrets = config.services.rave.gitlab.useSecrets;
   gitlabDbPasswordFile = if useSecrets
@@ -19,12 +20,14 @@ let
   googleOauthClientSecret =
     let val = builtins.getEnv "GOOGLE_OAUTH_CLIENT_SECRET";
     in if val != "" then val else "google-client-secret-placeholder";
-  googleOauthClientIdFile = if useSecrets
-    then "/run/secrets/authentik/google-client-id"
-    else pkgs.writeText "authentik-google-client-id" (if googleOauthClientId != "" then googleOauthClientId else "google-client-id-placeholder");
-  googleOauthClientSecretFile = if useSecrets
-    then "/run/secrets/authentik/google-client-secret"
-    else pkgs.writeText "authentik-google-client-secret" (if googleOauthClientSecret != "" then googleOauthClientSecret else "google-client-secret-placeholder");
+  # Helper: prefer real secret file, otherwise fall back to env value, then to a safe placeholder.
+  fallbackSecretFile = name: path: value: default:
+    if builtins.pathExists path then path
+    else if value != "" then pkgs.writeText name value
+    else pkgs.writeText name default;
+
+  googleOauthClientIdFile = fallbackSecretFile "authentik-google-client-id" "/run/secrets/authentik/google-client-id" googleOauthClientId "google-client-id-placeholder";
+  googleOauthClientSecretFile = fallbackSecretFile "authentik-google-client-secret" "/run/secrets/authentik/google-client-secret" googleOauthClientSecret "google-client-secret-placeholder";
   gitlabExternalUrl = "${externalHttpsBase}/gitlab";
   gitlabInternalHttpsUrl = gitlabExternalUrl;
   gitlabInternalHttpUrl = gitlabExternalUrl;
@@ -33,6 +36,37 @@ let
   penpotPublicUrl = "${externalHttpsBase}/penpot";
   localCertDir = config.security.rave.localCerts.certDir or "/var/lib/acme/localhost";
   localCaPath = "${localCertDir}/ca.pem";
+  # Keep the generated TLS cert aligned with the public host Traefik serves.
+  localCertSubject = "/C=US/ST=CA/L=SF/O=RAVE/OU=Dev/CN=${externalHost}";
+  localCertSan = ''
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+C = US
+ST = CA
+L = SF
+O = RAVE
+OU = Dev
+CN = ${externalHost}
+
+[v3_req]
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = ${externalHost}
+DNS.2 = *.localtest.me
+DNS.3 = localhost
+DNS.4 = rave.local
+DNS.5 = *.rave.local
+DNS.6 = outline.localhost
+IP.1 = 127.0.0.1
+IP.2 = ::1
+'';
   mattermostPath =
     let
       matchResult = builtins.match "https://[^/]+(.*)" mattermostPublicUrl;
@@ -74,12 +108,8 @@ let
   githubOauthClientSecret =
     let val = builtins.getEnv "GITHUB_OAUTH_CLIENT_SECRET";
     in if val != "" then val else "github-client-secret-placeholder";
-  githubOauthClientIdFile = if useSecrets
-    then "/run/secrets/authentik/github-client-id"
-    else pkgs.writeText "authentik-github-client-id" (if githubOauthClientId != "" then githubOauthClientId else "github-client-id-placeholder");
-  githubOauthClientSecretFile = if useSecrets
-    then "/run/secrets/authentik/github-client-secret"
-    else pkgs.writeText "authentik-github-client-secret" (if githubOauthClientSecret != "" then githubOauthClientSecret else "github-client-secret-placeholder");
+  githubOauthClientIdFile = fallbackSecretFile "authentik-github-client-id" "/run/secrets/authentik/github-client-id" githubOauthClientId "github-client-id-placeholder";
+  githubOauthClientSecretFile = fallbackSecretFile "authentik-github-client-secret" "/run/secrets/authentik/github-client-secret" githubOauthClientSecret "github-client-secret-placeholder";
   outlinePublicUrl = "${externalHttpsBase}/outline/";
   outlineDockerImage = "outlinewiki/outline:latest";
   outlineHostPort = 8310;
@@ -593,7 +623,9 @@ in
   security.rave.localCerts = {
     enable = true;
     certDir = "/var/lib/acme/localhost";
-    commonName = "localhost";
+    commonName = externalHost;
+    serverSubject = localCertSubject;
+    sanConfig = localCertSan;
   };
 
   services.rave.monitoring = {
@@ -1187,6 +1219,7 @@ RUBY
         slug = gitlabOidcSlug;
         scope = "openid profile email";
         issuer = gitlabOidcIssuer;
+        caFile = localCaPath;
       };
     };
   };

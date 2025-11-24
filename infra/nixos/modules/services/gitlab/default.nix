@@ -57,6 +57,7 @@ let
             {
               identifier = clientId;
               redirect_uri = "${publicUrlTrimmed}/users/auth/openid_connect/callback";
+              ssl = { ca_file = authCfg.caFile; };
             }
             // lib.optionalAttrs (secretFile != null) {
               secret = { _secret = secretFile; };
@@ -514,6 +515,11 @@ in
                 type = types.str;
                 description = "OIDC issuer URL exposed by Authentik for this application.";
               };
+              caFile = mkOption {
+                type = types.path;
+                default = "/var/lib/acme/localhost/ca.pem";
+                description = "CA bundle used by GitLab to validate Authentik OIDC over TLS.";
+              };
             };
           });
           default = null;
@@ -940,10 +946,16 @@ in
         CPUQuota = "50%";
         OOMScoreAdjust = "50";
       };
-      environment = {
-        RAILS_RELATIVE_URL_ROOT = "/gitlab";
-        GITLAB_OMNIAUTH_FULL_HOST = cfg.publicUrl;
-      };
+      environment =
+        {
+          RAILS_RELATIVE_URL_ROOT = "/gitlab";
+          GITLAB_OMNIAUTH_FULL_HOST = cfg.publicUrl;
+        }
+        // lib.optionalAttrs (cfg.oauth.provider == "authentik" && cfg.oauth.authentik != null) {
+          SSL_CERT_FILE = cfg.oauth.authentik.caFile;
+          REQUESTS_CA_BUNDLE = cfg.oauth.authentik.caFile;
+          GIT_SSL_CAINFO = cfg.oauth.authentik.caFile;
+        };
       after = mkAfter [
         "postgresql.service"
         redisUnit
