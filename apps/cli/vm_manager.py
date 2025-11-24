@@ -925,14 +925,23 @@ exit
             "-pidfile", str(pidfile)
         ])
 
+        # Add useful debug defaults: headless, serial log, virtio-rng.
+        serial_log = self.platform.get_temp_dir() / f"{company_name}-serial.log"
+
         if env is not None and cmd:
             launcher = Path(cmd[0])
             if launcher.name.startswith("run-"):
                 # Force headless mode and desired memory when using the Nix launcher script
                 cmd.extend([
                     "-display", "none",
-                    "-m", f"{memory_gb}G"
+                    "-m", f"{memory_gb}G",
                 ])
+
+        # Always add serial log + virtio-rng for easier boot debugging and faster entropy
+        cmd.extend([
+            "-serial", f"file:{serial_log}",
+            "-device", "virtio-rng-pci",
+        ])
         
         try:
             subprocess.run(cmd, check=True, env=env)

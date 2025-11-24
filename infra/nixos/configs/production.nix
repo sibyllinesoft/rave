@@ -39,8 +39,10 @@
       # Serve front-door via auth.localtest.me so Authentik/GitLab/Mattermost share the same host
       services.rave.traefik.host = lib.mkForce "auth.localtest.me";
 
-      # Run the “full” stack but keep things working without external SOPS/AGE state.
-      services.rave.gitlab.useSecrets = lib.mkForce false;
+      # Use SOPS secrets so OAuth credentials (Google/GitHub) are injected.
+      services.rave.gitlab.useSecrets = lib.mkForce true;
+      services.rave.gitlab.publicUrl = lib.mkForce "https://auth.localtest.me:8443/gitlab";
+      services.rave.gitlab.externalPort = lib.mkForce 8443;
 
       # Disable Pomerium so Traefik terminates TLS directly (per request).
       services.rave.pomerium.enable = lib.mkForce false;
@@ -75,8 +77,8 @@
         };
       };
       # Ensure Authentik generates callbacks on the forwarded host/port we expose locally.
-      services.rave.authentik.publicUrl = lib.mkForce "https://auth.localtest.me:18443/";
-      services.rave.authentik.defaultExternalPort = lib.mkForce "18443";
+      services.rave.authentik.publicUrl = lib.mkForce "https://auth.localtest.me:8443/";
+      services.rave.authentik.defaultExternalPort = lib.mkForce "8443";
       services.rave.authentik.allowedEmails = allowedEmails;
       services.rave.authentik.allowedDomains = allowedDomains;
 
