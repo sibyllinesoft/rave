@@ -1253,6 +1253,12 @@ in
 ${volumeRunArgs}${commonEnvArgs}
             ${cfg.dockerImage} server
         '';
+        ExecStartPost =
+          lib.optionals (syncOAuthSourcesScript != null || syncOidcApplicationsScript != null) (
+            [ waitForAuthentikContainer ]
+            ++ lib.optional (syncOAuthSourcesScript != null) syncOAuthSourcesScript
+            ++ lib.optional (syncOidcApplicationsScript != null) syncOidcApplicationsScript
+          );
         ExecStop = "${pkgs.docker}/bin/docker stop authentik-server";
       };
     };
