@@ -676,7 +676,7 @@ in
       hookUsername = "gitlab-ci";
     };
     gitlab = {
-      enable = false;
+      enable = true;
       baseUrl = gitlabExternalUrl;
       internalUrl = gitlabInternalHttpUrl;
       apiBaseUrl = "${gitlabExternalUrl}/api/v4";
@@ -687,7 +687,7 @@ in
       applicationName = "RAVE Mattermost";
     };
     openid = {
-      enable = true;
+      enable = false;
       clientId = mattermostGitlabClientId;
       clientSecretFile = mattermostOidcClientSecretFile;
       clientSecretFallback = mattermostGitlabSecretFallback;
