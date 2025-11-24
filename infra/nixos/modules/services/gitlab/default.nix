@@ -971,6 +971,55 @@ in
       OOMScoreAdjust = "100";
     };
 
+    # Ensure a default organization exists so OAuth grants (which default org_id=1) don't FK-fail
+    systemd.services.gitlab-seed-default-organization = {
+      description = "Seed default GitLab organization for OAuth";
+      wantedBy = [ "gitlab.service" ];
+      before = [ "gitlab.service" ];
+      after = [ "gitlab-db-config.service" "postgresql.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        User = "gitlab";
+        Group = "gitlab";
+        TimeoutStartSec = "300s";
+      };
+      environment = {
+        HOME = "/var/gitlab/state/home";
+        RAILS_ENV = "production";
+      };
+      script = ''
+        set -euo pipefail
+        ${gitlabRailsRunner} runner - <<'RUBY'
+org = Organizations::Organization.find_by(id: 1)
+if org.nil?
+  org = Organizations::Organization.create!(
+    id: 1,
+    name: "Default",
+    path: "default",
+    visibility_level: 0 # private
+  )
+  puts "Created default organization ##{org.id}"
+else
+  puts "Default organization already present (##{org.id})"
+end
+
+if ApplicationSetting.respond_to?(:current) && ApplicationSetting.current.respond_to?(:can_create_organization)
+  settings = ApplicationSetting.current
+  if settings.default_organization_id.blank? && settings.respond_to?(:default_organization_id=)
+    settings.default_organization_id = org.id
+    settings.save!
+    puts "Set default_organization_id to #{org.id}"
+  end
+  if settings.respond_to?(:can_create_organization=) && settings.can_create_organization != true
+    settings.can_create_organization = true
+    settings.save!
+    puts "Enabled can_create_organization"
+  end
+end
+RUBY
+      '';
+    };
+
     systemd.services."gitlab-db-config" =
       {
         unitConfig = mkMerge [
