@@ -351,6 +351,8 @@ let
           providerType = source.providerType;
           clientIdFile = source.clientIdFile;
           clientSecretFile = source.clientSecretFile;
+          clientIdEnv = "${lib.toUpper source.slug}_OAUTH_CLIENT_ID";
+          clientSecretEnv = "${lib.toUpper source.slug}_OAUTH_CLIENT_SECRET";
           extraScopes = source.extraScopes;
           identificationStages = source.identificationStages;
           authenticationFlow = source.authenticationFlow;
@@ -587,6 +589,8 @@ let
           "        \"providerType\": entry[\"providerType\"],"
           "        \"clientId\": client_id,"
           "        \"clientSecret\": client_secret,"
+          "        \"clientIdEnv\": entry.get(\"clientIdEnv\"),"
+          "        \"clientSecretEnv\": entry.get(\"clientSecretEnv\"),"
           "        \"extraScopes\": entry.get(\"extraScopes\", []),"
           "        \"identificationStages\": entry.get(\"identificationStages\", []),"
           "        \"authenticationFlow\": entry.get(\"authenticationFlow\"),"
@@ -610,9 +614,7 @@ let
           "django.setup()"
           "from authentik.sources.oauth.models import OAuthSource"
           "from authentik.stages.identification.models import IdentificationStage"
-          "from authentik.enterprise.stages.source.models import SourceStage"
-          "from authentik.core.models import Source as CoreSource"
-          "from authentik.flows.models import Flow, FlowStageBinding"
+          "from authentik.flows.models import Flow"
           "from authentik.policies.expression.models import ExpressionPolicy"
           "from authentik.policies.models import PolicyBinding"
           ""
@@ -638,6 +640,14 @@ let
           ""
           "managed_slugs = []"
           "for entry in payload:"
+          "    # Prefer files; fall back to env vars when files are missing/empty."
+          "    if not entry.get(\"clientId\") and entry.get(\"clientIdEnv\"):"
+          "        entry[\"clientId\"] = os.environ.get(entry[\"clientIdEnv\"], \"\")"
+          "    if not entry.get(\"clientSecret\") and entry.get(\"clientSecretEnv\"):"
+          "        entry[\"clientSecret\"] = os.environ.get(entry[\"clientSecretEnv\"], \"\")"
+          "    if not entry.get(\"clientId\") or not entry.get(\"clientSecret\"):"
+          "        print(f\"[authentik-sync] missing credentials for {entry['slug']} (after env fallback)\", file=sys.stderr)"
+          "        continue"
           "    defaults = {"
           "        \"name\": entry[\"name\"],"
           "        \"provider_type\": entry[\"providerType\"],"
@@ -675,16 +685,6 @@ let
           "    if stage.source_id != core_source.pk:"
           "        stage.source = core_source"
           "        stage.save()"
-          "    flow_slug = entry.get(\"authenticationFlow\") or \"default-authentication-flow\""
-          "    flow = wait_for_flow(flow_slug)"
-          "    if not flow:"
-          "        continue"
-          "    orders = list(FlowStageBinding.objects.filter(target=flow).values_list(\"order\", flat=True))"
-          "    desired_order = (min(orders) - 10) if orders else 0"
-          "    binding, created = FlowStageBinding.objects.get_or_create(target=flow, stage=stage, defaults={\"order\": desired_order})"
-          "    if not created and binding.order > desired_order:"
-          "        binding.order = desired_order"
-          "        binding.save()"
           ""
           "# Optional allowlist enforcement on core authentication flows"
           "if allowed_emails or allowed_domains:"
@@ -869,6 +869,15 @@ PY
     done
     echo "authentik-server container not ready after 5 minutes" >&2
     exit 1
+  '';
+
+  applyDefaultBlueprints = pkgs.writeShellScript "apply-authentik-default-blueprints" ''
+    set -euo pipefail
+    # Apply bundled default blueprints to ensure core flows/stages exist.
+    for f in $(/run/current-system/sw/bin/find /blueprints/default -maxdepth 1 -type f -name '*.yaml' | sort); do
+      echo "[authentik-bootstrap] applying blueprint: $f"
+      ${pkgs.docker}/bin/docker exec authentik-server ak apply_blueprint "$f" >/dev/null
+    done
   '';
 
   commonEnvArgs = lib.removeSuffix "\n" (
@@ -1272,6 +1281,7 @@ ${volumeRunArgs}${commonEnvArgs}
         ExecStartPost =
           lib.optionals (syncOAuthSourcesScript != null || syncOidcApplicationsScript != null) (
             [ waitForAuthentikContainer ]
+            ++ lib.optional true applyDefaultBlueprints
             ++ lib.optional (syncOAuthSourcesScript != null) syncOAuthSourcesScript
             ++ lib.optional (syncOidcApplicationsScript != null) syncOidcApplicationsScript
           );
