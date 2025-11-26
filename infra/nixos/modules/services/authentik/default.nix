@@ -871,6 +871,20 @@ PY
     exit 1
   '';
 
+  waitForAuthentikHealthy = pkgs.writeShellScript "wait-authentik-healthy" ''
+    attempt=0
+    while [ "$attempt" -lt 90 ]; do
+      status=$(${pkgs.docker}/bin/docker inspect --format '{{.State.Health.Status}}' authentik-server 2>/dev/null || true)
+      if [ "$status" = "healthy" ]; then
+        exit 0
+      fi
+      sleep 5
+      attempt=$((attempt + 1))
+    done
+    echo "authentik-server not healthy after 7m30s" >&2
+    exit 1
+  '';
+
   applyDefaultBlueprints = pkgs.writeShellScript "apply-authentik-default-blueprints" ''
     set -euo pipefail
     # Apply bundled default blueprints to ensure core flows/stages exist.
@@ -1278,13 +1292,6 @@ in
 ${volumeRunArgs}${commonEnvArgs}
             ${cfg.dockerImage} server
         '';
-        ExecStartPost =
-          lib.optionals (syncOAuthSourcesScript != null || syncOidcApplicationsScript != null) (
-            [ waitForAuthentikContainer ]
-            ++ lib.optional true applyDefaultBlueprints
-            ++ lib.optional (syncOAuthSourcesScript != null) syncOAuthSourcesScript
-            ++ lib.optional (syncOidcApplicationsScript != null) syncOidcApplicationsScript
-          );
         ExecStop = "${pkgs.docker}/bin/docker stop authentik-server";
       };
     };
@@ -1329,17 +1336,32 @@ ${volumeRunArgs}${commonEnvArgs}
       cfg.dockerImageArchive
     ];
 
+    systemd.services.authentik-apply-blueprints = {
+      description = "Apply Authentik default blueprints";
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "authentik-server.service" ];
+      after = [ "authentik-server.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStartPre = waitForAuthentikHealthy;
+        ExecStart = applyDefaultBlueprints;
+        Restart = "on-failure";
+        RestartSec = 15;
+        TimeoutStartSec = 600;
+      };
+    };
+
     systemd.services.authentik-sync-oauth-sources = lib.mkIf (syncOAuthSourcesScript != null) {
       description = "Synchronize Authentik OAuth sources";
       wantedBy = [ "multi-user.target" ];
       requires = [ "authentik-server.service" ];
-      bindsTo = [ "authentik-server.service" ];
-      after = [ "authentik-server.service" ];
+      after = [ "authentik-apply-blueprints.service" ];
       serviceConfig = {
         Type = "oneshot";
-        ExecStartPre = waitForAuthentikContainer;
+        ExecStartPre = waitForAuthentikHealthy;
         Restart = "on-failure";
-        RestartSec = 10;
+        RestartSec = 15;
+        TimeoutStartSec = 600;
         ExecStart = syncOAuthSourcesScript;
       };
     };
@@ -1348,13 +1370,13 @@ ${volumeRunArgs}${commonEnvArgs}
       description = "Synchronize Authentik OIDC application providers";
       wantedBy = [ "multi-user.target" ];
       requires = [ "authentik-server.service" ];
-      bindsTo = [ "authentik-server.service" ];
-      after = [ "authentik-server.service" ];
+      after = [ "authentik-apply-blueprints.service" ];
       serviceConfig = {
         Type = "oneshot";
-        ExecStartPre = waitForAuthentikContainer;
+        ExecStartPre = waitForAuthentikHealthy;
         Restart = "on-failure";
-        RestartSec = 10;
+        RestartSec = 15;
+        TimeoutStartSec = 600;
         ExecStart = syncOidcApplicationsScript;
       };
     };
