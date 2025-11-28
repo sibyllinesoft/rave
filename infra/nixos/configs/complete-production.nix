@@ -687,7 +687,7 @@ in
       applicationName = "RAVE Mattermost";
     };
     openid = {
-      enable = false;
+      enable = true;
       clientId = mattermostGitlabClientId;
       clientSecretFile = mattermostOidcClientSecretFile;
       clientSecretFallback = mattermostGitlabSecretFallback;

@@ -565,8 +565,11 @@ let
       }
     ]
     ++ optionals mattermostEnabled [
-      { "mattermost-headers" = {
-          headers.customRequestHeaders."X-Forwarded-Prefix" = "/mattermost";
+      { "mattermost-strip-prefix" = {
+          stripPrefix = {
+            prefixes = [ "/mattermost" ];
+            forceSlash = true;
+          };
         };
       }
       { "mattermost-buffering" = {
@@ -797,7 +800,7 @@ let
       { "mattermost-main" = {
           rule = "${hostRule host} && ${pathPrefixRule "/mattermost"}";
           service = "mattermost";
-          middlewares = defaultSecurityMiddlewares ++ [ "mattermost-headers" "mattermost-buffering" ];
+          middlewares = defaultSecurityMiddlewares ++ [ "mattermost-strip-prefix" "mattermost-buffering" ];
           priority = 70;
         };
       }
@@ -807,7 +810,7 @@ let
           rule = "${hostRule host} && ${pathPrefixRule "/mattermost"}";
           service = "mattermost";
           entryPoints = [ "mattermostHttps" ];
-          middlewares = defaultSecurityMiddlewares ++ [ "mattermost-headers" "mattermost-buffering" ];
+          middlewares = defaultSecurityMiddlewares ++ [ "mattermost-strip-prefix" "mattermost-buffering" ];
         };
       }
     ]
@@ -815,7 +818,7 @@ let
       { "mattermost-chat-domain" = {
           rule = hostRule chatDomain;
           service = "mattermost";
-          middlewares = defaultSecurityMiddlewares ++ [ "mattermost-headers" "mattermost-buffering" ];
+          middlewares = defaultSecurityMiddlewares ++ [ "mattermost-strip-prefix" "mattermost-buffering" ];
         };
       }
     ]
