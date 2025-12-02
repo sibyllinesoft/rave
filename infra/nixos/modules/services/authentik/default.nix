@@ -1,43 +1,10 @@
-{ config, pkgs, lib, ... }:
-
-with lib;
+{ config, lib, pkgs, ... }:
 
 let
+  inherit (lib) mkOption mkEnableOption mkIf mkMerge types mkDefault optionalString;
   cfg = config.services.rave.authentik;
 
   pathOrString = types.either types.path types.str;
-
-  capitalize =
-    str:
-    let
-      value = if str == null then "" else str;
-      len = lib.stringLength value;
-    in
-    if len == 0 then ""
-    else
-      let
-        first = lib.toUpper (lib.substring 0 1 value);
-        rest = lib.substring 1 (len - 1) value;
-      in "${first}${rest}";
-
-  redisPlatform = config.services.rave.redis.platform or {};
-  redisAllocations = redisPlatform.allocations or {};
-  redisDbDefault = redisAllocations.authentik or 12;
-
-  redisDb =
-    if cfg.redis.database != null then cfg.redis.database else redisDbDefault;
-  redisUnit = redisPlatform.unit or "redis-main.service";
-  redisDockerHost =
-    if cfg.redis.host != null then cfg.redis.host else redisPlatform.dockerHost or "host.docker.internal";
-  redisPort =
-    if cfg.redis.port != null then cfg.redis.port else redisPlatform.port or 6379;
-
-  postgresDockerHost =
-    if cfg.database.host == "127.0.0.1"
-    then "host.docker.internal"
-    else cfg.database.host;
-
-  trimNewline = "${pkgs.coreutils}/bin/tr -d \"\\n\"";
 
   hostFromUrl = url:
     let matchResult = builtins.match "https?://([^/:]+).*" url;
@@ -47,8 +14,7 @@ let
     let matchResult = builtins.match "([^:]+)://.*" url;
     in if matchResult == null || matchResult == [] then "https" else builtins.head matchResult;
 
-  pathFromUrl =
-    url:
+  pathFromUrl = url:
     let
       normalized = if url == null then "" else if lib.hasSuffix "/" url then url else "${url}/";
       matchResult = builtins.match "https?://[^/]+(.*)" normalized;
@@ -59,1189 +25,20 @@ let
           in if candidate == "" then "/" else candidate;
     in tail;
 
-  publicUrlNormalized =
-    let val = cfg.publicUrl or "";
-    in if lib.hasSuffix "/" val then val else "${val}/";
+  publicHost = hostFromUrl cfg.publicUrl;
+  publicScheme = schemeFromUrl cfg.publicUrl;
+  publicPath = pathFromUrl cfg.publicUrl;
 
-  publicHost = hostFromUrl publicUrlNormalized;
-  publicScheme = schemeFromUrl publicUrlNormalized;
-  publicPath = pathFromUrl publicUrlNormalized;
+  blueprintsPath = cfg.blueprintsPath or ./blueprints;
 
-  cookieDomain =
-    if cfg.cookieDomain != null then cfg.cookieDomain
-    else if publicHost != null then publicHost
-    else cfg.rootDomain;
-
-  secretProvided = value: file: (value != null && value != "") || (file != null);
-
-  readSecretSnippet = name: inline: file:
-    if file != null then ''
-      if [ -s ${lib.escapeShellArg file} ]; then
-        ${name}="$(${pkgs.coreutils}/bin/cat ${lib.escapeShellArg file} | ${trimNewline})"
-      else
-        ${name}=${lib.escapeShellArg (if inline != null then inline else "")}
-      fi
-    '' else ''
-      ${name}=${lib.escapeShellArg (if inline != null then inline else "")}
-    '';
-
-  dbPasswordSqlExpr =
-    if cfg.database.passwordFile != null
-    then "$(${pkgs.coreutils}/bin/cat ${lib.escapeShellArg cfg.database.passwordFile} | ${trimNewline})"
-    else cfg.database.password;
-
-  redisPasswordConfigured =
-    (cfg.redis.password != null && cfg.redis.password != "") || (cfg.redis.passwordFile != null);
-
-  bootstrapTokenConfigured =
-    (cfg.bootstrap.token != null && cfg.bootstrap.token != "") || (cfg.bootstrap.tokenFile != null);
-
-  emailPasswordConfigured =
-    cfg.email.enable && ((cfg.email.password != null && cfg.email.password != "") || (cfg.email.passwordFile != null));
-
-  dockerVolumeMounts = [
-    { name = "authentik-media"; mount = "/media"; }
-    { name = "authentik-templates"; mount = "/templates"; }
-    { name = "authentik-geoip"; mount = "/geoip"; }
-    { name = "authentik-blueprints"; mount = "/blueprints"; }
-  ];
-
-  # Minimal dark theme to keep the login card aligned with the rest of the UI.
-  raveDarkCss = pkgs.writeText "rave-dark.css" ''
-    :root {
-      --rave-login-bg: #0c111b;
-      --rave-card-bg: #0f1725;
-      --rave-card-border: #1c2535;
-      --rave-text: #e8edf7;
-    }
-
-    body, html, #app {
-      background: var(--rave-login-bg) !important;
-      color: var(--rave-text);
-    }
-
-    /* Authentik login card */
-    .pf-c-login__main {
-      background-color: var(--rave-card-bg) !important;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
-      border: 1px solid var(--rave-card-border);
-    }
-
-    .pf-c-login__main-header,
-    .pf-c-login__main-body,
-    .pf-c-form-control {
-      background-color: transparent !important;
-      color: var(--rave-text) !important;
-    }
-
-    .pf-c-button.pf-m-primary {
-      background-color: #2563eb;
-      border-color: #2563eb;
-    }
-
-    .pf-c-button.pf-m-secondary {
-      color: var(--rave-text);
-      border-color: var(--rave-card-border);
-    }
-  '';
-
-  volumeCreateCommands =
-    map (vol: "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker volume create ${vol.name} >/dev/null || true'") dockerVolumeMounts;
-
-  volumeRunArgs =
-    lib.concatStrings (
-      (map (vol: "            -v ${vol.name}:${vol.mount} \\\n") dockerVolumeMounts)
-      ++ [ "            -v ${raveDarkCss}:/templates/rave-dark.css:ro \\\n"
-           "            -v ${raveDarkCss}:/web/dist/custom.css:ro \\\n" ]
-    );
-
-  formatDockerEnv = value: "            -e ${value} \\\n";
-
-  baseEnvLines =
-    [
-      ''AUTHENTIK_SECRET_KEY="$AUTHENTIK_SECRET_KEY"''
-      "AUTHENTIK_BOOTSTRAP_EMAIL=${lib.escapeShellArg cfg.bootstrap.email}"
-      ''AUTHENTIK_BOOTSTRAP_PASSWORD="$AUTHENTIK_BOOTSTRAP_PASSWORD"''
-    ]
-    ++ lib.optionals bootstrapTokenConfigured [
-      ''AUTHENTIK_BOOTSTRAP_TOKEN="$AUTHENTIK_BOOTSTRAP_TOKEN_VALUE"''
-    ]
-    ++ [
-      "AUTHENTIK_POSTGRESQL__HOST=${lib.escapeShellArg postgresDockerHost}"
-      "AUTHENTIK_POSTGRESQL__PORT=${toString cfg.database.port}"
-      "AUTHENTIK_POSTGRESQL__NAME=${lib.escapeShellArg cfg.database.name}"
-      "AUTHENTIK_POSTGRESQL__USER=${lib.escapeShellArg cfg.database.user}"
-      ''AUTHENTIK_POSTGRESQL__PASSWORD="$AUTHENTIK_DB_PASSWORD"''
-      "AUTHENTIK_POSTGRESQL__SSL_MODE=${lib.escapeShellArg cfg.database.sslMode}"
-      "AUTHENTIK_REDIS__HOST=${lib.escapeShellArg redisDockerHost}"
-      "AUTHENTIK_REDIS__PORT=${toString redisPort}"
-      "AUTHENTIK_REDIS__DB=${toString redisDb}"
-    ]
-    ++ lib.optionals redisPasswordConfigured [
-      ''AUTHENTIK_REDIS__PASSWORD="$AUTHENTIK_REDIS_PASSWORD"''
-    ]
-    ++ [
-      "AUTHENTIK_LOG_LEVEL=${lib.escapeShellArg cfg.logLevel}"
-      "AUTHENTIK_DISABLE_UPDATE_CHECK=${boolToString cfg.disableUpdateCheck}"
-      "AUTHENTIK_ERROR_REPORTING__ENABLED=false"
-      "AUTHENTIK_USE_X_FORWARDED_HOST=true"
-      "AUTHENTIK_HTTP__TRUSTED_IPS=${lib.escapeShellArg "0.0.0.0/0"}"
-      # Force our login page to pull the custom dark CSS from the templates volume
-      "AUTHENTIK_UI__CUSTOM_CSS=/templates/rave-dark.css"
-      "AUTHENTIK_ROOT_DOMAIN=${lib.escapeShellArg cfg.rootDomain}"
-      "AUTHENTIK_COOKIE_DOMAIN=${lib.escapeShellArg cookieDomain}"
-      "AUTHENTIK_DEFAULT_HTTP_SCHEME=${lib.escapeShellArg publicScheme}"
-      "AUTHENTIK_DEFAULT_HTTP_HOST=${lib.escapeShellArg (if publicHost != null then publicHost else cfg.rootDomain)}"
-      "AUTHENTIK_DEFAULT_HTTP_PORT=${lib.escapeShellArg cfg.defaultExternalPort}"
-      "AUTHENTIK_ROOT__PATH=${lib.escapeShellArg publicPath}"
-      "AUTHENTIK_DEFAULT_USER__ENABLED=${boolToString cfg.bootstrap.enableDefaultUser}"
-      "AUTHENTIK_EVENTS__STATE__RETENTION_DAYS=${toString cfg.retentionDays}"
-      "TZ=${lib.escapeShellArg (config.time.timeZone or "UTC")}"
-    ];
-
-  emailEnvLines =
-    if cfg.email.enable then
-      [
-        "AUTHENTIK_EMAIL__FROM=${lib.escapeShellArg cfg.email.fromAddress}"
-        "AUTHENTIK_EMAIL__HOST=${lib.escapeShellArg cfg.email.host}"
-        "AUTHENTIK_EMAIL__PORT=${toString cfg.email.port}"
-        "AUTHENTIK_EMAIL__USERNAME=${lib.escapeShellArg cfg.email.username}"
-        "AUTHENTIK_EMAIL__USE_TLS=${boolToString cfg.email.useTls}"
-      ]
-      ++ lib.optionals emailPasswordConfigured [
-        ''AUTHENTIK_EMAIL__PASSWORD="$AUTHENTIK_EMAIL_PASSWORD"''
-      ]
-    else
-      [];
-
-  emailFromNameLine = lib.optionals (cfg.email.fromName != null) [
-    "AUTHENTIK_EMAIL__FROM_NAME=${lib.escapeShellArg cfg.email.fromName}"
-  ];
-
-  extraEnvLines =
-    map (name: "${name}=${lib.escapeShellArg cfg.extraEnv.${name}}") (builtins.attrNames cfg.extraEnv);
-
-  oauthSourceSubmodule = types.submodule (
-    { name, ... }:
-    {
-      options = {
-        enable = mkOption {
-          type = types.bool;
-          default = true;
-          description = "Whether this OAuth source should be managed.";
-        };
-
-        displayName = mkOption {
-          type = types.str;
-          default = capitalize name;
-          description = "Human readable name shown on the Authentik login page.";
-        };
-
-        slug = mkOption {
-          type = types.str;
-          default = name;
-          description = "Unique slug for the source.";
-        };
-
-        providerType = mkOption {
-          type = types.str;
-          default = name;
-          description = "Auth upstream identifier (for example: google, github, oidc).";
-        };
-
-        clientIdFile = mkOption {
-          type = pathOrString;
-          default = "/run/secrets/authentik/${name}-client-id";
-          description = "Path to the file containing the OAuth client ID.";
-        };
-
-        clientSecretFile = mkOption {
-          type = pathOrString;
-          default = "/run/secrets/authentik/${name}-client-secret";
-          description = "Path to the file containing the OAuth client secret.";
-        };
-
-        extraScopes = mkOption {
-          type = types.listOf types.str;
-          default = [];
-          description = "Additional scopes to request beyond the defaults.";
-        };
-
-        identificationStages = mkOption {
-          type = types.listOf types.str;
-          default = [ "default-authentication-identification" ];
-          description = "Identification stage slugs that should display this source.";
-        };
-
-        authenticationFlow = mkOption {
-          type = types.nullOr types.str;
-          default = "default-authentication-flow";
-          description = "Authentication flow slug to attach to the source.";
-        };
-
-        enrollmentFlow = mkOption {
-          type = types.nullOr types.str;
-          default = "default-source-enrollment";
-          description = "Enrollment flow slug to attach to the source (optional).";
-        };
-
-        authorizationUrl = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Override authorization URL for custom providers.";
-        };
-
-        accessTokenUrl = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Override token URL for custom providers.";
-        };
-
-        profileUrl = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Override profile URL for custom providers.";
-        };
-
-        oidcWellKnownUrl = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Optional OIDC discovery URL (used for generic providers).";
-        };
-
-        oidcJwksUrl = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Optional JWKS endpoint override.";
-        };
-      };
-    }
-  );
-
-  oauthSourcesDefault = {
-    google = {
-      displayName = "Google";
-      slug = "google";
-      providerType = "google";
-      extraScopes = [ "openid" "email" "profile" ];
-      identificationStages = [ "default-authentication-identification" ];
-      authenticationFlow = "default-authentication-flow";
-      enrollmentFlow = "default-source-enrollment";
-    };
-    github = {
-      displayName = "GitHub";
-      slug = "github";
-      providerType = "github";
-      extraScopes = [ "read:user" "user:email" ];
-      identificationStages = [ "default-authentication-identification" ];
-      authenticationFlow = "default-authentication-flow";
-      enrollmentFlow = "default-source-enrollment";
-    };
-  };
-
-  enabledOauthSources =
-    lib.filterAttrs (_: source: source.enable) cfg.oauthSources;
-
-  oauthSourceEntries =
-    lib.mapAttrsToList (
-      _: source:
-        {
-          slug = source.slug;
-          name = source.displayName;
-          providerType = source.providerType;
-          clientIdFile = source.clientIdFile;
-          clientSecretFile = source.clientSecretFile;
-          clientIdEnv = "${lib.toUpper source.slug}_OAUTH_CLIENT_ID";
-          clientSecretEnv = "${lib.toUpper source.slug}_OAUTH_CLIENT_SECRET";
-          extraScopes = source.extraScopes;
-          identificationStages = source.identificationStages;
-          authenticationFlow = source.authenticationFlow;
-          enrollmentFlow = source.enrollmentFlow;
-          authorizationUrl = source.authorizationUrl;
-          accessTokenUrl = source.accessTokenUrl;
-          profileUrl = source.profileUrl;
-          oidcWellKnownUrl = source.oidcWellKnownUrl;
-          oidcJwksUrl = source.oidcJwksUrl;
-          managed = "rave:oauth:${source.slug}";
-        }
-    ) enabledOauthSources;
-
-  oauthSourcesManifest =
-    if oauthSourceEntries == [] then null
-    else pkgs.writeText "authentik-oauth-sources.json" (builtins.toJSON oauthSourceEntries);
-
-  applicationProviderSubmodule = types.submodule (
-    { name, ... }:
-    {
-      options = {
-        enable = mkOption {
-          type = types.bool;
-          default = true;
-          description = "Whether to manage this Authentik OAuth2 provider + application.";
-        };
-
-        slug = mkOption {
-          type = types.str;
-          default = name;
-          description = "Slug used for Authentik routes.";
-        };
-
-        displayName = mkOption {
-          type = types.str;
-          default = capitalize name;
-          description = "Display name shown inside Authentik.";
-        };
-
-        clientId = mkOption {
-          type = types.str;
-          description = "OAuth2 client ID presented to downstream apps.";
-        };
-
-        clientSecretFile = mkOption {
-          type = pathOrString;
-          description = "Path containing the OAuth2 client secret.";
-        };
-
-        redirectUris = mkOption {
-          type = types.listOf types.str;
-          description = "Allowed redirect URIs for the application.";
-        };
-
-        scopes = mkOption {
-          type = types.listOf types.str;
-          default = [ "openid" "profile" "email" ];
-          description = "Scopes granted to the downstream application.";
-        };
-
-        includeClaimsInIdToken = mkOption {
-          type = types.bool;
-          default = true;
-          description = "Embed user claims in ID tokens.";
-        };
-
-        propertyMappings = mkOption {
-          type = types.listOf types.str;
-          default = [
-            "goauthentik.io/providers/oauth2/scope-openid"
-            "goauthentik.io/providers/oauth2/scope-email"
-            "goauthentik.io/providers/oauth2/scope-profile"
-          ];
-          description = "Managed property mappings to attach.";
-        };
-
-        issuerMode = mkOption {
-          type = types.enum [ "per_provider" "global" ];
-          default = "per_provider";
-          description = "Issuer mode for the provider.";
-        };
-
-        subMode = mkOption {
-          type = types.enum [ "hashed_user_id" "user_id" "user_uuid" "user_username" "user_email" "user_upn" ];
-          default = "user_email";
-          description = "Subject identifier mode.";
-        };
-
-        clientType = mkOption {
-          type = types.enum [ "confidential" "public" ];
-          default = "confidential";
-          description = "OAuth2 client type.";
-        };
-
-        authorizationFlow = mkOption {
-          type = types.str;
-          default = "default-provider-authorization-explicit-consent";
-          description = "Authorization flow slug to attach.";
-        };
-
-        signingKeyName = mkOption {
-          type = types.nullOr types.str;
-          default = "authentik Internal JWT Certificate";
-          description = "Signing key name used for tokens.";
-        };
-
-        managed = mkOption {
-          type = types.str;
-          default = "rave:application:${name}";
-          description = "Managed identifier prefix for cleanup.";
-        };
-
-        application = mkOption {
-          type = types.submodule {
-            options = {
-              slug = mkOption {
-                type = types.str;
-                default = name;
-                description = "Application slug.";
-              };
-              name = mkOption {
-                type = types.str;
-                default = capitalize name;
-                description = "Application display name.";
-              };
-              launchUrl = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Optional launch URL exposed in the Authentik portal.";
-              };
-              description = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Optional description.";
-              };
-              icon = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Optional icon URL.";
-              };
-              openInNewTab = mkOption {
-                type = types.bool;
-                default = true;
-                description = "Open launch URL in a new tab.";
-              };
-              policyMode = mkOption {
-                type = types.enum [ "any" "all" ];
-                default = "any";
-                description = "Application policy mode.";
-              };
-              group = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Optional Authentik group to bind.";
-              };
-            };
-          };
-          description = "Metadata for the Authentik application.";
-        };
-      };
-    }
-  );
-
-  activeApplicationProviders =
-    lib.filterAttrs (_: provider: provider.enable) cfg.applicationProviders;
-
-  applicationProviderEntries =
-    lib.mapAttrsToList (
-      _: provider:
-        {
-          slug = provider.slug;
-          name = provider.displayName;
-          clientId = provider.clientId;
-          clientSecretFile = toString provider.clientSecretFile;
-          redirectUris = provider.redirectUris;
-          scopes = provider.scopes;
-          includeClaimsInIdToken = provider.includeClaimsInIdToken;
-          propertyMappings = provider.propertyMappings;
-          issuerMode = provider.issuerMode;
-          subMode = provider.subMode;
-          clientType = provider.clientType;
-          authorizationFlow = provider.authorizationFlow;
-          signingKeyName = provider.signingKeyName;
-          application = {
-            slug = provider.application.slug;
-            name = provider.application.name;
-            launchUrl = provider.application.launchUrl;
-            description = provider.application.description;
-            icon = provider.application.icon;
-            openInNewTab = provider.application.openInNewTab;
-            policyMode = provider.application.policyMode;
-            group = provider.application.group;
-          };
-        }
-    ) activeApplicationProviders;
-
-  applicationProvidersManifest =
-    if applicationProviderEntries == [] then null
-    else pkgs.writeText "authentik-oidc-applications.json" (builtins.toJSON applicationProviderEntries);
-
-  syncOAuthSourcesScript =
-    if oauthSourcesManifest == null then null else
-      let
-        allowedEmailsJson = builtins.toJSON cfg.allowedEmails;
-        allowedDomainsJson = builtins.toJSON cfg.allowedDomains;
-        scriptLines = [
-          "#!${pkgs.python3}/bin/python3"
-          "import json"
-          "import pathlib"
-          "import subprocess"
-          "import sys"
-          "import time"
-          ""
-          "manifest_path = pathlib.Path(\"${oauthSourcesManifest}\")"
-          "manifest = json.loads(manifest_path.read_text())"
-          "payload = []"
-          "allowed_emails = json.loads(r'''${allowedEmailsJson}''')"
-          "allowed_domains = json.loads(r'''${allowedDomainsJson}''')"
-          ""
-          "for entry in manifest:"
-          "    client_id_path = pathlib.Path(entry[\"clientIdFile\"])"
-          "    client_secret_path = pathlib.Path(entry[\"clientSecretFile\"])"
-          "    if not client_id_path.exists() or not client_secret_path.exists():"
-          "        print(f\"[authentik-sync] missing credentials for {entry['slug']}\", file=sys.stderr)"
-          "        continue"
-          "    client_id = client_id_path.read_text().strip()"
-          "    client_secret = client_secret_path.read_text().strip()"
-          "    if not client_id or not client_secret:"
-          "        print(f\"[authentik-sync] empty credentials for {entry['slug']}\", file=sys.stderr)"
-          "        continue"
-          "    payload.append({"
-          "        \"slug\": entry[\"slug\"],"
-          "        \"name\": entry[\"name\"],"
-          "        \"providerType\": entry[\"providerType\"],"
-          "        \"clientId\": client_id,"
-          "        \"clientSecret\": client_secret,"
-          "        \"clientIdEnv\": entry.get(\"clientIdEnv\"),"
-          "        \"clientSecretEnv\": entry.get(\"clientSecretEnv\"),"
-          "        \"extraScopes\": entry.get(\"extraScopes\", []),"
-          "        \"identificationStages\": entry.get(\"identificationStages\", []),"
-          "        \"authenticationFlow\": entry.get(\"authenticationFlow\"),"
-          "        \"enrollmentFlow\": entry.get(\"enrollmentFlow\"),"
-          "        \"authorization_url\": entry.get(\"authorizationUrl\"),"
-          "        \"access_token_url\": entry.get(\"accessTokenUrl\"),"
-          "        \"profile_url\": entry.get(\"profileUrl\"),"
-          "        \"oidc_well_known_url\": entry.get(\"oidcWellKnownUrl\"),"
-          "        \"oidc_jwks_url\": entry.get(\"oidcJwksUrl\"),"
-          "        \"managed\": entry.get(\"managed\"),"
-          "    })"
-          ""
-          "if not payload:"
-          "    print(\"[authentik-sync] no OAuth sources to apply\", file=sys.stderr)"
-          "    sys.exit(0)"
-          ""
-          "inner_template = \"\"\"import os"
-          "import json"
-          "import time"
-          "import django"
-          "os.environ.setdefault(\"DJANGO_SETTINGS_MODULE\", \"authentik.root.settings\")"
-          "django.setup()"
-          "from authentik.sources.oauth.models import OAuthSource"
-          "from authentik.stages.identification.models import IdentificationStage"
-          "from authentik.flows.models import Flow"
-          "from authentik.policies.expression.models import ExpressionPolicy"
-          "from authentik.policies.models import PolicyBinding"
-          ""
-          "payload = json.loads(r'''__PAYLOAD__''')"
-          "allowed_emails = json.loads(r'''__ALLOWED_EMAILS__''')"
-          "allowed_domains = json.loads(r'''__ALLOWED_DOMAINS__''')"
-          ""
-          "def wait_for_stage(slug, attempts=12, delay=5):"
-          "    for _ in range(attempts):"
-          "        stage = IdentificationStage.objects.filter(name=slug).first()"
-          "        if stage:"
-          "            return stage"
-          "        time.sleep(delay)"
-          "    return None"
-          ""
-          "def wait_for_flow(slug, attempts=12, delay=5):"
-          "    for _ in range(attempts):"
-          "        flow = Flow.objects.filter(slug=slug).first()"
-          "        if flow:"
-          "            return flow"
-          "        time.sleep(delay)"
-          "    return None"
-          ""
-          "managed_slugs = []"
-          "for entry in payload:"
-          "    # Prefer files; fall back to env vars when files are missing/empty."
-          "    if not entry.get(\"clientId\") and entry.get(\"clientIdEnv\"):"
-          "        entry[\"clientId\"] = os.environ.get(entry[\"clientIdEnv\"], \"\")"
-          "    if not entry.get(\"clientSecret\") and entry.get(\"clientSecretEnv\"):"
-          "        entry[\"clientSecret\"] = os.environ.get(entry[\"clientSecretEnv\"], \"\")"
-          "    if not entry.get(\"clientId\") or not entry.get(\"clientSecret\"):"
-          "        print(f\"[authentik-sync] missing credentials for {entry['slug']} (after env fallback)\", file=sys.stderr)"
-          "        continue"
-          "    defaults = {"
-          "        \"name\": entry[\"name\"],"
-          "        \"provider_type\": entry[\"providerType\"],"
-          "        \"consumer_key\": entry[\"clientId\"],"
-          "        \"consumer_secret\": entry[\"clientSecret\"],"
-          "        \"additional_scopes\": \" \".join(entry.get(\"extraScopes\") or []),"
-          "        \"managed\": entry[\"managed\"],"
-          "        \"enabled\": True,"
-          "    }"
-          "    for field in (\"authorization_url\", \"access_token_url\", \"profile_url\", \"oidc_well_known_url\", \"oidc_jwks_url\"):"
-          "        value = entry.get(field)"
-          "        if value:"
-          "            defaults[field] = value"
-          "    obj, _ = OAuthSource.objects.update_or_create(slug=entry[\"slug\"], defaults=defaults)"
-          "    for attr, flow_slug in ((\"authentication_flow\", entry.get(\"authenticationFlow\")), (\"enrollment_flow\", entry.get(\"enrollmentFlow\"))):"
-          "        if flow_slug:"
-          "            flow = wait_for_flow(flow_slug)"
-          "            if flow:"
-          "                setattr(obj, attr, flow)"
-          "    obj.save()"
-          "    for stage_slug in entry.get(\"identificationStages\") or []:"
-          "        stage = wait_for_stage(stage_slug)"
-          "        if stage:"
-          "            stage.sources.add(obj)"
-          "    managed_slugs.append(obj.slug)"
-          ""
-          "OAuthSource.objects.filter(managed__startswith=\"rave:oauth:\").exclude(slug__in=managed_slugs).delete()"
-          ""
-          "# Optional allowlist enforcement on core authentication flows"
-          "if allowed_emails or allowed_domains:"
-          "    emails = {email.lower() for email in allowed_emails}"
-          "    domains = {domain.lower() for domain in allowed_domains}"
-          "    expr = f'''"
-          "email = ''"
-          "try:"
-          "    email = (request.context.get('email') or '').lower()"
-          "except Exception:"
-          "    pass"
-          "if not email and 'user' in locals() and user:"
-          "    email = (getattr(user, 'email', '') or '').lower()"
-          "if not email:"
-          "    return False"
-          "domain = email.split('@')[-1]"
-          "if email in {emails}:"
-          "    return True"
-          "if domain in {domains}:"
-          "    return True"
-          "return False"
-          "'''"
-          "    policy, _ = ExpressionPolicy.objects.get_or_create(name=\"rave-allowed-users\", defaults={\"expression\": expr, \"is_active\": True})"
-          "    policy.expression = expr"
-          "    policy.is_active = True"
-          "    policy.save()"
-          "    for flow_slug in (\"default-authentication-flow\", \"default-source-authentication\", \"default-authentication-flow-passwordless\"):"
-          "        flow = Flow.objects.filter(slug=flow_slug).first()"
-          "        if flow:"
-          "            PolicyBinding.objects.update_or_create(target=flow, policy=policy, defaults={\"order\": -100, \"negate\": False, \"timeout\": 0})"
-          "\"\"\""
-          ""
-          "inner_script = inner_template.replace(\"__PAYLOAD__\", json.dumps(payload))"
-          "inner_script = inner_script.replace(\"__ALLOWED_EMAILS__\", json.dumps(allowed_emails))"
-          "inner_script = inner_script.replace(\"__ALLOWED_DOMAINS__\", json.dumps(allowed_domains))"
-          ""
-          # Give migrations ample time to finish so source tables exist.
-          "for attempt in range(24):"
-          "    proc = subprocess.run(["
-          "        \"${pkgs.docker}/bin/docker\","
-          "        \"exec\","
-          "        \"-i\","
-          "        \"authentik-server\","
-          "        \"python\","
-          "        \"-\","
-          "    ], input=inner_script, text=True)"
-          "    if proc.returncode == 0:"
-          "        break"
-          "    time.sleep(5)"
-          "else:"
-          "    sys.exit(proc.returncode)"
-        ];
-        scriptText = (lib.concatStringsSep "\n" scriptLines) + "\n";
-      in pkgs.writeScript "sync-authentik-oauth-sources" scriptText;
-
-  syncOidcApplicationsScript =
-    if applicationProvidersManifest == null then null else
-      let
-        scriptLines = [
-          "#!${pkgs.python3}/bin/python3"
-          "import json"
-          "import pathlib"
-          "import subprocess"
-          "import sys"
-          "import time"
-          ""
-          "manifest_path = pathlib.Path(\"${applicationProvidersManifest}\")"
-          "manifest = json.loads(manifest_path.read_text())"
-          "payload = []"
-          ""
-          "for entry in manifest:"
-          "    secret_path = pathlib.Path(entry[\"clientSecretFile\"])"
-          "    if not secret_path.exists():"
-          "        print(f\"[authentik-sync] missing secret for provider {entry['slug']}: {secret_path}\", file=sys.stderr)"
-          "        continue"
-          "    client_secret = secret_path.read_text().strip()"
-          "    if not client_secret:"
-          "        print(f\"[authentik-sync] empty secret for provider {entry['slug']}\", file=sys.stderr)"
-          "        continue"
-          "    payload.append({"
-          "        **entry,"
-          "        \"clientSecret\": client_secret,"
-          "    })"
-          ""
-          "if not payload:"
-          "    print(\"[authentik-sync] no application providers to apply\", file=sys.stderr)"
-          "    sys.exit(0)"
-          ""
-          "inner_template = \"\"\"import json"
-          "import os"
-          "import django"
-          "os.environ.setdefault(\"DJANGO_SETTINGS_MODULE\", \"authentik.root.settings\")"
-          "django.setup()"
-          "from django.db import transaction"
-          "from authentik.providers.oauth2.models import OAuth2Provider"
-          "from authentik.core.models import Application, Group, PropertyMapping"
-          "from authentik.crypto.models import CertificateKeyPair"
-          "from authentik.flows.models import Flow"
-          ""
-          "payload = json.loads(r'''__PAYLOAD__''')"
-          ""
-          "for entry in payload:"
-          "    identifier = entry[\"slug\"]"
-          "    with transaction.atomic():"
-          "        provider, _ = OAuth2Provider.objects.get_or_create(name=entry[\"name\"], defaults={\"client_id\": entry[\"clientId\"]})"
-          "        provider.name = entry[\"name\"]"
-          "        provider.client_type = entry[\"clientType\"]"
-          "        provider.client_id = entry[\"clientId\"]"
-          "        provider.client_secret = entry[\"clientSecret\"]"
-          "        provider.redirect_uris = \"\\\\n\".join(entry[\"redirectUris\"])"
-          "        provider.scope = \" \".join(entry.get(\"scopes\") or [])"
-          "        provider.include_claims_in_id_token = entry[\"includeClaimsInIdToken\"]"
-          "        provider.issuer_mode = entry[\"issuerMode\"]"
-          "        provider.sub_mode = entry[\"subMode\"]"
-          "        flow = Flow.objects.filter(slug=entry[\"authorizationFlow\"]).first()"
-          "        if flow:"
-          "            provider.authorization_flow = flow"
-          "        signing_key_name = entry.get(\"signingKeyName\")"
-          "        if signing_key_name:"
-          "            key = CertificateKeyPair.objects.filter(name=signing_key_name).first()"
-          "            if key:"
-          "                provider.signing_key = key"
-          "        mappings = entry.get(\"propertyMappings\") or []"
-          "        if mappings:"
-          "            provider.property_mappings.set(PropertyMapping.objects.filter(managed__in=mappings))"
-          "        provider.save()"
-          ""
-          "        app_data = entry.get(\"application\") or {}"
-          "        if app_data:"
-          "            application, _ = Application.objects.get_or_create(slug=app_data.get(\"slug\") or identifier, defaults={\"name\": app_data.get(\"name\") or provider.name})"
-          "            application.name = app_data.get(\"name\") or application.name"
-          "            application.provider = provider"
-          "            application.meta_launch_url = app_data.get(\"launchUrl\")"
-          "            application.meta_icon = app_data.get(\"icon\")"
-          "            application.meta_description = app_data.get(\"description\")"
-          "            application.open_in_new_tab = app_data.get(\"openInNewTab\", True)"
-          "            application.policy_engine_mode = app_data.get(\"policyMode\") or application.policy_engine_mode"
-          "            group_name = app_data.get(\"group\")"
-          "            if group_name:"
-          "                group = Group.objects.filter(name=group_name).first()"
-          "                application.group = group"
-          "            application.save()"
-          "\"\"\""
-          ""
-          "inner_script = inner_template.replace(\"__PAYLOAD__\", json.dumps(payload))"
-          ""
-          "for attempt in range(24):"
-          "    proc = subprocess.run(["
-          "        \"${pkgs.docker}/bin/docker\","
-          "        \"exec\","
-          "        \"-i\","
-          "        \"authentik-server\","
-          "        \"python\","
-          "        \"-\","
-          "    ], input=inner_script, text=True)"
-          "    if proc.returncode == 0:"
-          "        break"
-          "    time.sleep(5)"
-          "else:"
-          "    sys.exit(proc.returncode)"
-        ];
-        scriptText = (lib.concatStringsSep "\n" scriptLines) + "\n";
-      in pkgs.writeScript "sync-authentik-oidc-applications" scriptText;
-
-  # Webhook transports for event notifications
-  activeWebhookTransports =
-    lib.filterAttrs (_: transport: transport.enable) cfg.webhookTransports;
-
-  webhookTransportEntries =
-    lib.mapAttrsToList (
-      name: transport:
-        {
-          name = transport.name;
-          webhookUrl = transport.webhookUrl;
-          secretFile = if transport.secretFile != null then toString transport.secretFile else null;
-          secret = transport.secret;
-          sendOnce = transport.sendOnce;
-          events = transport.events;
-          modelFilters = transport.modelFilters;
-        }
-    ) activeWebhookTransports;
-
-  webhookTransportsManifest =
-    if webhookTransportEntries == [] then null
-    else pkgs.writeText "authentik-webhook-transports.json" (builtins.toJSON webhookTransportEntries);
-
-  syncWebhookTransportsScript =
-    if webhookTransportsManifest == null then null else
-      let
-        scriptLines = [
-          "#!${pkgs.python3}/bin/python3"
-          "import json"
-          "import pathlib"
-          "import subprocess"
-          "import sys"
-          "import time"
-          ""
-          "manifest_path = pathlib.Path(\"${webhookTransportsManifest}\")"
-          "manifest = json.loads(manifest_path.read_text())"
-          "payload = []"
-          ""
-          "for entry in manifest:"
-          "    secret = entry.get(\"secret\") or \"\""
-          "    secret_file = entry.get(\"secretFile\")"
-          "    if secret_file:"
-          "        secret_path = pathlib.Path(secret_file)"
-          "        if secret_path.exists():"
-          "            secret = secret_path.read_text().strip()"
-          "    payload.append({"
-          "        \"name\": entry[\"name\"],"
-          "        \"webhookUrl\": entry[\"webhookUrl\"],"
-          "        \"secret\": secret,"
-          "        \"sendOnce\": entry[\"sendOnce\"],"
-          "        \"events\": entry[\"events\"],"
-          "        \"modelFilters\": entry[\"modelFilters\"],"
-          "    })"
-          ""
-          "if not payload:"
-          "    print(\"[authentik-sync] no webhook transports to apply\", file=sys.stderr)"
-          "    sys.exit(0)"
-          ""
-          "inner_template = \"\"\"import json"
-          "import os"
-          "import django"
-          "os.environ.setdefault(\"DJANGO_SETTINGS_MODULE\", \"authentik.root.settings\")"
-          "django.setup()"
-          "from django.db import transaction"
-          "from authentik.events.models import NotificationTransport, NotificationRule, Event"
-          "from authentik.policies.event_matcher.models import EventMatcherPolicy"
-          "from authentik.policies.models import PolicyBinding"
-          ""
-          "payload = json.loads(r'''__PAYLOAD__''')"
-          ""
-          "for entry in payload:"
-          "    name = entry[\"name\"]"
-          "    with transaction.atomic():"
-          "        # Create or update webhook transport"
-          "        transport, _ = NotificationTransport.objects.update_or_create("
-          "            name=name,"
-          "            defaults={"
-          "                \"mode\": \"webhook\","
-          "                \"webhook_url\": entry[\"webhookUrl\"],"
-          "                \"webhook_mapping\": None,  # Use custom body below"
-          "                \"send_once\": entry[\"sendOnce\"],"
-          "            }"
-          "        )"
-          "        print(f\"[authentik-sync] created/updated transport: {name}\")"
-          ""
-          "        # Create event matcher policy for user events"
-          "        policy_name = f\"{name}-user-events\""
-          "        policy, _ = EventMatcherPolicy.objects.update_or_create("
-          "            name=policy_name,"
-          "            defaults={"
-          "                \"action\": None,  # Match multiple actions via rule"
-          "                \"app\": \"authentik.events\","
-          "            }"
-          "        )"
-          "        print(f\"[authentik-sync] created/updated policy: {policy_name}\")"
-          ""
-          "        # Create notification rule"
-          "        rule_name = f\"{name}-rule\""
-          "        rule, created = NotificationRule.objects.get_or_create("
-          "            name=rule_name,"
-          "            defaults={\"severity\": \"notice\"}"
-          "        )"
-          "        rule.transports.add(transport)"
-          "        rule.save()"
-          ""
-          "        # Bind policy to rule"
-          "        PolicyBinding.objects.get_or_create("
-          "            policy=policy,"
-          "            target=rule,"
-          "            defaults={\"enabled\": True, \"order\": 0}"
-          "        )"
-          "        print(f\"[authentik-sync] created/updated rule: {rule_name}\")"
-          ""
-          "# Create webhook body mapping for full event context"
-          "from authentik.events.models import NotificationWebhookMapping"
-          "mapping_name = \"auth-manager-body-mapping\""
-          "mapping_expression = '''return {"
-          "    \"event\": {"
-          "        \"action\": notification.event.action if notification.event else None,"
-          "        \"app\": notification.event.app if notification.event else None,"
-          "        \"model_name\": getattr(notification.event, \"model_name\", \"\") if notification.event else None,"
-          "        \"context\": notification.event.context if notification.event else {},"
-          "        \"user\": {"
-          "            \"pk\": notification.event.user.pk if notification.event and notification.event.user else None,"
-          "            \"email\": notification.event.user.email if notification.event and notification.event.user else \"\","
-          "            \"username\": notification.event.user.username if notification.event and notification.event.user else \"\","
-          "            \"name\": notification.event.user.name if notification.event and notification.event.user else \"\","
-          "        } if notification.event else {},"
-          "        \"created\": notification.event.created.isoformat() if notification.event else None,"
-          "    },"
-          "    \"severity\": notification.severity,"
-          "}'''"
-          "mapping, _ = NotificationWebhookMapping.objects.update_or_create("
-          "    name=mapping_name,"
-          "    defaults={\"expression\": mapping_expression}"
-          ")"
-          "print(f\"[authentik-sync] created/updated webhook body mapping: {mapping_name}\")"
-          ""
-          "# Create header mapping for bearer auth"
-          "for entry in payload:"
-          "    if entry.get(\"secret\"):"
-          "        header_mapping_name = f\"{entry['name']}-header-mapping\""
-          "        header_expression = f'''return {{"
-          "    \"Authorization\": \"Bearer {entry['secret']}\","
-          "    \"Content-Type\": \"application/json\","
-          "}}'''"
-          "        header_mapping, _ = NotificationWebhookMapping.objects.update_or_create("
-          "            name=header_mapping_name,"
-          "            defaults={\"expression\": header_expression}"
-          "        )"
-          "        # Update transport with mappings"
-          "        transport = NotificationTransport.objects.get(name=entry[\"name\"])"
-          "        transport.webhook_mapping = mapping"
-          "        transport.webhook_mapping_header = header_mapping if hasattr(transport, 'webhook_mapping_header') else None"
-          "        transport.save()"
-          "        print(f\"[authentik-sync] configured transport mappings for: {entry['name']}\")"
-          "\"\"\""
-          ""
-          "inner_script = inner_template.replace(\"__PAYLOAD__\", json.dumps(payload))"
-          ""
-          "for attempt in range(24):"
-          "    proc = subprocess.run(["
-          "        \"${pkgs.docker}/bin/docker\","
-          "        \"exec\","
-          "        \"-i\","
-          "        \"authentik-server\","
-          "        \"python\","
-          "        \"-\","
-          "    ], input=inner_script, text=True, capture_output=True)"
-          "    print(proc.stdout)"
-          "    if proc.stderr:"
-          "        print(proc.stderr, file=sys.stderr)"
-          "    if proc.returncode == 0:"
-          "        break"
-          "    time.sleep(5)"
-          "else:"
-          "    sys.exit(proc.returncode)"
-        ];
-        scriptText = (lib.concatStringsSep "\n" scriptLines) + "\n";
-      in pkgs.writeScript "sync-authentik-webhook-transports" scriptText;
-
-  # Proxy providers for ForwardAuth (SSO for apps that don't support OIDC)
-  activeProxyProviders =
-    lib.filterAttrs (_: provider: provider.enable) cfg.proxyProviders;
-
-  proxyProviderEntries =
-    lib.mapAttrsToList (
-      name: provider:
-        {
-          name = provider.name;
-          slug = provider.slug;
-          externalHost = provider.externalHost;
-          mode = provider.mode;
-          authorizationFlow = provider.authorizationFlow;
-          skipPathRegex = provider.skipPathRegex;
-          basicAuthEnabled = provider.basicAuthEnabled;
-          application = {
-            name = provider.application.name;
-            launchUrl = provider.application.launchUrl;
-            description = provider.application.description;
-          };
-          addToOutpost = provider.addToOutpost;
-        }
-    ) activeProxyProviders;
-
-  proxyProvidersManifest =
-    if proxyProviderEntries == [] then null
-    else pkgs.writeText "authentik-proxy-providers.json" (builtins.toJSON proxyProviderEntries);
-
-  syncProxyProvidersScript =
-    if proxyProvidersManifest == null then null else
-      let
-        scriptLines = [
-          "#!${pkgs.python3}/bin/python3"
-          "import json"
-          "import pathlib"
-          "import subprocess"
-          "import sys"
-          "import time"
-          ""
-          "manifest_path = pathlib.Path(\"${proxyProvidersManifest}\")"
-          "manifest = json.loads(manifest_path.read_text())"
-          ""
-          "if not manifest:"
-          "    print(\"[authentik-sync] no proxy providers to apply\", file=sys.stderr)"
-          "    sys.exit(0)"
-          ""
-          "inner_template = \"\"\"import json"
-          "import os"
-          "import django"
-          "os.environ.setdefault(\"DJANGO_SETTINGS_MODULE\", \"authentik.root.settings\")"
-          "django.setup()"
-          "from django.db import transaction"
-          "from authentik.providers.proxy.models import ProxyProvider, ProxyMode"
-          "from authentik.core.models import Application"
-          "from authentik.flows.models import Flow"
-          "from authentik.outposts.models import Outpost, OutpostType"
-          ""
-          "payload = json.loads(r'''__PAYLOAD__''')"
-          ""
-          "# Map mode strings to ProxyMode enum"
-          "mode_map = {"
-          "    'forward_single': ProxyMode.FORWARD_SINGLE,"
-          "    'forward_domain': ProxyMode.FORWARD_DOMAIN,"
-          "    'proxy': ProxyMode.PROXY,"
-          "}"
-          ""
-          "for entry in payload:"
-          "    slug = entry['slug']"
-          "    with transaction.atomic():"
-          "        # Find or create the provider"
-          "        provider, created = ProxyProvider.objects.get_or_create("
-          "            name=entry['name'],"
-          "            defaults={'external_host': entry['externalHost']}"
-          "        )"
-          "        provider.external_host = entry['externalHost']"
-          "        provider.mode = mode_map.get(entry['mode'], ProxyMode.FORWARD_SINGLE)"
-          "        if entry.get('skipPathRegex'):"
-          "            provider.skip_path_regex = entry['skipPathRegex']"
-          "        provider.basic_auth_enabled = entry.get('basicAuthEnabled', False)"
-          ""
-          "        # Set authorization flow"
-          "        flow = Flow.objects.filter(slug=entry['authorizationFlow']).first()"
-          "        if flow:"
-          "            provider.authorization_flow = flow"
-          "        provider.save()"
-          "        print(f\"[authentik-sync] created/updated proxy provider: {entry['name']}\")"
-          ""
-          "        # Create or update application"
-          "        app_data = entry.get('application') or {}"
-          "        app, _ = Application.objects.get_or_create("
-          "            slug=slug,"
-          "            defaults={'name': app_data.get('name') or entry['name']}"
-          "        )"
-          "        app.name = app_data.get('name') or entry['name']"
-          "        app.provider = provider"
-          "        if app_data.get('launchUrl'):"
-          "            app.meta_launch_url = app_data['launchUrl']"
-          "        if app_data.get('description'):"
-          "            app.meta_description = app_data['description']"
-          "        app.save()"
-          "        print(f\"[authentik-sync] created/updated application: {slug}\")"
-          ""
-          "        # Add to embedded outpost if requested"
-          "        if entry.get('addToOutpost', True):"
-          "            # Find or create the embedded outpost"
-          "            outpost = Outpost.objects.filter(type=OutpostType.PROXY, managed__startswith='goauthentik.io/outposts/embedded').first()"
-          "            if not outpost:"
-          "                outpost = Outpost.objects.filter(type=OutpostType.PROXY, name__icontains='embedded').first()"
-          "            if not outpost:"
-          "                outpost = Outpost.objects.filter(type=OutpostType.PROXY).first()"
-          "            if outpost:"
-          "                outpost.providers.add(provider)"
-          "                # Configure authentik_host so the outpost knows where to redirect users"
-          "                authentik_host = entry.get('externalHost', '')"
-          "                if authentik_host and (not outpost._config.get('authentik_host')):"
-          "                    config_dict = outpost._config or {}"
-          "                    config_dict['authentik_host'] = authentik_host"
-          "                    outpost._config = config_dict"
-          "                    outpost.save()"
-          "                    print(f\"[authentik-sync] configured outpost authentik_host: {authentik_host}\")"
-          "                print(f\"[authentik-sync] added {entry['name']} to outpost: {outpost.name}\")"
-          "            else:"
-          "                print(f\"[authentik-sync] warning: no proxy outpost found for {entry['name']}\")"
-          "\"\"\""
-          ""
-          "inner_script = inner_template.replace(\"__PAYLOAD__\", json.dumps(manifest))"
-          ""
-          "for attempt in range(24):"
-          "    proc = subprocess.run(["
-          "        \"${pkgs.docker}/bin/docker\","
-          "        \"exec\","
-          "        \"-i\","
-          "        \"authentik-server\","
-          "        \"python\","
-          "        \"-\","
-          "    ], input=inner_script, text=True, capture_output=True)"
-          "    print(proc.stdout)"
-          "    if proc.stderr:"
-          "        print(proc.stderr, file=sys.stderr)"
-          "    if proc.returncode == 0:"
-          "        break"
-          "    time.sleep(5)"
-          "else:"
-          "    sys.exit(proc.returncode)"
-        ];
-        scriptText = (lib.concatStringsSep "\n" scriptLines) + "\n";
-      in pkgs.writeScript "sync-authentik-proxy-providers" scriptText;
-
-  waitForAuthentikContainer = pkgs.writeShellScript "wait-authentik-container" ''
-    attempt=0
-    while [ "$attempt" -lt 60 ]; do
-      if ${pkgs.docker}/bin/docker ps --format '{{.Names}}' | ${pkgs.gnugrep}/bin/grep -qx authentik-server; then
-        if ${pkgs.docker}/bin/docker exec authentik-server python - <<'PY' >/dev/null 2>&1; then
-import os
-import django
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "authentik.root.settings")
-django.setup()
-from authentik.sources.oauth.models import OAuthSource
-OAuthSource.objects.count()
-PY
-          exit 0
-        fi
-      fi
-      sleep 5
-      attempt=$((attempt + 1))
-    done
-    echo "authentik-server container not ready after 5 minutes" >&2
-    exit 1
-  '';
-
-  waitForAuthentikHealthy = pkgs.writeShellScript "wait-authentik-healthy" ''
-    attempt=0
-    while [ "$attempt" -lt 90 ]; do
-      status=$(${pkgs.docker}/bin/docker inspect --format '{{.State.Health.Status}}' authentik-server 2>/dev/null || true)
-      if [ "$status" = "healthy" ]; then
-        exit 0
-      fi
-      sleep 5
-      attempt=$((attempt + 1))
-    done
-    echo "authentik-server not healthy after 7m30s" >&2
-    exit 1
-  '';
-
-  applyDefaultBlueprints = pkgs.writeShellScript "apply-authentik-default-blueprints" ''
-    set -euo pipefail
-    # Apply bundled default blueprints to ensure core flows/stages exist.
-    for f in $(/run/current-system/sw/bin/find /blueprints/default -maxdepth 1 -type f -name '*.yaml' | sort); do
-      echo "[authentik-bootstrap] applying blueprint: $f"
-      ${pkgs.docker}/bin/docker exec authentik-server ak apply_blueprint "$f" >/dev/null
-    done
-  '';
-
-  commonEnvArgs = lib.removeSuffix "\n" (
-    lib.concatMapStrings formatDockerEnv (
-      baseEnvLines
-      ++ emailEnvLines
-      ++ emailFromNameLine
-      ++ extraEnvLines
-    )
-  );
-
-in
-{
+in {
   options.services.rave.authentik = {
-    enable = mkEnableOption "Authentik identity provider (Dockerized)";
+    enable = mkEnableOption "Authentik identity provider (native NixOS module)";
 
-    dockerImage = mkOption {
-      type = types.str;
-      default = "ghcr.io/goauthentik/server:2024.6.2";
-      description = "Container image tag used for both authentik server and worker.";
-    };
-
-    dockerImageArchive = mkOption {
-      type = types.nullOr types.path;
-      default = null;
-      description = ''
-        Optional path to a `docker save` tarball containing the Authentik image. When provided, the
-        image is loaded from the tarball instead of pulling from the registry, allowing completely offline starts.
-        Generate with `docker pull ${cfg.dockerImage} && docker save ${cfg.dockerImage} > artifacts/docker/authentik.tar`.
-      '';
-      example = ./artifacts/docker/authentik.tar;
+    environmentFile = mkOption {
+      type = types.nullOr pathOrString;
+      default = if config ? sops.secrets then (config.sops.secrets."authentik/env".path or null) else null;
+      description = "Environment file containing AUTHENTIK_* secrets (usually provided by sops-nix).";
     };
 
     publicUrl = mkOption {
@@ -1277,31 +74,13 @@ in
     metricsPort = mkOption {
       type = types.int;
       default = 9131;
-      description = "Loopback port that exposes Authentik metrics (mapped from container port 9300).";
+      description = "Loopback port that exposes Authentik metrics.";
     };
 
     logLevel = mkOption {
       type = types.str;
       default = "info";
-      description = "Log level passed to Authentik (debug, info, warning, error).";
-    };
-
-    disableUpdateCheck = mkOption {
-      type = types.bool;
-      default = true;
-      description = "Disable upstream update checks/telemetry inside the container.";
-    };
-
-    secretKey = mkOption {
-      type = types.nullOr types.str;
-      default = "authentik-development-secret-key";
-      description = "Inline Authentik secret key (ignored when secretKeyFile is set).";
-    };
-
-    secretKeyFile = mkOption {
-      type = types.nullOr pathOrString;
-      default = null;
-      description = "Path to a file containing the Authentik secret key.";
+      description = "Authentik log level.";
     };
 
     bootstrap = {
@@ -1310,31 +89,6 @@ in
         default = "admin@example.com";
         description = "Bootstrap administrator email address.";
       };
-
-      password = mkOption {
-        type = types.nullOr types.str;
-        default = "authentik-admin-password";
-        description = "Bootstrap administrator password (ignored when passwordFile is set).";
-      };
-
-      passwordFile = mkOption {
-        type = types.nullOr pathOrString;
-        default = null;
-        description = "File containing the bootstrap administrator password.";
-      };
-
-      token = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Optional bootstrap token value (ignored when tokenFile is set).";
-      };
-
-      tokenFile = mkOption {
-        type = types.nullOr pathOrString;
-        default = null;
-        description = "Optional file path for the bootstrap token.";
-      };
-
       enableDefaultUser = mkOption {
         type = types.bool;
         default = true;
@@ -1348,73 +102,38 @@ in
         default = "127.0.0.1";
         description = "PostgreSQL host used by Authentik.";
       };
-
       port = mkOption {
         type = types.int;
         default = 5432;
         description = "PostgreSQL port.";
       };
-
       name = mkOption {
         type = types.str;
         default = "authentik";
         description = "Database name used by Authentik.";
       };
-
       user = mkOption {
         type = types.str;
         default = "authentik";
         description = "Database user Authentik authenticates as.";
       };
-
-      password = mkOption {
-        type = types.nullOr types.str;
-        default = "authentik-db-password";
-        description = "Database password (ignored when passwordFile is set).";
-      };
-
-      passwordFile = mkOption {
-        type = types.nullOr pathOrString;
-        default = null;
-        description = "Path to a file containing the database password.";
-      };
-
-      sslMode = mkOption {
-        type = types.str;
-        default = "disable";
-        description = "PostgreSQL SSL mode string.";
-      };
     };
 
     redis = {
       host = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Host accessible from Docker containers for Redis (defaults to redis platform dockerHost).";
+        type = types.str;
+        default = "127.0.0.1";
+        description = "Redis host.";
       };
-
       port = mkOption {
-        type = types.nullOr types.int;
-        default = null;
-        description = "Redis port override (defaults to redis platform port).";
+        type = types.int;
+        default = 6379;
+        description = "Redis port.";
       };
-
       database = mkOption {
-        type = types.nullOr types.int;
-        default = null;
-        description = "Logical Redis database index (defaults to redis.allocations.authentik when set).";
-      };
-
-      password = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Optional Redis password.";
-      };
-
-      passwordFile = mkOption {
-        type = types.nullOr pathOrString;
-        default = null;
-        description = "Optional Redis password file.";
+        type = types.int;
+        default = 12;
+        description = "Redis database number used by Authentik.";
       };
     };
 
@@ -1422,459 +141,168 @@ in
       enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Enable SMTP settings for Authentik email notifications.";
+        description = "Enable SMTP notifications.";
       };
-
-      fromAddress = mkOption {
-        type = types.str;
-        default = "authentik@localhost";
-        description = "Default From address used for Authentik emails.";
-      };
-
-      fromName = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Optional display name for the From header.";
-      };
-
       host = mkOption {
         type = types.str;
-        default = "127.0.0.1";
+        default = "smtp.example.com";
         description = "SMTP host.";
       };
-
       port = mkOption {
         type = types.int;
-        default = 25;
+        default = 587;
         description = "SMTP port.";
       };
-
       username = mkOption {
         type = types.str;
         default = "";
-        description = "SMTP username (optional).";
+        description = "SMTP username (password supplied via environmentFile).";
       };
-
-      password = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "SMTP password (ignored when passwordFile is set).";
-      };
-
-      passwordFile = mkOption {
-        type = types.nullOr pathOrString;
-        default = null;
-        description = "File containing the SMTP password.";
-      };
-
       useTls = mkOption {
         type = types.bool;
-        default = false;
-        description = "Enable STARTTLS/TLS for the SMTP transport.";
+        default = true;
+        description = "Use TLS for SMTP.";
       };
-    };
-
-    retentionDays = mkOption {
-      type = types.int;
-      default = 30;
-      description = "Event log retention window in days.";
-    };
-
-    extraEnv = mkOption {
-      type = types.attrsOf types.str;
-      default = {};
-      description = "Extra environment variables passed to both server and worker containers.";
-    };
-
-    oauthSources = mkOption {
-      type = types.attrsOf oauthSourceSubmodule;
-      default = oauthSourcesDefault;
-      description = ''
-        Declarative OAuth sources (Google, GitHub, etc.) that Authentik should keep in sync.
-        Each entry references client ID/secret files under /run/secrets and will be imported automatically.
-      '';
-    };
-
-    applicationProviders = mkOption {
-      type = types.attrsOf applicationProviderSubmodule;
-      default = {};
-      description = ''
-        Declarative OAuth2 providers/applications (e.g., Mattermost) that Authentik should create automatically.
-        Client secrets are read from the provided file paths on the host and synchronized into Authentik on boot.
-      '';
+      fromAddress = mkOption {
+        type = types.str;
+        default = "noreply@example.com";
+        description = "From address used by Authentik emails.";
+      };
+      fromName = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional display name for email sender.";
+      };
     };
 
     allowedEmails = mkOption {
       type = types.listOf types.str;
       default = [];
-      description = "Optional allowlist of exact email addresses permitted to sign in through Authentik (applied to the default auth flow). Empty list means allow all.";
+      description = "Optional allowlist of user emails allowed to sign in.";
     };
 
     allowedDomains = mkOption {
       type = types.listOf types.str;
       default = [];
-      description = "Optional allowlist of email domains permitted to sign in through Authentik (case-insensitive). Empty list means allow all.";
+      description = "Optional allowlist of domains allowed to sign in.";
     };
 
-    webhookTransports = mkOption {
-      type = types.attrsOf (types.submodule ({ name, ... }: {
-        options = {
-          enable = mkOption {
-            type = types.bool;
-            default = true;
-            description = "Whether this webhook transport should be managed.";
-          };
-
-          name = mkOption {
-            type = types.str;
-            default = name;
-            description = "Display name for the webhook transport.";
-          };
-
-          webhookUrl = mkOption {
-            type = types.str;
-            description = "URL to send webhook notifications to.";
-          };
-
-          secret = mkOption {
-            type = types.nullOr types.str;
-            default = null;
-            description = "Bearer token secret for webhook authentication (use secretFile in production).";
-          };
-
-          secretFile = mkOption {
-            type = types.nullOr pathOrString;
-            default = null;
-            description = "File containing the bearer token secret for webhook authentication.";
-          };
-
-          sendOnce = mkOption {
-            type = types.bool;
-            default = false;
-            description = "Only send notification once, regardless of how many users are involved.";
-          };
-
-          events = mkOption {
-            type = types.listOf types.str;
-            default = [ "model_created" "model_updated" "login" ];
-            description = "Event actions to trigger this webhook.";
-          };
-
-          modelFilters = mkOption {
-            type = types.listOf types.str;
-            default = [ "authentik_core.user" ];
-            description = "Model filters for which events to notify (e.g., authentik_core.user).";
-          };
-        };
-      }));
+    extraSettings = mkOption {
+      type = types.attrsOf types.anything;
       default = {};
-      description = ''
-        Declarative webhook transports for Authentik event notifications.
-        Used to notify external services (like auth-manager) when users are created/updated.
-      '';
+      description = "Free-form Authentik settings merged into generated config.";
     };
 
-    proxyProviders = mkOption {
-      type = types.attrsOf (types.submodule ({ name, ... }: {
-        options = {
-          enable = mkOption {
-            type = types.bool;
-            default = true;
-            description = "Whether this proxy provider should be managed.";
-          };
+    nginx = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Whether to expose Authentik through the built-in nginx helper.";
+      };
+      enableACME = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable ACME for the nginx helper.";
+      };
+      host = mkOption {
+        type = types.str;
+        default = mkDefault "auth.localtest.me";
+        description = "Hostname served by the nginx helper.";
+      };
+    };
 
-          name = mkOption {
-            type = types.str;
-            default = capitalize name;
-            description = "Display name for the proxy provider.";
-          };
+    blueprintsPath = mkOption {
+      type = types.path;
+      default = ./blueprints;
+      description = "Path containing Authentik blueprint YAML files to apply declaratively.";
+    };
+  };
 
-          slug = mkOption {
-            type = types.str;
-            default = name;
-            description = "Slug for the application.";
-          };
+  config = mkIf cfg.enable (mkMerge [
+    {
+      assertions = [{
+        assertion = cfg.environmentFile != null;
+        message = "services.rave.authentik.environmentFile must be set (usually a sops-nix secret).";
+      }];
 
-          externalHost = mkOption {
-            type = types.str;
-            description = "External host URL that users access (e.g., https://example.com).";
-          };
-
-          mode = mkOption {
-            type = types.enum [ "forward_single" "forward_domain" "proxy" ];
-            default = "forward_single";
-            description = "Proxy mode: forward_single for single app, forward_domain for domain-wide, proxy for full proxy.";
-          };
-
-          authorizationFlow = mkOption {
-            type = types.str;
-            default = "default-provider-authorization-implicit-consent";
-            description = "Authorization flow slug to use.";
-          };
-
-          skipPathRegex = mkOption {
-            type = types.nullOr types.str;
-            default = null;
-            description = "Regex pattern for paths to skip authentication (e.g., '^/api/v4/.*').";
-          };
-
-          basicAuthEnabled = mkOption {
-            type = types.bool;
-            default = false;
-            description = "Allow basic authentication passthrough.";
-          };
-
-          application = mkOption {
-            type = types.submodule {
-              options = {
-                name = mkOption {
-                  type = types.str;
-                  default = capitalize name;
-                  description = "Application display name.";
-                };
-                launchUrl = mkOption {
-                  type = types.nullOr types.str;
-                  default = null;
-                  description = "Optional launch URL for the application.";
-                };
-                description = mkOption {
-                  type = types.nullOr types.str;
-                  default = null;
-                  description = "Application description.";
-                };
-              };
+      services.authentik = {
+        enable = true;
+        environmentFile = cfg.environmentFile;
+        nginx = {
+          enable = cfg.nginx.enable;
+          enableACME = cfg.nginx.enableACME;
+          host = cfg.nginx.host;
+        };
+        settings = mkMerge [
+          {
+            log_level = cfg.logLevel;
+            default_user_enabled = cfg.bootstrap.enableDefaultUser;
+            default_http_scheme = publicScheme;
+            default_http_host = if publicHost != null then publicHost else cfg.rootDomain;
+            default_http_port = cfg.defaultExternalPort;
+            root_domain = cfg.rootDomain;
+            cookie_domain = if cfg.cookieDomain != null then cfg.cookieDomain else if publicHost != null then publicHost else cfg.rootDomain;
+            avatars = "gravatar";
+            disable_startup_analytics = true;
+            listen = {
+              http = "0.0.0.0:${toString cfg.hostPort}";
+              metrics = "0.0.0.0:${toString cfg.metricsPort}";
             };
-            default = {};
-            description = "Application metadata.";
-          };
+            postgresql = {
+              host = cfg.database.host;
+              port = cfg.database.port;
+              name = cfg.database.name;
+              user = cfg.database.user;
+            };
+            redis = {
+              host = cfg.redis.host;
+              port = cfg.redis.port;
+              db = cfg.redis.database;
+            };
+            email = mkIf cfg.email.enable (mkMerge [
+              {
+                host = cfg.email.host;
+                port = cfg.email.port;
+                username = cfg.email.username;
+                use_tls = cfg.email.useTls;
+                from = cfg.email.fromAddress;
+              }
+              (mkIf (cfg.email.fromName != null) { from_name = cfg.email.fromName; })
+            ]);
+          }
+          cfg.extraSettings
+        ];
+      };
 
-          addToOutpost = mkOption {
-            type = types.bool;
-            default = true;
-            description = "Automatically add this provider to the embedded outpost.";
-          };
+      systemd.services.authentik-apply-blueprints = {
+        description = "Apply Authentik blueprints declaratively";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "authentik-worker.service" "authentik.service" ];
+        requires = [ "authentik.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          User = "authentik";
+          WorkingDirectory = "/var/lib/authentik";
         };
-      }));
-      default = {};
-      description = ''
-        Declarative proxy providers for Authentik forward auth.
-        Used for applications that need SSO but don't support OAuth/OIDC natively.
-        The embedded outpost provides ForwardAuth endpoints at /outpost.goauthentik.io/auth/traefik.
-      '';
-    };
-  };
-
-  config = mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = secretProvided cfg.secretKey cfg.secretKeyFile;
-        message = "services.rave.authentik.secretKey or secretKeyFile must be provided.";
-      }
-      {
-        assertion = secretProvided cfg.database.password cfg.database.passwordFile;
-        message = "services.rave.authentik.database.password or passwordFile must be provided.";
-      }
-      {
-        assertion = secretProvided cfg.bootstrap.password cfg.bootstrap.passwordFile;
-        message = "services.rave.authentik.bootstrap.password or passwordFile must be provided.";
-      }
-      {
-        assertion = !(cfg.email.enable && cfg.email.username != "" && !secretProvided cfg.email.password cfg.email.passwordFile);
-        message = "services.rave.authentik.email.password or passwordFile must be set when email is enabled with a username.";
-      }
-    ];
-
-    services.postgresql.ensureDatabases = lib.mkAfter [ cfg.database.name ];
-    services.postgresql.ensureUsers = lib.mkAfter [
-      { name = cfg.database.user; ensureDBOwnership = true; }
-    ];
-    systemd.services.postgresql.postStart = lib.mkAfter ''
-      ${pkgs.postgresql}/bin/psql -U postgres -c "ALTER USER ${cfg.database.user} PASSWORD '${dbPasswordSqlExpr}';" || true
-    '';
-
-    systemd.services."docker-pull-authentik" = {
-      description = "Pre-pull Authentik Docker image";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "docker.service" ];
-      requires = [ "docker.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        Restart = "on-failure";
-        RestartSec = 30;
-        ExecStart = pkgs.writeShellScript "authentik-prefetch-image" ''
+        path = [ pkgs.findutils pkgs.gnused pkgs.coreutils pkgs.authentik ];
+        script = ''
           set -euo pipefail
-
-          ${lib.optionalString (cfg.dockerImageArchive != null) ''
-            if [ ! -r ${cfg.dockerImageArchive} ]; then
-              echo "Authentik image archive missing at ${cfg.dockerImageArchive}" >&2
-              exit 1
-            fi
-            echo "Loading Authentik Docker image from ${cfg.dockerImageArchive} ..."
-            ${pkgs.docker}/bin/docker load -i ${cfg.dockerImageArchive} >/dev/null
-          ''}
-          ${lib.optionalString (cfg.dockerImageArchive == null) ''
-            echo "Pulling Authentik Docker image ${cfg.dockerImage} ..."
-            ${pkgs.docker}/bin/docker pull ${cfg.dockerImage}
-          ''}
+          if [ ! -d ${blueprintsPath} ]; then
+            echo "[authentik-blueprints] no blueprints directory at ${blueprintsPath}, skipping"
+            exit 0
+          fi
+          found=false
+          for f in ${blueprintsPath}/*.yaml ${blueprintsPath}/*.yml; do
+            if [ ! -f "$f" ]; then continue; fi
+            found=true
+            echo "[authentik-blueprints] applying $f"
+            ak apply_blueprint "$f"
+          done
+          if [ "$found" = false ]; then
+            echo "[authentik-blueprints] no blueprint files to apply"
+          fi
         '';
       };
-    };
-
-    systemd.services.authentik-server = {
-      description = "Authentik server";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" "docker.service" "postgresql.service" redisUnit "docker-pull-authentik.service" ];
-      requires = [ "docker.service" "postgresql.service" redisUnit "docker-pull-authentik.service" ];
-      wants =
-        [ "authentik-worker.service" ]
-        ++ lib.optional (syncOAuthSourcesScript != null) "authentik-sync-oauth-sources.service"
-        ++ lib.optional (syncOidcApplicationsScript != null) "authentik-sync-oidc-applications.service";
-      serviceConfig = {
-        Type = "simple";
-        Restart = "on-failure";
-        RestartSec = 5;
-        ExecStartPre =
-          [
-            "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker rm -f authentik-server >/dev/null 2>&1 || true'"
-          ]
-          ++ volumeCreateCommands;
-        ExecStart = pkgs.writeShellScript "authentik-server-start" ''
-          set -euo pipefail
-
-          ${readSecretSnippet "AUTHENTIK_SECRET_KEY" cfg.secretKey cfg.secretKeyFile}
-          ${readSecretSnippet "AUTHENTIK_DB_PASSWORD" cfg.database.password cfg.database.passwordFile}
-          ${readSecretSnippet "AUTHENTIK_BOOTSTRAP_PASSWORD" cfg.bootstrap.password cfg.bootstrap.passwordFile}
-          ${optionalString bootstrapTokenConfigured (readSecretSnippet "AUTHENTIK_BOOTSTRAP_TOKEN_VALUE" cfg.bootstrap.token cfg.bootstrap.tokenFile)}
-          ${optionalString redisPasswordConfigured (readSecretSnippet "AUTHENTIK_REDIS_PASSWORD" cfg.redis.password cfg.redis.passwordFile)}
-          ${optionalString emailPasswordConfigured (readSecretSnippet "AUTHENTIK_EMAIL_PASSWORD" cfg.email.password cfg.email.passwordFile)}
-
-          exec ${pkgs.docker}/bin/docker run \
-            --rm \
-            --name authentik-server \
-            --add-host host.docker.internal:host-gateway \
-            -p 127.0.0.1:${toString cfg.hostPort}:9000 \
-            -p 127.0.0.1:${toString cfg.metricsPort}:9300 \
-${volumeRunArgs}${commonEnvArgs}
-            ${cfg.dockerImage} server
-        '';
-        ExecStop = "${pkgs.docker}/bin/docker stop authentik-server";
-      };
-    };
-
-    systemd.services.authentik-worker = {
-      description = "Authentik worker";
-      wantedBy = lib.mkForce [];
-      partOf = [ "authentik-server.service" ];
-      after = [ "authentik-server.service" ];
-      requires = [ "authentik-server.service" ];
-      serviceConfig = {
-        Type = "simple";
-        Restart = "on-failure";
-        RestartSec = 5;
-        ExecStartPre =
-          [
-            "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker rm -f authentik-worker >/dev/null 2>&1 || true'"
-          ]
-          ++ volumeCreateCommands;
-        ExecStart = pkgs.writeShellScript "authentik-worker-start" ''
-          set -euo pipefail
-
-          ${readSecretSnippet "AUTHENTIK_SECRET_KEY" cfg.secretKey cfg.secretKeyFile}
-          ${readSecretSnippet "AUTHENTIK_DB_PASSWORD" cfg.database.password cfg.database.passwordFile}
-          ${readSecretSnippet "AUTHENTIK_BOOTSTRAP_PASSWORD" cfg.bootstrap.password cfg.bootstrap.passwordFile}
-          ${optionalString bootstrapTokenConfigured (readSecretSnippet "AUTHENTIK_BOOTSTRAP_TOKEN_VALUE" cfg.bootstrap.token cfg.bootstrap.tokenFile)}
-          ${optionalString redisPasswordConfigured (readSecretSnippet "AUTHENTIK_REDIS_PASSWORD" cfg.redis.password cfg.redis.passwordFile)}
-          ${optionalString emailPasswordConfigured (readSecretSnippet "AUTHENTIK_EMAIL_PASSWORD" cfg.email.password cfg.email.passwordFile)}
-
-          exec ${pkgs.docker}/bin/docker run \
-            --rm \
-            --name authentik-worker \
-            --add-host host.docker.internal:host-gateway \
-${volumeRunArgs}${commonEnvArgs}
-            ${cfg.dockerImage} worker
-        '';
-        ExecStop = "${pkgs.docker}/bin/docker stop authentik-worker";
-      };
-    };
-
-    system.extraDependencies = lib.optionals (cfg.dockerImageArchive != null) [
-      cfg.dockerImageArchive
-    ];
-
-    systemd.services.authentik-apply-blueprints = {
-      description = "Apply Authentik default blueprints";
-      wantedBy = [ "multi-user.target" ];
-      requires = [ "authentik-server.service" ];
-      after = [ "authentik-server.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStartPre = waitForAuthentikHealthy;
-        ExecStart = applyDefaultBlueprints;
-        Restart = "on-failure";
-        RestartSec = 15;
-        TimeoutStartSec = 600;
-      };
-    };
-
-    systemd.services.authentik-sync-oauth-sources = lib.mkIf (syncOAuthSourcesScript != null) {
-      description = "Synchronize Authentik OAuth sources";
-      wantedBy = [ "multi-user.target" ];
-      requires = [ "authentik-server.service" ];
-      after = [ "authentik-apply-blueprints.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStartPre = waitForAuthentikHealthy;
-        Restart = "on-failure";
-        RestartSec = 15;
-        TimeoutStartSec = 600;
-        ExecStart = syncOAuthSourcesScript;
-      };
-    };
-
-    systemd.services.authentik-sync-oidc-applications = lib.mkIf (syncOidcApplicationsScript != null) {
-      description = "Synchronize Authentik OIDC application providers";
-      wantedBy = [ "multi-user.target" ];
-      requires = [ "authentik-server.service" ];
-      after = [ "authentik-apply-blueprints.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStartPre = waitForAuthentikHealthy;
-        Restart = "on-failure";
-        RestartSec = 15;
-        TimeoutStartSec = 600;
-        ExecStart = syncOidcApplicationsScript;
-      };
-    };
-
-    systemd.services.authentik-sync-webhook-transports = lib.mkIf (syncWebhookTransportsScript != null) {
-      description = "Synchronize Authentik webhook transports for auth-manager";
-      wantedBy = [ "multi-user.target" ];
-      requires = [ "authentik-server.service" ];
-      after = [ "authentik-apply-blueprints.service" "authentik-sync-oidc-applications.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStartPre = waitForAuthentikHealthy;
-        Restart = "on-failure";
-        RestartSec = 15;
-        TimeoutStartSec = 600;
-        ExecStart = syncWebhookTransportsScript;
-      };
-    };
-
-    systemd.services.authentik-sync-proxy-providers = lib.mkIf (syncProxyProvidersScript != null) {
-      description = "Synchronize Authentik proxy providers for ForwardAuth SSO";
-      wantedBy = [ "multi-user.target" ];
-      requires = [ "authentik-server.service" ];
-      after = [ "authentik-apply-blueprints.service" "authentik-sync-oidc-applications.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStartPre = waitForAuthentikHealthy;
-        Restart = "on-failure";
-        RestartSec = 15;
-        TimeoutStartSec = 600;
-        ExecStart = syncProxyProvidersScript;
-      };
-    };
-  };
+    }
+  ]);
 }

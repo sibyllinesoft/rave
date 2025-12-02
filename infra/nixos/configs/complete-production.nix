@@ -116,7 +116,6 @@ IP.2 = ::1
   githubOauthClientSecretFile = if useSecrets then "/run/secrets/authentik/github-client-secret"
     else fallbackSecretFile "authentik-github-client-secret" "/run/secrets/authentik/github-client-secret" githubOauthClientSecret "github-client-secret-placeholder";
   outlinePublicUrl = "${externalHttpsBase}/outline/";
-  outlineDockerImage = "outlinewiki/outline:latest";
   outlineHostPort = 8310;
   outlineDbPassword = "outline-production-password";
   outlineSecretKey = "outline-secret-key-4c8d8a4c9f004aa4868b9e19767b2e8e";
@@ -136,7 +135,6 @@ IP.2 = ::1
     then "/run/secrets/benthos/gitlab-webhook-secret"
     else pkgs.writeText "benthos-gitlab-webhook-secret" benthosGitlabWebhookSecret;
   n8nPublicUrl = "${externalHttpsBase}/n8n";
-  n8nDockerImage = "n8nio/n8n:latest";
   n8nHostPort = 5678;
   n8nDbPassword = "n8n-production-password";
   n8nEncryptionKey = "n8n-encryption-key-2d01b6dba90441e8a6f7ec2af3327ef2";
@@ -337,15 +335,18 @@ in
   services.rave.outline = {
     enable = true;
     publicUrl = outlinePublicUrl;
-    dockerImage = outlineDockerImage;
     hostPort = outlineHostPort;
     dbPassword = outlineDbPassword;
-    dbPasswordFile = null;
+    dbPasswordFile = if useSecrets then "/run/secrets/outline/db-password" else null;
+    dbHost = "127.0.0.1";
+    dbPort = 5432;
     secretKey = outlineSecretKey;
-    secretKeyFile = null;
+    secretKeyFile = if useSecrets then "/run/secrets/outline/secret-key" else null;
     utilsSecret = outlineUtilsSecret;
-    utilsSecretFile = null;
+    utilsSecretFile = if useSecrets then "/run/secrets/outline/utils-secret" else null;
     redisDb = outlineRedisDb;
+    redisHost = "127.0.0.1";
+    redisPort = 6379;
     webhook = {
       enable = true;
       endpoint = "http://127.0.0.1:4195/hooks/outline";
@@ -357,9 +358,11 @@ in
       clientId = outlineOidcClientId;
       clientSecretFile = outlineOidcClientSecretFile;
       displayName = "Authentik";
-      authUrl = "${authentikPublicUrl}application/o/authorize/";
+      authUrl = "${authentikPublicUrl}application/o/outline/authorize/";
       tokenUrl = "${authentikPublicUrl}application/o/token/";
       userInfoUrl = "${authentikPublicUrl}application/o/userinfo/";
+      scopes = "openid profile email";
+      usernameClaim = "email";
     };
   };
 
@@ -376,10 +379,11 @@ in
   services.rave.n8n = {
     enable = true;
     publicUrl = n8nPublicUrl;
-    dockerImage = n8nDockerImage;
     hostPort = n8nHostPort;
     dbPassword = n8nDbPassword;
     dbPasswordFile = if useSecrets then "/run/secrets/database/n8n-password" else null;
+    dbHost = "127.0.0.1";
+    dbPort = 5432;
     encryptionKey = n8nEncryptionKey;
     basicAuthPassword = n8nBasicAuthPassword;
     basePath = n8nBasePath;
@@ -388,9 +392,10 @@ in
       clientId = n8nOidcClientId;
       clientSecretFile = n8nOidcClientSecretFile;
       issuerUrl = "${authentikPublicUrl}application/o/${n8nOidcSlug}/";
-      authUrl = "${authentikPublicUrl}application/o/authorize/";
+      authUrl = "${authentikPublicUrl}application/o/${n8nOidcSlug}/authorize/";
       tokenUrl = "${authentikPublicUrl}application/o/token/";
       userInfoUrl = "${authentikPublicUrl}application/o/userinfo/";
+      scopes = "openid profile email";
     };
   };
 
