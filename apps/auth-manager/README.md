@@ -1,72 +1,256 @@
 # Auth Manager
 
-Auth Manager is a lightweight Go service that sits *behind* Pomerium. Pomerium continues to own the OAuth/OIDC contract; once a user is authenticated it forwards signed identity headers (and the JWT assertion) to Auth Manager. Auth Manager's job is to take that identity context, mint or update \"shadow\" local accounts in community-edition applications (Mattermost, etc.), and short-circuit their legacy login flows.
+Auth Manager is a lightweight Go service that provides SSO bridging between Authentik and applications (like Mattermost) that don't natively support federated identity.
 
-## Current skeleton
+## Architecture
 
-- HTTP server with `/healthz`, `/api/v1/shadow-users`, `/bridge/mattermost`, and JWT helper endpoints (`/api/v1/tokens/*`) for downstream services.
-- Minimal Mattermost REST client that can upsert users + mint sessions (requires an admin/bot token).
-- In-memory shadow user store plus placeholder data model.
-- Environment-driven configuration so the service can run inside the RAVE VM or locally.
-- Graceful shutdown wiring and structured logging scaffolding.
+Auth-manager supports two modes of operation:
 
-## Quick start
+### Mode 1: Webhook-based Pre-provisioning
+
+```
+Authentik (IdP)
+     │
+     │ webhook (user created/updated/login)
+     ▼
+┌─────────────────┐
+│  Auth Manager   │──→ Shadow Store (PostgreSQL)
+│                 │
+│                 │──→ Mattermost API (user created)
+└─────────────────┘
+```
+
+Users are pre-provisioned to Mattermost when they sign up in Authentik.
+They still need to click "Login with Authentik" in Mattermost.
+
+### Mode 2: ForwardAuth Auto-login (Full SSO)
+
+```
+User ──→ Traefik ──→ Authentik Outpost ──→ Auth Manager ──→ Mattermost
+              │            │                     │
+              │      (forward-auth)        (forward-auth)
+              │            │                     │
+              │     X-Authentik-Email      Set-Cookie:
+              │     X-Authentik-Name       MMAUTHTOKEN
+              │                            MMUSERID
+              └──────────────────────────────────────────→ Mattermost
+                                                (with session cookies)
+```
+
+This provides true SSO where users are automatically logged into Mattermost
+after authenticating with Authentik - no additional login required.
+
+## Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/healthz` | GET | Liveness probe |
+| `/readyz` | GET | Readiness probe (checks shadow store) |
+| `/webhook/authentik` | POST | Receives Authentik webhook notifications |
+| `/auth/mattermost` | GET | ForwardAuth endpoint for Mattermost session injection |
+| `/api/v1/sync` | POST | Manual user sync trigger |
+| `/api/v1/shadow-users` | GET | List all shadow users |
+| `/metrics` | GET | Prometheus metrics |
+
+## Configuration
+
+Environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AUTH_MANAGER_LISTEN_ADDR` | HTTP listen address | `:8088` |
+| `AUTH_MANAGER_MATTERMOST_URL` | Public Mattermost URL | `https://localhost:8443/mattermost` |
+| `AUTH_MANAGER_MATTERMOST_INTERNAL_URL` | Internal Mattermost API URL | `http://127.0.0.1:8065` |
+| `AUTH_MANAGER_MATTERMOST_ADMIN_TOKEN` | Mattermost admin/bot token | _(required)_ |
+| `AUTH_MANAGER_WEBHOOK_SECRET` | Secret for validating Authentik webhooks | _(auto-generated)_ |
+| `AUTH_MANAGER_DATABASE_URL` | PostgreSQL connection string | _(in-memory if empty)_ |
+
+All `_TOKEN` and `_SECRET` variables also support `_FILE` suffix for reading from files.
+
+## Quick Start
 
 ```bash
-# from the repo root
+# From repo root
 nix develop
 
 cd apps/auth-manager
-cp .env.example .env  # optional, set environment variables
-go test ./...
-GO111MODULE=on go run ./cmd/auth-manager
+cp .env.example .env  # Edit with your values
+go run ./cmd/auth-manager
 ```
 
-> ℹ️ The `nix develop` shell unsets any conflicting `GOROOT/GOPATH` values and
-> points `GOPATH` at `.gopath/`, avoiding the `runExitHooks redeclared` build
-> failure that occurs with older host Go toolchains.
+## Setup for Full SSO (Mode 2)
 
-Environment variables (all optional today):
+Full SSO requires:
 
-| Variable | Description | Default |
-| --- | --- | --- |
-| `AUTH_MANAGER_LISTEN_ADDR` | HTTP listen address | `:8088` |
-| `AUTH_MANAGER_MATTERMOST_URL` | Public Mattermost URL users visit through Pomerium (used for cookie domain/path) | `https://localhost:8443/mattermost` |
-| `AUTH_MANAGER_MATTERMOST_INTERNAL_URL` | Direct HTTP URL used to proxy traffic into Mattermost | `http://127.0.0.1:8065` |
-| `AUTH_MANAGER_SOURCE_IDP` | Friendly name for the upstream IdP | `gitlab` |
-| `AUTH_MANAGER_SIGNING_KEY` / `_FILE` | HMAC key for issuing Auth Manager JWTs | randomly generated at boot |
-| `AUTH_MANAGER_DATABASE_URL` | If set, enable the PostgreSQL-backed shadow store (standard DSN) | _(empty)_ |
-| `AUTH_MANAGER_MATTERMOST_ADMIN_TOKEN` / `_FILE` | Personal access token (or bot token) with rights to create users + sessions | _(empty)_ |
-| `AUTH_MANAGER_POMERIUM_SHARED_SECRET` / `_FILE` | Shared secret that matches the one configured in Pomerium so we can verify `X-Pomerium-Jwt-Assertion` | _none (required)_ |
+1. **Authentik Proxy Provider** - Create a proxy provider for Mattermost in Authentik
+2. **Authentik Outpost** - Deploy the embedded outpost for forward-auth
+3. **Traefik Configuration** - Chain the forward-auth middlewares
 
-## Pomerium forwarding contract
+### NixOS Declarative Configuration (Recommended)
 
-1. Configure the relevant Pomerium policy/route so that requests are first sent to Auth Manager (e.g., `/bridge/mattermost`).  
-2. Pomerium must attach `X-Pomerium-Jwt-Assertion` and the `X-Pomerium-Claim-*` headers. Auth Manager validates the JWT with the shared secret above and records the identity in its shadow-user store.
-3. Auth Manager responds with JSON describing the shadow user plus the Mattermost session token (`MMAUTHTOKEN`) that the caller can convert into cookies before redirecting the browser to Mattermost.
+When using the RAVE NixOS modules, full SSO is configured automatically. Add to your configuration:
 
-## Token bridging API
+```nix
+services.rave.authentik = {
+  enable = true;
+  # ... other authentik config ...
 
-- `POST /api/v1/tokens/issue` (requires a valid Pomerium assertion) — body `{ "subject": "...", "audience": ["service"], "ttl_seconds": 300, "claims": { ... } }`. The subject defaults to the authenticated user. Returns the signed JWT plus its expiry timestamp.
-- `POST /api/v1/tokens/validate` (same auth) — body `{ "token": "..." }`. Returns the verified claims if the token checks out.
+  # Proxy provider for ForwardAuth SSO
+  proxyProviders = {
+    mattermost-sso = {
+      enable = true;
+      name = "Mattermost SSO";
+      slug = "mattermost-sso";
+      externalHost = "https://your-domain.com:8443";
+      mode = "forward_single";
+      authorizationFlow = "default-provider-authorization-implicit-consent";
+      skipPathRegex = "^/(api/v4/(websocket|users/login)|static/).*";
+      application = {
+        name = "Mattermost (SSO)";
+        launchUrl = "https://your-domain.com:8443/mattermost";
+        description = "Mattermost with ForwardAuth SSO";
+      };
+      addToOutpost = true;
+    };
+  };
+};
 
-Tokens are signed with `AUTH_MANAGER_SIGNING_KEY` (HS256) and are independent from Pomerium's shared secret so key rotation can happen without touching the proxy.
+services.rave.auth-manager = {
+  enable = true;
+  mattermost = {
+    url = "https://your-domain.com:8443/mattermost";
+    internalUrl = "http://127.0.0.1:8065";
+    adminTokenFile = "/run/secrets/auth-manager/mattermost-admin-token";
+  };
+};
+```
 
-## Operational endpoints
+The NixOS modules automatically:
+- Create the Authentik proxy provider and add it to the embedded outpost
+- Configure Traefik middlewares: `authentik-forward-auth` → `mattermost-auth`
+- Chain the middlewares on the Mattermost route
 
-- `GET /healthz` — lightweight liveness probe.
-- `GET /readyz` — readiness probe that confirms the configured shadow store responds (PostgreSQL ping when enabled).
-- `GET /metrics` — Prometheus exposition (`auth_manager_tokens_issued_total`, `auth_manager_mattermost_sessions_total`, etc.).
+### Manual Configuration
 
-## Roadmap hooks
+If not using NixOS, configure manually:
 
-- Wire `/api/v1/oauth/exchange` to consume OAuth callbacks.
-- Synchronize generated shadow identities into Mattermost via its REST API.
-- Emit short-lived session tokens that Pomerium (or Traefik forward-auth) can validate.
-- Persist state in PostgreSQL or Redis instead of the in-memory map provided here.
+#### Step 1: Create Authentik Proxy Provider
 
-## Handoff notes
+In Authentik Admin:
+1. Go to **Applications > Providers**
+2. Create a **Proxy Provider**:
+   - Name: `mattermost-proxy`
+   - Authorization flow: `default-provider-authorization-implicit-consent`
+   - Mode: `Forward auth (single application)`
+   - External host: `https://your-domain.com`
 
-- See `TODO.md` in this directory for the current implementation plan, status checkpoints, and sequencing for the next agent.
-- Pomerium is now the sole upstream identity broker; Auth Manager should never call GitLab/Google directly. Instead, extend the bridge endpoints so they can manipulate downstream apps once Pomerium calls in with a verified identity.
-- Local Go toolchain on this host currently fails before compilation (`runExitHooks redeclared`); consider using `nix develop` or a containerized Go 1.21 toolchain until the system compiler is repaired.
+#### Step 2: Create Authentik Application
+
+1. Go to **Applications > Applications**
+2. Create application:
+   - Name: `Mattermost`
+   - Slug: `mattermost`
+   - Provider: Select `mattermost-proxy`
+
+#### Step 3: Configure Outpost
+
+1. Go to **Applications > Outposts**
+2. Edit the embedded outpost or create a new one
+3. Add the `mattermost` application to the outpost
+
+#### Step 4: Traefik Configuration
+
+Configure two ForwardAuth middlewares in order:
+
+```yaml
+# traefik dynamic config
+http:
+  middlewares:
+    authentik-forward-auth:
+      forwardAuth:
+        address: "http://127.0.0.1:9130/outpost.goauthentik.io/auth/traefik"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - X-Authentik-Username
+          - X-Authentik-Groups
+          - X-Authentik-Email
+          - X-Authentik-Name
+          - X-Authentik-Uid
+
+    mattermost-auth:
+      forwardAuth:
+        address: "http://127.0.0.1:8088/auth/mattermost"
+        authRequestHeaders:
+          - X-Authentik-Email
+          - X-Authentik-Username
+          - X-Authentik-Name
+          - Cookie
+        addAuthCookiesToResponse:
+          - MMAUTHTOKEN
+          - MMUSERID
+
+  routers:
+    mattermost:
+      rule: "Host(`your-domain.com`) && PathPrefix(`/mattermost`)"
+      middlewares:
+        - authentik-forward-auth
+        - mattermost-auth
+        - mattermost-strip-prefix
+      service: mattermost
+```
+
+## Authentik Webhook Setup (Mode 1)
+
+For pre-provisioning users via webhooks:
+
+1. In Authentik Admin, go to **Events > Transports**
+2. Create a new **Webhook** transport:
+   - Name: `auth-manager`
+   - Webhook URL: `http://auth-manager:8088/webhook/authentik`
+3. Go to **Events > Rules**
+4. Create a notification rule binding the transport to user events
+
+## Manual Sync
+
+You can manually trigger a user sync via the API:
+
+```bash
+curl -X POST http://localhost:8088/api/v1/sync \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "name": "Test User", "username": "testuser"}'
+```
+
+## Metrics
+
+- `auth_manager_webhooks_received_total` - Number of webhook events received
+- `auth_manager_users_provisioned_total` - Number of users provisioned to downstream services
+
+## Development
+
+```bash
+# Run tests
+go test ./...
+
+# Build binary
+go build -o auth-manager ./cmd/auth-manager
+```
+
+## Secrets Configuration
+
+Add to `config/secrets.yaml`:
+
+```yaml
+auth-manager:
+  webhook-secret: <generate-random-secret>
+  mattermost-admin-token: <mattermost-personal-access-token>
+```
+
+Generate a webhook secret:
+```bash
+openssl rand -base64 32
+```
+
+Get Mattermost admin token:
+1. Log into Mattermost as admin
+2. Go to Profile > Security > Personal Access Tokens
+3. Create a token with `create_user` and `manage_system` permissions

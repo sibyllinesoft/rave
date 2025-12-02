@@ -840,6 +840,334 @@ let
         scriptText = (lib.concatStringsSep "\n" scriptLines) + "\n";
       in pkgs.writeScript "sync-authentik-oidc-applications" scriptText;
 
+  # Webhook transports for event notifications
+  activeWebhookTransports =
+    lib.filterAttrs (_: transport: transport.enable) cfg.webhookTransports;
+
+  webhookTransportEntries =
+    lib.mapAttrsToList (
+      name: transport:
+        {
+          name = transport.name;
+          webhookUrl = transport.webhookUrl;
+          secretFile = if transport.secretFile != null then toString transport.secretFile else null;
+          secret = transport.secret;
+          sendOnce = transport.sendOnce;
+          events = transport.events;
+          modelFilters = transport.modelFilters;
+        }
+    ) activeWebhookTransports;
+
+  webhookTransportsManifest =
+    if webhookTransportEntries == [] then null
+    else pkgs.writeText "authentik-webhook-transports.json" (builtins.toJSON webhookTransportEntries);
+
+  syncWebhookTransportsScript =
+    if webhookTransportsManifest == null then null else
+      let
+        scriptLines = [
+          "#!${pkgs.python3}/bin/python3"
+          "import json"
+          "import pathlib"
+          "import subprocess"
+          "import sys"
+          "import time"
+          ""
+          "manifest_path = pathlib.Path(\"${webhookTransportsManifest}\")"
+          "manifest = json.loads(manifest_path.read_text())"
+          "payload = []"
+          ""
+          "for entry in manifest:"
+          "    secret = entry.get(\"secret\") or \"\""
+          "    secret_file = entry.get(\"secretFile\")"
+          "    if secret_file:"
+          "        secret_path = pathlib.Path(secret_file)"
+          "        if secret_path.exists():"
+          "            secret = secret_path.read_text().strip()"
+          "    payload.append({"
+          "        \"name\": entry[\"name\"],"
+          "        \"webhookUrl\": entry[\"webhookUrl\"],"
+          "        \"secret\": secret,"
+          "        \"sendOnce\": entry[\"sendOnce\"],"
+          "        \"events\": entry[\"events\"],"
+          "        \"modelFilters\": entry[\"modelFilters\"],"
+          "    })"
+          ""
+          "if not payload:"
+          "    print(\"[authentik-sync] no webhook transports to apply\", file=sys.stderr)"
+          "    sys.exit(0)"
+          ""
+          "inner_template = \"\"\"import json"
+          "import os"
+          "import django"
+          "os.environ.setdefault(\"DJANGO_SETTINGS_MODULE\", \"authentik.root.settings\")"
+          "django.setup()"
+          "from django.db import transaction"
+          "from authentik.events.models import NotificationTransport, NotificationRule, Event"
+          "from authentik.policies.event_matcher.models import EventMatcherPolicy"
+          "from authentik.policies.models import PolicyBinding"
+          ""
+          "payload = json.loads(r'''__PAYLOAD__''')"
+          ""
+          "for entry in payload:"
+          "    name = entry[\"name\"]"
+          "    with transaction.atomic():"
+          "        # Create or update webhook transport"
+          "        transport, _ = NotificationTransport.objects.update_or_create("
+          "            name=name,"
+          "            defaults={"
+          "                \"mode\": \"webhook\","
+          "                \"webhook_url\": entry[\"webhookUrl\"],"
+          "                \"webhook_mapping\": None,  # Use custom body below"
+          "                \"send_once\": entry[\"sendOnce\"],"
+          "            }"
+          "        )"
+          "        print(f\"[authentik-sync] created/updated transport: {name}\")"
+          ""
+          "        # Create event matcher policy for user events"
+          "        policy_name = f\"{name}-user-events\""
+          "        policy, _ = EventMatcherPolicy.objects.update_or_create("
+          "            name=policy_name,"
+          "            defaults={"
+          "                \"action\": None,  # Match multiple actions via rule"
+          "                \"app\": \"authentik.events\","
+          "            }"
+          "        )"
+          "        print(f\"[authentik-sync] created/updated policy: {policy_name}\")"
+          ""
+          "        # Create notification rule"
+          "        rule_name = f\"{name}-rule\""
+          "        rule, created = NotificationRule.objects.get_or_create("
+          "            name=rule_name,"
+          "            defaults={\"severity\": \"notice\"}"
+          "        )"
+          "        rule.transports.add(transport)"
+          "        rule.save()"
+          ""
+          "        # Bind policy to rule"
+          "        PolicyBinding.objects.get_or_create("
+          "            policy=policy,"
+          "            target=rule,"
+          "            defaults={\"enabled\": True, \"order\": 0}"
+          "        )"
+          "        print(f\"[authentik-sync] created/updated rule: {rule_name}\")"
+          ""
+          "# Create webhook body mapping for full event context"
+          "from authentik.events.models import NotificationWebhookMapping"
+          "mapping_name = \"auth-manager-body-mapping\""
+          "mapping_expression = '''return {"
+          "    \"event\": {"
+          "        \"action\": notification.event.action if notification.event else None,"
+          "        \"app\": notification.event.app if notification.event else None,"
+          "        \"model_name\": getattr(notification.event, \"model_name\", \"\") if notification.event else None,"
+          "        \"context\": notification.event.context if notification.event else {},"
+          "        \"user\": {"
+          "            \"pk\": notification.event.user.pk if notification.event and notification.event.user else None,"
+          "            \"email\": notification.event.user.email if notification.event and notification.event.user else \"\","
+          "            \"username\": notification.event.user.username if notification.event and notification.event.user else \"\","
+          "            \"name\": notification.event.user.name if notification.event and notification.event.user else \"\","
+          "        } if notification.event else {},"
+          "        \"created\": notification.event.created.isoformat() if notification.event else None,"
+          "    },"
+          "    \"severity\": notification.severity,"
+          "}'''"
+          "mapping, _ = NotificationWebhookMapping.objects.update_or_create("
+          "    name=mapping_name,"
+          "    defaults={\"expression\": mapping_expression}"
+          ")"
+          "print(f\"[authentik-sync] created/updated webhook body mapping: {mapping_name}\")"
+          ""
+          "# Create header mapping for bearer auth"
+          "for entry in payload:"
+          "    if entry.get(\"secret\"):"
+          "        header_mapping_name = f\"{entry['name']}-header-mapping\""
+          "        header_expression = f'''return {{"
+          "    \"Authorization\": \"Bearer {entry['secret']}\","
+          "    \"Content-Type\": \"application/json\","
+          "}}'''"
+          "        header_mapping, _ = NotificationWebhookMapping.objects.update_or_create("
+          "            name=header_mapping_name,"
+          "            defaults={\"expression\": header_expression}"
+          "        )"
+          "        # Update transport with mappings"
+          "        transport = NotificationTransport.objects.get(name=entry[\"name\"])"
+          "        transport.webhook_mapping = mapping"
+          "        transport.webhook_mapping_header = header_mapping if hasattr(transport, 'webhook_mapping_header') else None"
+          "        transport.save()"
+          "        print(f\"[authentik-sync] configured transport mappings for: {entry['name']}\")"
+          "\"\"\""
+          ""
+          "inner_script = inner_template.replace(\"__PAYLOAD__\", json.dumps(payload))"
+          ""
+          "for attempt in range(24):"
+          "    proc = subprocess.run(["
+          "        \"${pkgs.docker}/bin/docker\","
+          "        \"exec\","
+          "        \"-i\","
+          "        \"authentik-server\","
+          "        \"python\","
+          "        \"-\","
+          "    ], input=inner_script, text=True, capture_output=True)"
+          "    print(proc.stdout)"
+          "    if proc.stderr:"
+          "        print(proc.stderr, file=sys.stderr)"
+          "    if proc.returncode == 0:"
+          "        break"
+          "    time.sleep(5)"
+          "else:"
+          "    sys.exit(proc.returncode)"
+        ];
+        scriptText = (lib.concatStringsSep "\n" scriptLines) + "\n";
+      in pkgs.writeScript "sync-authentik-webhook-transports" scriptText;
+
+  # Proxy providers for ForwardAuth (SSO for apps that don't support OIDC)
+  activeProxyProviders =
+    lib.filterAttrs (_: provider: provider.enable) cfg.proxyProviders;
+
+  proxyProviderEntries =
+    lib.mapAttrsToList (
+      name: provider:
+        {
+          name = provider.name;
+          slug = provider.slug;
+          externalHost = provider.externalHost;
+          mode = provider.mode;
+          authorizationFlow = provider.authorizationFlow;
+          skipPathRegex = provider.skipPathRegex;
+          basicAuthEnabled = provider.basicAuthEnabled;
+          application = {
+            name = provider.application.name;
+            launchUrl = provider.application.launchUrl;
+            description = provider.application.description;
+          };
+          addToOutpost = provider.addToOutpost;
+        }
+    ) activeProxyProviders;
+
+  proxyProvidersManifest =
+    if proxyProviderEntries == [] then null
+    else pkgs.writeText "authentik-proxy-providers.json" (builtins.toJSON proxyProviderEntries);
+
+  syncProxyProvidersScript =
+    if proxyProvidersManifest == null then null else
+      let
+        scriptLines = [
+          "#!${pkgs.python3}/bin/python3"
+          "import json"
+          "import pathlib"
+          "import subprocess"
+          "import sys"
+          "import time"
+          ""
+          "manifest_path = pathlib.Path(\"${proxyProvidersManifest}\")"
+          "manifest = json.loads(manifest_path.read_text())"
+          ""
+          "if not manifest:"
+          "    print(\"[authentik-sync] no proxy providers to apply\", file=sys.stderr)"
+          "    sys.exit(0)"
+          ""
+          "inner_template = \"\"\"import json"
+          "import os"
+          "import django"
+          "os.environ.setdefault(\"DJANGO_SETTINGS_MODULE\", \"authentik.root.settings\")"
+          "django.setup()"
+          "from django.db import transaction"
+          "from authentik.providers.proxy.models import ProxyProvider, ProxyMode"
+          "from authentik.core.models import Application"
+          "from authentik.flows.models import Flow"
+          "from authentik.outposts.models import Outpost, OutpostType"
+          ""
+          "payload = json.loads(r'''__PAYLOAD__''')"
+          ""
+          "# Map mode strings to ProxyMode enum"
+          "mode_map = {"
+          "    'forward_single': ProxyMode.FORWARD_SINGLE,"
+          "    'forward_domain': ProxyMode.FORWARD_DOMAIN,"
+          "    'proxy': ProxyMode.PROXY,"
+          "}"
+          ""
+          "for entry in payload:"
+          "    slug = entry['slug']"
+          "    with transaction.atomic():"
+          "        # Find or create the provider"
+          "        provider, created = ProxyProvider.objects.get_or_create("
+          "            name=entry['name'],"
+          "            defaults={'external_host': entry['externalHost']}"
+          "        )"
+          "        provider.external_host = entry['externalHost']"
+          "        provider.mode = mode_map.get(entry['mode'], ProxyMode.FORWARD_SINGLE)"
+          "        if entry.get('skipPathRegex'):"
+          "            provider.skip_path_regex = entry['skipPathRegex']"
+          "        provider.basic_auth_enabled = entry.get('basicAuthEnabled', False)"
+          ""
+          "        # Set authorization flow"
+          "        flow = Flow.objects.filter(slug=entry['authorizationFlow']).first()"
+          "        if flow:"
+          "            provider.authorization_flow = flow"
+          "        provider.save()"
+          "        print(f\"[authentik-sync] created/updated proxy provider: {entry['name']}\")"
+          ""
+          "        # Create or update application"
+          "        app_data = entry.get('application') or {}"
+          "        app, _ = Application.objects.get_or_create("
+          "            slug=slug,"
+          "            defaults={'name': app_data.get('name') or entry['name']}"
+          "        )"
+          "        app.name = app_data.get('name') or entry['name']"
+          "        app.provider = provider"
+          "        if app_data.get('launchUrl'):"
+          "            app.meta_launch_url = app_data['launchUrl']"
+          "        if app_data.get('description'):"
+          "            app.meta_description = app_data['description']"
+          "        app.save()"
+          "        print(f\"[authentik-sync] created/updated application: {slug}\")"
+          ""
+          "        # Add to embedded outpost if requested"
+          "        if entry.get('addToOutpost', True):"
+          "            # Find or create the embedded outpost"
+          "            outpost = Outpost.objects.filter(type=OutpostType.PROXY, managed__startswith='goauthentik.io/outposts/embedded').first()"
+          "            if not outpost:"
+          "                outpost = Outpost.objects.filter(type=OutpostType.PROXY, name__icontains='embedded').first()"
+          "            if not outpost:"
+          "                outpost = Outpost.objects.filter(type=OutpostType.PROXY).first()"
+          "            if outpost:"
+          "                outpost.providers.add(provider)"
+          "                # Configure authentik_host so the outpost knows where to redirect users"
+          "                authentik_host = entry.get('externalHost', '')"
+          "                if authentik_host and (not outpost._config.get('authentik_host')):"
+          "                    config_dict = outpost._config or {}"
+          "                    config_dict['authentik_host'] = authentik_host"
+          "                    outpost._config = config_dict"
+          "                    outpost.save()"
+          "                    print(f\"[authentik-sync] configured outpost authentik_host: {authentik_host}\")"
+          "                print(f\"[authentik-sync] added {entry['name']} to outpost: {outpost.name}\")"
+          "            else:"
+          "                print(f\"[authentik-sync] warning: no proxy outpost found for {entry['name']}\")"
+          "\"\"\""
+          ""
+          "inner_script = inner_template.replace(\"__PAYLOAD__\", json.dumps(manifest))"
+          ""
+          "for attempt in range(24):"
+          "    proc = subprocess.run(["
+          "        \"${pkgs.docker}/bin/docker\","
+          "        \"exec\","
+          "        \"-i\","
+          "        \"authentik-server\","
+          "        \"python\","
+          "        \"-\","
+          "    ], input=inner_script, text=True, capture_output=True)"
+          "    print(proc.stdout)"
+          "    if proc.stderr:"
+          "        print(proc.stderr, file=sys.stderr)"
+          "    if proc.returncode == 0:"
+          "        break"
+          "    time.sleep(5)"
+          "else:"
+          "    sys.exit(proc.returncode)"
+        ];
+        scriptText = (lib.concatStringsSep "\n" scriptLines) + "\n";
+      in pkgs.writeScript "sync-authentik-proxy-providers" scriptText;
+
   waitForAuthentikContainer = pkgs.writeShellScript "wait-authentik-container" ''
     attempt=0
     while [ "$attempt" -lt 60 ]; do
@@ -1187,6 +1515,153 @@ in
       default = [];
       description = "Optional allowlist of email domains permitted to sign in through Authentik (case-insensitive). Empty list means allow all.";
     };
+
+    webhookTransports = mkOption {
+      type = types.attrsOf (types.submodule ({ name, ... }: {
+        options = {
+          enable = mkOption {
+            type = types.bool;
+            default = true;
+            description = "Whether this webhook transport should be managed.";
+          };
+
+          name = mkOption {
+            type = types.str;
+            default = name;
+            description = "Display name for the webhook transport.";
+          };
+
+          webhookUrl = mkOption {
+            type = types.str;
+            description = "URL to send webhook notifications to.";
+          };
+
+          secret = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Bearer token secret for webhook authentication (use secretFile in production).";
+          };
+
+          secretFile = mkOption {
+            type = types.nullOr pathOrString;
+            default = null;
+            description = "File containing the bearer token secret for webhook authentication.";
+          };
+
+          sendOnce = mkOption {
+            type = types.bool;
+            default = false;
+            description = "Only send notification once, regardless of how many users are involved.";
+          };
+
+          events = mkOption {
+            type = types.listOf types.str;
+            default = [ "model_created" "model_updated" "login" ];
+            description = "Event actions to trigger this webhook.";
+          };
+
+          modelFilters = mkOption {
+            type = types.listOf types.str;
+            default = [ "authentik_core.user" ];
+            description = "Model filters for which events to notify (e.g., authentik_core.user).";
+          };
+        };
+      }));
+      default = {};
+      description = ''
+        Declarative webhook transports for Authentik event notifications.
+        Used to notify external services (like auth-manager) when users are created/updated.
+      '';
+    };
+
+    proxyProviders = mkOption {
+      type = types.attrsOf (types.submodule ({ name, ... }: {
+        options = {
+          enable = mkOption {
+            type = types.bool;
+            default = true;
+            description = "Whether this proxy provider should be managed.";
+          };
+
+          name = mkOption {
+            type = types.str;
+            default = capitalize name;
+            description = "Display name for the proxy provider.";
+          };
+
+          slug = mkOption {
+            type = types.str;
+            default = name;
+            description = "Slug for the application.";
+          };
+
+          externalHost = mkOption {
+            type = types.str;
+            description = "External host URL that users access (e.g., https://example.com).";
+          };
+
+          mode = mkOption {
+            type = types.enum [ "forward_single" "forward_domain" "proxy" ];
+            default = "forward_single";
+            description = "Proxy mode: forward_single for single app, forward_domain for domain-wide, proxy for full proxy.";
+          };
+
+          authorizationFlow = mkOption {
+            type = types.str;
+            default = "default-provider-authorization-implicit-consent";
+            description = "Authorization flow slug to use.";
+          };
+
+          skipPathRegex = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Regex pattern for paths to skip authentication (e.g., '^/api/v4/.*').";
+          };
+
+          basicAuthEnabled = mkOption {
+            type = types.bool;
+            default = false;
+            description = "Allow basic authentication passthrough.";
+          };
+
+          application = mkOption {
+            type = types.submodule {
+              options = {
+                name = mkOption {
+                  type = types.str;
+                  default = capitalize name;
+                  description = "Application display name.";
+                };
+                launchUrl = mkOption {
+                  type = types.nullOr types.str;
+                  default = null;
+                  description = "Optional launch URL for the application.";
+                };
+                description = mkOption {
+                  type = types.nullOr types.str;
+                  default = null;
+                  description = "Application description.";
+                };
+              };
+            };
+            default = {};
+            description = "Application metadata.";
+          };
+
+          addToOutpost = mkOption {
+            type = types.bool;
+            default = true;
+            description = "Automatically add this provider to the embedded outpost.";
+          };
+        };
+      }));
+      default = {};
+      description = ''
+        Declarative proxy providers for Authentik forward auth.
+        Used for applications that need SSO but don't support OAuth/OIDC natively.
+        The embedded outpost provides ForwardAuth endpoints at /outpost.goauthentik.io/auth/traefik.
+      '';
+    };
   };
 
   config = mkIf cfg.enable {
@@ -1369,6 +1844,36 @@ ${volumeRunArgs}${commonEnvArgs}
         RestartSec = 15;
         TimeoutStartSec = 600;
         ExecStart = syncOidcApplicationsScript;
+      };
+    };
+
+    systemd.services.authentik-sync-webhook-transports = lib.mkIf (syncWebhookTransportsScript != null) {
+      description = "Synchronize Authentik webhook transports for auth-manager";
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "authentik-server.service" ];
+      after = [ "authentik-apply-blueprints.service" "authentik-sync-oidc-applications.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStartPre = waitForAuthentikHealthy;
+        Restart = "on-failure";
+        RestartSec = 15;
+        TimeoutStartSec = 600;
+        ExecStart = syncWebhookTransportsScript;
+      };
+    };
+
+    systemd.services.authentik-sync-proxy-providers = lib.mkIf (syncProxyProvidersScript != null) {
+      description = "Synchronize Authentik proxy providers for ForwardAuth SSO";
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "authentik-server.service" ];
+      after = [ "authentik-apply-blueprints.service" "authentik-sync-oidc-applications.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStartPre = waitForAuthentikHealthy;
+        Restart = "on-failure";
+        RestartSec = 15;
+        TimeoutStartSec = 600;
+        ExecStart = syncProxyProvidersScript;
       };
     };
   };

@@ -1,374 +1,137 @@
-Of course. This repository shows great progress and contains all the necessary components, but they are tangled together. The key to getting it "ready to go" is to establish a clear, maintainable, and reproducible workflow—a **"Golden Path"**.
+### 1. The Authentik Fix (Priority)
+The current setup (inferred from docs/scripts) attempts to run Authentik via Docker containers inside the NixOS VM. This causes networking friction between the host, the Traefik proxy, and the internal Postgres/Redis services.
 
-My analysis reveals two competing architectures (NixOS vs. Docker Compose), numerous redundant configurations, and a mix of declarative definitions and imperative scripts. Your own `TODO.md` and ADRs correctly identify that the NixOS Flake approach is the future.
+**The Issue:**
+In `docs/how-to/authentik.md`, you define manual steps or `authentik-sync-oidc-applications.service` to configure providers. This is brittle because if the Docker container restarts, state or connectivity to the "host" (VM) database might be lost or race-conditioned.
 
-This guide will walk you through a decisive refactoring to establish that Golden Path. We will:
-1.  **Consolidate NixOS configurations** into a clean, modular structure.
-2.  **Eliminate redundant scripts** and create a single, unified way to run VMs.
-3.  **Clean up deprecated files** and organize documentation.
+**The Solution: Use Native NixOS Modules**
+NixOS has a first-class `services.authentik` module. Switching to this removes the Docker layer, allowing systemd to manage dependencies (Postgres/Redis) and file permissions natively.
 
-When we're done, building and running any VM will be a simple, two-command process based on a single source of truth.
+**Refactor Plan:**
+1.  Remove the Docker container definition for Authentik.
+2.  Enable the native module in your `infra/nixos/modules/services/authentik/default.nix`:
 
----
-
-### **Pillar 1: Consolidate Your NixOS Configurations**
-
-**The Problem:** You have over a dozen `.nix` configuration files in the root directory (`p0-production.nix`, `gitlab-working-complete.nix`, etc.). This creates massive code duplication and makes maintenance nearly impossible. You've already started the correct modular structure in `infra/nixos/modules/`—we will now complete this transition.
-
-**The Solution:** We will use your existing modules and create clean, top-level configurations that simply import the features they need.
-
-#### **Step 1.1: Create Final VM Configuration Files**
-
-These new files will be very short. They define a complete VM by simply listing the feature modules it should include.
-
-1.  **Create a new `production.nix` configuration file** inside `infra/nixos/configs/`.
-
-    ```bash
-    # Make sure you are in the root of the 'rave' repository
-    touch infra/nixos/configs/production.nix
-    ```
-
-2.  **Copy the following code into `infra/nixos/configs/production.nix`**. This will be your main production-ready VM, including all features from P6.
-
-    ```nix
-    # infra/nixos/configs/production.nix
-    # P6 production configuration - all services with full security hardening
-    { ... }:
-
-    {
-      imports = [
-        # Foundation modules (required for all VMs)
-        ../modules/foundation/base.nix
-        ../modules/foundation/nix-config.nix
-        ../modules/foundation/networking.nix
-        
-        # Service modules
-        ../modules/services/gitlab/default.nix
-        ../modules/services/matrix/default.nix
-        ../modules/services/monitoring/default.nix
-        
-        # Security modules
-        ../modules/security/hardening.nix
-        ../modules/security/certificates.nix
-      ];
-
-      # Production-specific settings
-      networking.hostName = "rave-production";
-      
-      # Certificate configuration for production
-      rave.certificates = {
-        domain = "rave.local";
-        useACME = false; # Set to true when deploying to a real domain
-        email = "admin@rave.local";
+```nix
+# infra/nixos/modules/services/authentik/default.nix
+{ config, lib, pkgs, ... }:
+let
+  cfg = config.services.rave.authentik;
+in {
+  config = lib.mkIf cfg.enable {
+    services.authentik = {
+      enable = true;
+      # The environment file provided by sops-nix
+      environmentFile = config.sops.secrets."authentik/env".path;
+      settings = {
+        email.host = "smtp.example.com";
+        disable_startup_analytics = true;
+        avatars = "gravatar";
       };
-
-      # Enable all required services
-      services.postgresql.enable = true;
-      services.nginx.enable = true;
-      services.redis.servers.default.enable = true;
-
-      # Production security overrides
-      security.sudo.wheelNeedsPassword = true; # Require password for sudo in production
-      services.openssh.settings.PasswordAuthentication = false; # Key-based auth only
-
-      # Production system limits
-      systemd.extraConfig = ''
-        DefaultLimitNOFILE=65536
-        DefaultLimitNPROC=32768
-      '';
-
-      # Enhanced logging for production
-      services.journald.extraConfig = ''
-        Storage=persistent
-        Compress=true
-        SystemMaxUse=1G
-        SystemMaxFileSize=100M
-        ForwardToSyslog=true
-      '';
-    }
-    ```
-
-3.  **Create a new `development.nix` configuration file** for local testing.
-
-    ```bash
-    touch infra/nixos/configs/development.nix
-    ```
-4.  **Copy the following code into `infra/nixos/configs/development.nix`**. This defines a lightweight, HTTP-only environment for quick iteration.
-
-    ```nix
-    # infra/nixos/configs/development.nix
-    # Development configuration - HTTP-only, minimal security for local testing
-    { config, pkgs, lib, ... }:
-
-    {
-      imports = [
-        # Foundation modules (required for all VMs)
-        ../modules/foundation/base.nix
-        ../modules/foundation/nix-config.nix
-        ../modules/foundation/networking.nix
-        
-        # Service modules (choose which services to enable for development)
-        ../modules/services/gitlab/default.nix
-        # ../modules/services/matrix/default.nix    # Uncomment if needed for development
-        # ../modules/services/monitoring/default.nix # Uncomment if needed for development
-        
-        # Minimal security (no hardening in development)
-        ../modules/security/certificates.nix
-      ];
-
-      # Development-specific settings
-      networking.hostName = "rave-dev";
-      
-      # Certificate configuration for development
-      rave.certificates = {
-        domain = "rave.local";
-        useACME = false; # Always use self-signed certs in development
-        email = "dev@rave.local";
-      };
-
-      # Enable required services for development
-      services.postgresql.enable = true;
-      services.nginx.enable = true;
-      services.redis.servers.default.enable = true;
-
-      # Development overrides for convenience
-      security.sudo.wheelNeedsPassword = false; # No password required in development
-      services.openssh.settings.PasswordAuthentication = true; # Allow password auth for convenience
-
-      # HTTP-only configuration for development (override HTTPS)
-      services.nginx.virtualHosts."rave.local" = {
-        forceSSL = lib.mkForce false; # Disable forced SSL redirect
-        listen = [
-          { addr = "0.0.0.0"; port = 80; }
-          { addr = "0.0.0.0"; port = 8080; }
-        ];
-        
-        # Remove SSL certificate configuration for HTTP-only
-        sslCertificate = null;
-        sslCertificateKey = null;
-        useACMEHost = null;
-      };
-    }
-    ```
-#### **Step 1.2: Update `flake.nix` to Use New Configurations**
-
-Now, we'll point your build system to these new, clean configurations.
-
-1.  **Open `flake.nix`**.
-2.  **Find the `packages.x86_64-linux` section.**
-3.  **Replace the entire `packages` section** with this simplified version:
-
-    ```nix
-    # --- FILE: flake.nix (updated section) ---
-    packages.x86_64-linux = {
-      # Production image - Full security hardening and all services
-      production = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "qcow";
-        modules = [ 
-          ./infra/nixos/configs/production.nix
-          sops-nix.nixosModules.sops
-        ];
-      };
-      
-      # Development image - HTTP-only, minimal security for local testing
-      development = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "qcow";
-        modules = [ 
-          ./infra/nixos/configs/development.nix
-          sops-nix.nixosModules.sops
-        ];
-      };
-      
-      # Demo image - Minimal services for demonstrations
-      demo = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "qcow";
-        modules = [ 
-          ./infra/nixos/configs/demo.nix
-          sops-nix.nixosModules.sops
-        ];
-      };
-      
-      # Alternative image formats (all use production config)
-      virtualbox = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "virtualbox";
-        modules = [ ./infra/nixos/configs/production.nix sops-nix.nixosModules.sops ];
-      };
-      vmware = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "vmware";
-        modules = [ ./infra/nixos/configs/production.nix sops-nix.nixosModules.sops ];
-      };
-      raw = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "raw";
-        modules = [ ./infra/nixos/configs/production.nix sops-nix.nixosModules.sops ];
-      };
-      iso = nixos-generators.nixosGenerate {
-        system = "x86_64-linux";
-        format = "iso";
-        modules = [ ./infra/nixos/configs/production.nix sops-nix.nixosModules.sops ];
+      # Automatically provision the ingress
+      nginx = {
+        enable = true;
+        enableACME = false;
+        host = "auth.localtest.me";
       };
     };
 
-    # Default package (production configuration)
-    defaultPackage.x86_64-linux = self.packages.x86_64-linux.production;
-    ```
-4. Find `defaultPackage.x86_64-linux` at the end of the `outputs` block and ensure it points to the new production package: `self.packages.x86_64-linux.production`.
-
-#### **Step 1.3: Delete Old Configuration Files**
-
-You can now safely delete all the old, monolithic configuration files from the root directory. This is a critical step to enforce the new "Golden Path".
-
-```bash
-# 🗑️ Run this command to delete the old files
-rm ai-sandbox-config.nix \
-   gitlab-autologin.nix \
-   gitlab-complete-nixos.nix \
-   gitlab-demo-config.nix \
-   gitlab-working-complete.nix \
-   minimal-nginx-demo.nix \
-   nginx-http-fix.nix \
-   nginx-https-dev.nix \
-   simple-ai-config.nix \
-   vibe-kanban.nix \
-   vibe-kanban-simple.nix
+    # Declarative Configuration (Blueprints)
+    # This replaces manual setup steps for Mattermost/Grafana integration
+    systemd.services.authentik-apply-blueprints = {
+      wantedBy = [ "multi-user.target" ];
+      after = [ "authentik-worker.service" "authentik-web.service" ];
+      script = ''
+        ${pkgs.authentik}/bin/ak apply_blueprint ${./blueprints}
+      '';
+    };
+  };
+}
 ```
 
-**Pillar 1 Complete!** Your NixOS configurations are now modular, maintainable, and centrally located.
+### 2. Repository Structural Refactoring
+The current structure mixes source code (`apps/`), infrastructure (`infra/`), and massive artifacts (`*.qcow2` files in root or artifacts folder).
 
----
+**Action Items:**
+1.  **Strict Separation:** Ensure `.gitignore` is extremely aggressive about `*.qcow2`. The hygiene script (`scripts/repo/hygiene-check.sh`) is good, but you should move *all* binary artifacts to a dedicated S3/R2 bucket or use `git-lfs` if you must track them.
+2.  **Unified "Src" Directory:** Move `services/` and `apps/` into a single `src/` directory to simplify tooling paths.
+3.  **Shell Script Consolidation:** You have `scripts/`, `scripts/build`, `scripts/demo`, `scripts/security`, etc.
+    *   **Refactor:** Replace the many bash scripts with a **Justfile**. `Just` is a command runner perfect for Nix projects. It allows you to document commands and dependencies clearly.
 
-### **Pillar 2: Unify Entry Points Around the CLI**
+**Example `Justfile`:**
+```makefile
+# Instead of scripts/build/build-vm.sh
+build profile="development":
+    nix build .#{{profile}} --show-trace
 
-**The Problem:** Multiple `run-*.sh` helpers are still documented even though the Python CLI under `apps/cli/rave` is the supported interface for building, launching, and operating VMs. This drift keeps sending contributors to a deprecated workflow.
+# Instead of apps/cli/rave vm launch-local
+launch profile="development":
+    ./apps/cli/rave vm launch-local --profile {{profile}}
 
-**The Solution:** Make `./apps/cli/rave` the documented Golden Path. Update guides, READMEs, and handoffs to reference CLI subcommands only, and delete shell helpers that overlap with the CLI.
-
-#### **Step 2.1: Highlight the CLI workflow**
-
-Show the two-command happy path everywhere:
-
-```bash
-# Build/update a QCOW image
-./apps/cli/rave vm build-image --profile production
-
-# Launch a local VM with forwarded ports & secrets
-./apps/cli/rave vm launch-local --profile production --name prod-test
+# Replaces scripts/security/p1-security-verification.sh
+verify-security:
+    trivy fs --severity HIGH,CRITICAL .
 ```
 
-For persistent environments, emphasize `./apps/cli/rave vm start|stop|status|logs <name>` instead of bespoke scripts.
+### 3. Python CLI Refactoring (`apps/cli`)
+`vm_manager.py` is becoming a "God Class" (13,000+ tokens). It handles SSH injection, QEMU management, disk creation, and config parsing.
 
-#### **Step 2.2: Delete Redundant Scripts**
+**Refactor Plan:**
+1.  **Split `vm_manager.py`:**
+    *   `qemu_driver.py`: Pure functions to generate QEMU command lines.
+    *   `ssh_client.py`: A dedicated wrapper for `subprocess.run(["ssh", ...])` that handles connection retries and `sshpass` fallback logic centrally.
+    *   `provisioner.py`: Logic for `install_age_key` and `inject_ssh_key`.
+2.  **Use `pydantic-settings`:** Currently, you parse `.env` files manually in `rave` (main file). Use Pydantic to load environment variables automatically, ensuring types are correct before the CLI starts.
+3.  **Remove `PlatformManager` checks:** NixOS provides a uniform environment inside the VM. The CLI runs on the host, but using Python's `pathlib` and standard libraries usually negates the need for complex OS switching logic unless you are supporting Windows directly (which QEMU/Nix usually implies WSL2 anyway).
 
-With the CLI in place, these legacy helpers only create confusion:
+### 4. Nix Flake Simplification
+The `flake.nix` (inferred from context) seems to export many packages and checks.
 
-```bash
-# 🗑️ Run this command to delete the old scripts
-rm check_nginx.exp \
-   demo-redirect-server.py \
-   gitlab-redirect-fix.conf \
-   install-nix-deps.sh \
-   install-nix-single-user.sh \
-   install-nix-user.sh \
-   nginx-http-only.conf \
-   nginx-redirect-fix.conf \
-   simple-gitlab-proxy.py \
-   test-nginx.conf \
-   test-redirect-server.py \
-   test-p2-validation.sh \
-   test-p3-gitlab.sh \
-   test-p4-matrix.sh
+**Refactor Plan:**
+Use **`flake-parts`**. This is the modern standard for maintaining complex Nix flakes. It allows you to split your flake logic into multiple files without the boilerplate of standard flakes.
+
+**Proposed Structure:**
+```
+repo/
+├── flake.nix (using flake-parts)
+├── parts/
+│   ├── devshells.nix (dev environments)
+│   ├── vms.nix (nixosConfigurations and image generators)
+│   └── packages.nix (CLI tools)
 ```
 
-#### **Step 2.3: Consolidate the `gitlab-complete` Docker setup**
+### 5. `auth-manager` Improvements
+The `auth-manager` Go service (`apps/auth-manager`) attempts to create shadow users for Mattermost.
 
-The `gitlab-complete/` directory contains a parallel Docker Compose implementation of GitLab. While useful as a reference, it conflicts with the primary NixOS-based approach.
-
-**Recommendation:** Archive or remove it to avoid confusion. For now, we will leave it, but understand that it is **not** part of the "Golden Path" production system. All GitLab functionality should come from the NixOS module.
-
-**Pillar 2 Complete!** The CLI is now the single, documented interface for VM lifecycle management.
-
----
-
-### **Pillar 3: Final Cleanup and Verification**
-
-#### **Step 3.1: Update `.gitignore`**
-
-Your build process creates `result-*` symlinks and `*.qcow2` images. These should not be committed to Git.
-
-1.  **Open the `.gitignore` file.**
-2.  **Add these lines to the end:**
-
+**Code Review of `internal/server/server.go`:**
+*   **Circuit Breakers:** You are initializing new circuit breakers in `New()`, which is good. However, in `handleMattermostForwardAuth`, if the breaker is open, you return `503`. Traefik might interpret this as "Auth server down" and block the request entirely.
+    *   *Improvement:* Ensure Traefik `forwardAuth` middleware is configured with `failResponseHeaders`.
+*   **Cookie Handling:**
+    ```go
+    // In handleMattermostForwardAuth
+    http.SetCookie(w, &http.Cookie{Name: "MMAUTHTOKEN", ...})
     ```
-    *.qcow2
-    result
-    result-*
-    ```
+    Mattermost expects the token in the header `Authorization: Bearer <token>` for API calls, or the `MMAUTHTOKEN` cookie for browser access. Ensure your logic handles the `X-Requested-With: XMLHttpRequest` header correctly, as Mattermost's SPA behaves differently than standard browser navigation.
 
-#### **Step 3.2: Consolidate Documentation**
+### 6. Secret Management UX
+The current workflow requires `rave secrets init` and manual `sops` editing.
 
-You have several summary markdown files (`GITLAB-COMPLETE-SYSTEM.md`, `DEMO-RESULTS.md`, etc.). This information should be moved into your primary documentation (`README.md`, `docs/explanation/architecture.md`, or the ADRs).
+**Improvement:**
+Implement a **Development Mode Secret Generator**.
+In `infra/nixos/modules/foundation/secrets.nix` (create if missing), add logic:
 
-1.  **Review** these files and copy any essential, long-term information into your main docs.
-2.  **Delete** the summary files once their content is migrated.
+```nix
+config.sops.secrets = lib.mkIf config.services.rave.devMode {
+  "mattermost/admin-password" = {
+    format = "binary";
+    sopsFile = pkgs.writeText "dummy" "password123"; # Insecure, dev only
+  };
+}
+```
+This allows a developer to run `nix build .#development` without needing to set up GPG/Age keys immediately, lowering the barrier to entry for new contributors.
 
-    ```bash
-    # 🗑️ Delete these after migrating their content
-    rm DEMO-RESULTS.md \
-       GITLAB-COMPLETE-SYSTEM.md \
-       NGINX-REDIRECT-FIX-COMPLETE.md \
-       gitlab-status-summary.txt
-    ```
+### Summary of Next Steps
 
-### **Final Verification**
-
-You have now completed a major refactoring. To ensure everything is working:
-
-1.  **Check your flake:** This validates the syntax of your new modular structure.
-    ```bash
-    nix flake check
-    ```
-
-2.  **Build your main production VM:**
-    ```bash
-    nix build .#production
-    ```
-    *(Note: The first build will take a while as it re-evaluates everything.)*
-
-3.  **Launch a development VM via the CLI:**
-    ```bash
-    ./apps/cli/rave vm launch-local --profile development --name dev-gui
-    ```
-
-You now have a clean, stable, and maintainable repository that fully leverages the power of NixOS. The "Golden Path" is established. Your project is ready to go.
-
-### ⚠️ Active Issue: nginx front-door vhost regression (November 2025)
-> Status: Front door now runs on Traefik. Revisit or remove this section once the Traefik module stabilizes.
-
-**What broke**
-- `infra/nixos/modules/services/traefik/default.nix` still assigns the entire `services.nginx.virtualHosts` attrset in one shot.
-- Other modules (notably `infra/nixos/modules/services/nats/default.nix`) assign to the same option later in the module list, so our primary `"${host}"` entry (dashboard + GitLab/Mattermost/etc.) gets overwritten. The resulting `/nix/store/*-nginx.conf` in the VM only exposes `/nginx_status` (and `/nats/` under `rave.local`).
-- Symptom: `https://localhost:28443/` never comes up because port 443 isn’t configured in the final nginx conf.
-
-**Current status**
-- Began refactoring the module to declare each vhost individually but reverted mid-way to keep the repo stable. No functional change has landed yet, so the regression persists.
-
-**Next steps for the handoff**
-1. Rewrite the `config = mkIf cfg.enable …` block so:
-   - `services.nginx = { … }` only carries the global settings.
-   - Each vhost is defined explicitly: `services.nginx.virtualHosts."${host}" = { … }`, `"${host}-http" = …`, and optional `"gitlab-internal"`, `"${host}-mattermost"`, `"${chat}"`, `"${chat}-http"` entries inside their respective `mkIf` blocks.
-   - The existing `mkMerge` payload (dashboard, GitLab, Outline, Penpot, n8n, NATS locations) should move inside the new `services.nginx.virtualHosts."${host}"` assignment so behavior stays identical.
-2. After the change, verify with:
-   ```bash
-   nix eval --impure --expr 'let eval = import <nixpkgs/nixos/lib/eval-config.nix> { system = "x86_64-linux"; modules = [ ./infra/nixos/configs/production.nix ]; }; in builtins.attrNames eval.config.services.nginx.virtualHosts.localhost.locations'
-   ```
-   Expect both `"/"` and `/nginx_status` to appear.
-3. Rebuild (`nix build .#production`), recreate `prod-test`, and confirm `curl -k https://localhost:28443/` serves the new dashboard.
-
-**Helpful references**
-- The last known-good version of the module is available via `git show HEAD^:infra/nixos/modules/services/traefik/default.nix`.
-- Keep an eye on other modules that still assign to `services.nginx.virtualHosts` (NATS, legacy overlays) to ensure they merge cleanly after the refactor.
+1.  **Immediate Fix:** Create a `infra/nixos/modules/services/authentik.nix` using the native NixOS module system to replace the Docker-based setup.
+2.  **Cleanup:** Run the `hygiene-check.sh` and move all `*.qcow2` files to a `.gitignore`d `artifacts/` folder.
+3.  **Refactor:** Break `apps/cli/vm_manager.py` into `qemu.py`, `ssh.py`, and `provision.py`.
+4.  **Tooling:** Install `just` and create a `Justfile` to replace the `scripts/` directory chaos.

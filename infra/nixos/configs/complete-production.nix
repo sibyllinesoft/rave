@@ -26,8 +26,11 @@ let
     else if value != "" then pkgs.writeText name value
     else pkgs.writeText name default;
 
-  googleOauthClientIdFile = fallbackSecretFile "authentik-google-client-id" "/run/secrets/authentik/google-client-id" googleOauthClientId "google-client-id-placeholder";
-  googleOauthClientSecretFile = fallbackSecretFile "authentik-google-client-secret" "/run/secrets/authentik/google-client-secret" googleOauthClientSecret "google-client-secret-placeholder";
+  # For useSecrets, directly use the runtime secret paths; otherwise use fallback for dev mode
+  googleOauthClientIdFile = if useSecrets then "/run/secrets/authentik/google-client-id"
+    else fallbackSecretFile "authentik-google-client-id" "/run/secrets/authentik/google-client-id" googleOauthClientId "google-client-id-placeholder";
+  googleOauthClientSecretFile = if useSecrets then "/run/secrets/authentik/google-client-secret"
+    else fallbackSecretFile "authentik-google-client-secret" "/run/secrets/authentik/google-client-secret" googleOauthClientSecret "google-client-secret-placeholder";
   gitlabExternalUrl = "${externalHttpsBase}/gitlab";
   gitlabInternalHttpsUrl = gitlabExternalUrl;
   gitlabInternalHttpUrl = gitlabExternalUrl;
@@ -108,8 +111,10 @@ IP.2 = ::1
   githubOauthClientSecret =
     let val = builtins.getEnv "GITHUB_OAUTH_CLIENT_SECRET";
     in if val != "" then val else "github-client-secret-placeholder";
-  githubOauthClientIdFile = fallbackSecretFile "authentik-github-client-id" "/run/secrets/authentik/github-client-id" githubOauthClientId "github-client-id-placeholder";
-  githubOauthClientSecretFile = fallbackSecretFile "authentik-github-client-secret" "/run/secrets/authentik/github-client-secret" githubOauthClientSecret "github-client-secret-placeholder";
+  githubOauthClientIdFile = if useSecrets then "/run/secrets/authentik/github-client-id"
+    else fallbackSecretFile "authentik-github-client-id" "/run/secrets/authentik/github-client-id" githubOauthClientId "github-client-id-placeholder";
+  githubOauthClientSecretFile = if useSecrets then "/run/secrets/authentik/github-client-secret"
+    else fallbackSecretFile "authentik-github-client-secret" "/run/secrets/authentik/github-client-secret" githubOauthClientSecret "github-client-secret-placeholder";
   outlinePublicUrl = "${externalHttpsBase}/outline/";
   outlineDockerImage = "outlinewiki/outline:latest";
   outlineHostPort = 8310;
@@ -137,7 +142,13 @@ IP.2 = ::1
   n8nEncryptionKey = "n8n-encryption-key-2d01b6dba90441e8a6f7ec2af3327ef2";
   n8nBasicAuthPassword = "n8n-basic-admin-password";
   n8nBasePath = "/n8n";
+  n8nOwnerEmail = "admin@auth.localtest.me";
+  n8nOwnerPassword = "n8n-owner-password-2025";
+  n8nOwnerEmailFile = if useSecrets then "/run/secrets/n8n/owner-email" else null;
+  n8nOwnerPasswordFile = if useSecrets then "/run/secrets/n8n/owner-password" else null;
   n8nOidcClientId = "rave-n8n";
+  # Keep OIDC slug distinct from the proxy provider slug to avoid Authentik slug collisions
+  n8nOidcSlug = "n8n-oidc";
   n8nOidcClientSecretFile = if useSecrets
     then "/run/secrets/n8n/oidc-client-secret"
     else pkgs.writeText "n8n-oidc-client-secret" "n8n-oidc-secret";
@@ -341,6 +352,15 @@ in
       secretFile = if useSecrets then outlineWebhookSecretFile else null;
       secret = outlineWebhookSecret;
     };
+    oidc = {
+      enable = true;
+      clientId = outlineOidcClientId;
+      clientSecretFile = outlineOidcClientSecretFile;
+      displayName = "Authentik";
+      authUrl = "${authentikPublicUrl}application/o/authorize/";
+      tokenUrl = "${authentikPublicUrl}application/o/token/";
+      userInfoUrl = "${authentikPublicUrl}application/o/userinfo/";
+    };
   };
 
   services.rave.gitlab = {
@@ -363,6 +383,15 @@ in
     encryptionKey = n8nEncryptionKey;
     basicAuthPassword = n8nBasicAuthPassword;
     basePath = n8nBasePath;
+    oidc = {
+      enable = true;
+      clientId = n8nOidcClientId;
+      clientSecretFile = n8nOidcClientSecretFile;
+      issuerUrl = "${authentikPublicUrl}application/o/${n8nOidcSlug}/";
+      authUrl = "${authentikPublicUrl}application/o/authorize/";
+      tokenUrl = "${authentikPublicUrl}application/o/token/";
+      userInfoUrl = "${authentikPublicUrl}application/o/userinfo/";
+    };
   };
 
   services.rave.authentik = {
@@ -435,12 +464,12 @@ in
         displayName = "Grafana";
         clientId = authentikGrafanaClientId;
         clientSecretFile = authentikGrafanaClientSecretFile;
-        redirectUris = [ "https://localhost:${baseHttpsPort}/grafana/login/generic_oauth" ];
+        redirectUris = [ "${externalHttpsBase}/grafana/login/generic_oauth" ];
         scopes = [ "openid" "profile" "email" ];
         application = {
           slug = "grafana";
           name = "Grafana";
-          launchUrl = "https://localhost:${baseHttpsPort}/grafana/";
+          launchUrl = "${externalHttpsBase}/grafana/";
           description = "Grafana via Authentik";
         };
       };
@@ -450,7 +479,7 @@ in
         displayName = "Penpot";
         clientId = penpotOidcClientId;
         clientSecretFile = penpotOidcClientSecretFile;
-        redirectUris = [ "${penpotPublicUrl}/auth/oidc/callback" ];
+        redirectUris = [ "${penpotPublicUrl}/api/login-oidc-callback" ];
         scopes = [ "openid" "profile" "email" ];
         application = {
           slug = "penpot";
@@ -477,36 +506,95 @@ in
       };
       n8n = {
         enable = true;
-        slug = "n8n";
+        slug = n8nOidcSlug;
         displayName = "n8n";
         clientId = n8nOidcClientId;
         clientSecretFile = n8nOidcClientSecretFile;
-        redirectUris = [ "${n8nPublicUrl}/rest/oauth2-credential/callback" ];
+        # n8n's OIDC callback lives under the base path
+        redirectUris = [ "${n8nPublicUrl}/rest/sso/oidc/callback" ];
         scopes = [ "openid" "profile" "email" ];
         application = {
-          slug = "n8n";
+          slug = n8nOidcSlug;
           name = "n8n";
           launchUrl = n8nPublicUrl;
-          description = "n8n automations via Authentik";
+          description = "n8n via Authentik OIDC";
         };
+      };
+    };
+    # Webhook transport for auth-manager user provisioning
+    webhookTransports = {
+      auth-manager = {
+        enable = true;
+        name = "auth-manager";
+        webhookUrl = "http://127.0.0.1:8088/webhook/authentik";
+        secret = lib.mkIf (!useSecrets) "auth-manager-webhook-secret";
+        secretFile = lib.mkIf useSecrets "/run/secrets/auth-manager/webhook-secret";
+        sendOnce = false;
+        events = [ "model_created" "model_updated" "login" ];
+        modelFilters = [ "authentik_core.user" ];
+      };
+    };
+
+    # Proxy providers for ForwardAuth-based SSO (apps that don't support OIDC natively)
+    # These create proxy providers in Authentik that provide forward-auth protection
+    proxyProviders = {
+      mattermost-sso = {
+        enable = true;
+        name = "Mattermost SSO";
+        slug = "mattermost-sso";
+        externalHost = mattermostPublicUrl;  # Must include full path for forward_single mode
+        mode = "forward_single";
+        authorizationFlow = "default-provider-authorization-implicit-consent";
+        # Skip auth for Mattermost API endpoints that need to work without SSO
+        skipPathRegex = "^/(api/v4/(websocket|users/login)|static/).*";
+        basicAuthEnabled = false;
+        application = {
+          name = "Mattermost (SSO)";
+          launchUrl = mattermostPublicUrl;
+          description = "Mattermost with ForwardAuth SSO via auth-manager";
+        };
+        addToOutpost = true;
+      };
+      n8n = {
+        enable = true;
+        name = "n8n";
+        slug = "n8n";
+        externalHost = n8nPublicUrl;  # Must include full path for forward_single mode
+        mode = "forward_single";
+        authorizationFlow = "default-provider-authorization-implicit-consent";
+        # Skip auth for n8n webhook endpoints and healthcheck
+        skipPathRegex = "^/(webhook|webhook-test|healthz|rest/oauth2-credential).*";
+        basicAuthEnabled = false;
+        application = {
+          name = "n8n";
+          launchUrl = n8nPublicUrl;
+          description = "n8n with ForwardAuth SSO via auth-manager";
+        };
+        addToOutpost = true;
       };
     };
   };
 
   services.rave.auth-manager = {
-    enable = lib.mkDefault (config.services.rave.pomerium.enable);
+    enable = lib.mkDefault true;
     listenAddress = "0.0.0.0:8088";
     openFirewall = true;
-    sourceIdp = "gitlab";
-    signingKey = lib.mkIf (!useSecrets) "auth-manager-dev-signing-key";
-    signingKeyFile = lib.mkIf useSecrets "/run/secrets/auth-manager/signing-key";
-    pomeriumSharedSecret = lib.mkIf (!useSecrets) config.services.rave.pomerium.sharedSecret;
-    pomeriumSharedSecretFile = lib.mkIf useSecrets "/run/secrets/auth-manager/pomerium-shared-secret";
+    webhookSecret = lib.mkIf (!useSecrets) "auth-manager-webhook-secret";
+    webhookSecretFile = lib.mkIf useSecrets "/run/secrets/auth-manager/webhook-secret";
     mattermost = {
       url = mattermostPublicUrl;
       internalUrl = mattermostInternalBaseUrl;
       adminToken = lib.mkIf (!useSecrets) "mattermost-admin-token";
       adminTokenFile = lib.mkIf useSecrets "/run/secrets/auth-manager/mattermost-admin-token";
+    };
+    n8n = {
+      enable = true;
+      url = n8nPublicUrl;
+      internalUrl = "http://127.0.0.1:${toString n8nHostPort}";
+      ownerEmail = lib.mkIf (!useSecrets) n8nOwnerEmail;
+      ownerEmailFile = lib.mkIf useSecrets n8nOwnerEmailFile;
+      ownerPassword = lib.mkIf (!useSecrets) n8nOwnerPassword;
+      ownerPasswordFile = lib.mkIf useSecrets n8nOwnerPasswordFile;
     };
   };
 
@@ -564,9 +652,11 @@ in
     database.passwordFile = if useSecrets then "/run/secrets/database/penpot-password" else null;
     oidc = {
       enable = true;
-      gitlabUrl = gitlabExternalUrl;
-      clientId = "penpot";
-      clientSecret = "penpot-oidc-secret";
+      provider = "authentik";
+      baseUrl = authentikPublicUrl;
+      clientId = penpotOidcClientId;
+      clientSecretFile = penpotOidcClientSecretFile;
+      clientName = "Authentik";
     };
   };
 
@@ -646,6 +736,15 @@ in
         user = "grafana";
         password = "grafana-production-password";
         passwordFile = if useSecrets then "/run/secrets/grafana/db-password" else null;
+      };
+      oidc = {
+        enable = true;
+        clientId = authentikGrafanaClientId;
+        clientSecretFile = authentikGrafanaClientSecretFile;
+        name = "Authentik";
+        authUrl = "${authentikPublicUrl}application/o/authorize/";
+        tokenUrl = "${authentikPublicUrl}application/o/token/";
+        apiUrl = "${authentikPublicUrl}application/o/userinfo/";
       };
     };
     exporters.postgres = {
@@ -881,11 +980,19 @@ sops = lib.mkIf false {
       { selector = "[\"outline\"][\"utils-secret\"]"; path = "/run/secrets/outline/utils-secret"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"outline\"][\"webhook-secret\"]"; path = "/run/secrets/outline/webhook-secret"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"benthos\"][\"gitlab-webhook-secret\"]"; path = "/run/secrets/benthos/gitlab-webhook-secret"; owner = "root"; group = "root"; mode = "0400"; }
-      { selector = "[\"auth-manager\"][\"signing-key\"]"; path = "/run/secrets/auth-manager/signing-key"; owner = "root"; group = "root"; mode = "0400"; }
-      { selector = "[\"auth-manager\"][\"pomerium-shared-secret\"]"; path = "/run/secrets/auth-manager/pomerium-shared-secret"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"auth-manager\"][\"webhook-secret\"]"; path = "/run/secrets/auth-manager/webhook-secret"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"auth-manager\"][\"mattermost-admin-token\"]"; path = "/run/secrets/auth-manager/mattermost-admin-token"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"authentik\"][\"secret-key\"]"; path = "/run/secrets/authentik/secret-key"; owner = "root"; group = "root"; mode = "0400"; }
       { selector = "[\"authentik\"][\"bootstrap-password\"]"; path = "/run/secrets/authentik/bootstrap-password"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"authentik\"][\"google-client-id\"]"; path = "/run/secrets/authentik/google-client-id"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"authentik\"][\"google-client-secret\"]"; path = "/run/secrets/authentik/google-client-secret"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"authentik\"][\"github-client-id\"]"; path = "/run/secrets/authentik/github-client-id"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"authentik\"][\"github-client-secret\"]"; path = "/run/secrets/authentik/github-client-secret"; owner = "root"; group = "root"; mode = "0400"; }
+      # OIDC client secrets for services using Authentik
+      { selector = "[\"n8n\"][\"oidc-client-secret\"]"; path = "/run/secrets/n8n/oidc-client-secret"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"outline\"][\"oidc-client-secret\"]"; path = "/run/secrets/outline/oidc-client-secret"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"penpot\"][\"oidc-client-secret\"]"; path = "/run/secrets/penpot/oidc-client-secret"; owner = "root"; group = "root"; mode = "0400"; }
+      { selector = "[\"grafana\"][\"oidc-client-secret\"]"; path = "/run/secrets/grafana/oidc-client-secret"; owner = "grafana"; group = "grafana"; mode = "0400"; }
     ];
     extraTmpfiles = [
       "d /run/secrets/grafana 0750 root grafana -"
@@ -894,6 +1001,8 @@ sops = lib.mkIf false {
       "d /run/secrets/benthos 0750 root root -"
       "d /run/secrets/auth-manager 0750 root root -"
       "d /run/secrets/authentik 0750 root root -"
+      "d /run/secrets/n8n 0750 root root -"
+      "d /run/secrets/penpot 0750 root root -"
     ];
   };
 

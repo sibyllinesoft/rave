@@ -15,7 +15,7 @@ let
 
 in {
   options.services.rave.auth-manager = {
-    enable = mkEnableOption "Auth Manager bridge service";
+    enable = mkEnableOption "Auth Manager user provisioning service";
 
     package = mkOption {
       type = types.package;
@@ -35,59 +35,41 @@ in {
       description = "Open the firewall for the Auth Manager listen port.";
     };
 
-    sourceIdp = mkOption {
-      type = types.str;
-      default = "gitlab";
-      description = "Informational label for the upstream IdP (passed via AUTH_MANAGER_SOURCE_IDP).";
-    };
-
     databaseUrl = mkOption {
       type = types.nullOr types.str;
       default = null;
       description = "Optional PostgreSQL URL. When null, the in-memory store is used.";
     };
 
-    signingKey = mkOption {
+    webhookSecret = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "Inline signing key used to mint JWTs.";
+      description = "Shared secret for validating Authentik webhook requests.";
     };
 
-    signingKeyFile = mkOption {
+    webhookSecretFile = mkOption {
       type = types.nullOr types.path;
       default = null;
-      description = "Path to a file containing the signing key.";
-    };
-
-    pomeriumSharedSecret = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Inline shared secret that matches Pomerium's JWT assertion secret.";
-    };
-
-    pomeriumSharedSecretFile = mkOption {
-      type = types.nullOr types.path;
-      default = null;
-      description = "Path to file containing the Pomerium shared secret.";
+      description = "Path to a file containing the webhook secret.";
     };
 
     mattermost = {
       url = mkOption {
         type = types.str;
         default = "https://localhost:8443/mattermost";
-        description = "Public Mattermost URL (used for cookie domain/path).";
+        description = "Public Mattermost URL.";
       };
 
       internalUrl = mkOption {
         type = types.str;
         default = "http://127.0.0.1:8065";
-        description = "Internal Mattermost base URL used for proxying traffic.";
+        description = "Internal Mattermost base URL for API calls.";
       };
 
       adminToken = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Mattermost admin/bot token.";
+        description = "Mattermost admin/bot token for user provisioning.";
       };
 
       adminTokenFile = mkOption {
@@ -96,18 +78,50 @@ in {
         description = "File containing the Mattermost admin/bot token.";
       };
     };
+
+    n8n = {
+      enable = mkEnableOption "n8n SSO integration";
+
+      url = mkOption {
+        type = types.str;
+        default = "https://localhost:8443/n8n";
+        description = "Public n8n URL.";
+      };
+
+      internalUrl = mkOption {
+        type = types.str;
+        default = "http://127.0.0.1:5678";
+        description = "Internal n8n base URL for API calls.";
+      };
+
+      ownerEmail = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "n8n owner account email for user management.";
+      };
+
+      ownerEmailFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = "File containing the n8n owner email.";
+      };
+
+      ownerPassword = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "n8n owner account password for user management.";
+      };
+
+      ownerPasswordFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = "File containing the n8n owner password.";
+      };
+    };
   };
 
   config = mkIf cfg.enable {
     assertions = [
-      {
-        assertion = secretSatisfied cfg.signingKey cfg.signingKeyFile;
-        message = "services.rave.auth-manager.signingKey or signingKeyFile must be provided.";
-      }
-      {
-        assertion = secretSatisfied cfg.pomeriumSharedSecret cfg.pomeriumSharedSecretFile;
-        message = "services.rave.auth-manager.pomeriumSharedSecret or pomeriumSharedSecretFile must be provided.";
-      }
       {
         assertion = secretSatisfied cfg.mattermost.adminToken cfg.mattermost.adminTokenFile;
         message = "services.rave.auth-manager.mattermost.adminToken or adminTokenFile must be provided.";
@@ -115,27 +129,39 @@ in {
     ];
 
     systemd.services.auth-manager = {
-      description = "Auth Manager Bridge";
+      description = "Auth Manager - Authentik to Mattermost user provisioning";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/auth-manager";
         Restart = "on-failure";
+        RestartSec = 5;
+        # Security hardening
+        DynamicUser = true;
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
         Environment =
           [
             "AUTH_MANAGER_LISTEN_ADDR=${cfg.listenAddress}"
             "AUTH_MANAGER_MATTERMOST_URL=${cfg.mattermost.url}"
             "AUTH_MANAGER_MATTERMOST_INTERNAL_URL=${cfg.mattermost.internalUrl}"
-            "AUTH_MANAGER_SOURCE_IDP=${cfg.sourceIdp}"
           ]
           ++ lib.optional (cfg.databaseUrl != null) "AUTH_MANAGER_DATABASE_URL=${cfg.databaseUrl}"
-          ++ lib.optional (cfg.signingKey != null) "AUTH_MANAGER_SIGNING_KEY=${cfg.signingKey}"
-          ++ lib.optional (cfg.signingKeyFile != null) "AUTH_MANAGER_SIGNING_KEY_FILE=${cfg.signingKeyFile}"
-          ++ lib.optional (cfg.pomeriumSharedSecret != null) "AUTH_MANAGER_POMERIUM_SHARED_SECRET=${cfg.pomeriumSharedSecret}"
-          ++ lib.optional (cfg.pomeriumSharedSecretFile != null) "AUTH_MANAGER_POMERIUM_SHARED_SECRET_FILE=${cfg.pomeriumSharedSecretFile}"
+          ++ lib.optional (cfg.webhookSecret != null) "AUTH_MANAGER_WEBHOOK_SECRET=${cfg.webhookSecret}"
+          ++ lib.optional (cfg.webhookSecretFile != null) "AUTH_MANAGER_WEBHOOK_SECRET_FILE=${cfg.webhookSecretFile}"
           ++ lib.optional (cfg.mattermost.adminToken != null) "AUTH_MANAGER_MATTERMOST_ADMIN_TOKEN=${cfg.mattermost.adminToken}"
-          ++ lib.optional (cfg.mattermost.adminTokenFile != null) "AUTH_MANAGER_MATTERMOST_ADMIN_TOKEN_FILE=${cfg.mattermost.adminTokenFile}";
+          ++ lib.optional (cfg.mattermost.adminTokenFile != null) "AUTH_MANAGER_MATTERMOST_ADMIN_TOKEN_FILE=${cfg.mattermost.adminTokenFile}"
+          # n8n configuration
+          ++ lib.optional cfg.n8n.enable "AUTH_MANAGER_N8N_ENABLED=true"
+          ++ lib.optional cfg.n8n.enable "AUTH_MANAGER_N8N_URL=${cfg.n8n.url}"
+          ++ lib.optional cfg.n8n.enable "AUTH_MANAGER_N8N_INTERNAL_URL=${cfg.n8n.internalUrl}"
+          ++ lib.optional (cfg.n8n.ownerEmail != null) "AUTH_MANAGER_N8N_OWNER_EMAIL=${cfg.n8n.ownerEmail}"
+          ++ lib.optional (cfg.n8n.ownerEmailFile != null) "AUTH_MANAGER_N8N_OWNER_EMAIL_FILE=${cfg.n8n.ownerEmailFile}"
+          ++ lib.optional (cfg.n8n.ownerPassword != null) "AUTH_MANAGER_N8N_OWNER_PASS=${cfg.n8n.ownerPassword}"
+          ++ lib.optional (cfg.n8n.ownerPasswordFile != null) "AUTH_MANAGER_N8N_OWNER_PASS_FILE=${cfg.n8n.ownerPasswordFile}";
       };
     };
 

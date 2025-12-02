@@ -31,7 +31,7 @@
                 version = "0.1.0";
                 src = ./apps/auth-manager;
                 subPackages = [ "cmd/auth-manager" ];
-                vendorHash = "sha256-xj6jSxUiSAYNbIITOY50KoCyGcABvWSCFhXA9ytrX3M=";
+                vendorHash = "sha256-cRXx1JHc+04bltuMtKhfZy+/Su+oY3UcxhTaapaIJgM=";
               };
             in {
               auth-manager = mkAuthManager prev;

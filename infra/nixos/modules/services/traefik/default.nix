@@ -106,6 +106,14 @@ let
   pomeriumRedirectPath = trimTrailingSlash pomeriumPath;
   pomeriumProxyConfig = mkProxyExtra pomeriumPath;
 
+  authManagerEnabled = config.services.rave.auth-manager.enable or false;
+  authManagerPort =
+    let
+      addr = config.services.rave.auth-manager.listenAddress or ":8088";
+      parts = lib.splitString ":" addr;
+      portStr = lib.lists.last parts;
+    in if portStr == "" then 8088 else lib.toInt portStr;
+
   inherit (lib.strings) escapeXML;
 
   normalizeUrl = url:
@@ -577,6 +585,72 @@ let
         };
       }
     ]
+    # Authentik ForwardAuth for apps protected by proxy outpost
+    # This calls Authentik's embedded outpost to authenticate users and set X-Authentik-* headers
+    ++ optionals authentikEnabled [
+      { "authentik-forward-auth" = {
+          forwardAuth = {
+            address = "http://127.0.0.1:${authentikPortStr}/outpost.goauthentik.io/auth/traefik";
+            trustForwardHeader = true;
+            authResponseHeaders = [
+              "X-Authentik-Username"
+              "X-Authentik-Groups"
+              "X-Authentik-Email"
+              "X-Authentik-Name"
+              "X-Authentik-Uid"
+              "X-Authentik-Jwt"
+              "X-Authentik-Meta-Jwks"
+              "X-Authentik-Meta-Outpost"
+              "X-Authentik-Meta-Provider"
+              "X-Authentik-Meta-App"
+              "X-Authentik-Meta-Version"
+            ];
+          };
+        };
+      }
+    ]
+    # Auth-manager ForwardAuth for Mattermost session injection
+    # This reads X-Authentik-* headers (set by authentik-forward-auth) and creates Mattermost session
+    ++ optionals (mattermostEnabled && authManagerEnabled) [
+      { "mattermost-auth" = {
+          forwardAuth = {
+            address = "http://127.0.0.1:${toString authManagerPort}/auth/mattermost";
+            # Copy Authentik headers to auth-manager
+            authRequestHeaders = [
+              "X-Authentik-Email"
+              "X-Authentik-Username"
+              "X-Authentik-Name"
+              "X-Authentik-Uid"
+              "X-Authentik-Groups"
+              "Cookie"
+            ];
+            # Copy Mattermost session cookies back to client
+            addAuthCookiesToResponse = [
+              "MMAUTHTOKEN"
+              "MMUSERID"
+            ];
+          };
+        };
+      }
+    ]
+    # Auth-manager ForwardAuth for n8n user provisioning
+    # This reads X-Authentik-* headers (set by authentik-forward-auth) and ensures n8n user exists
+    ++ optionals (n8nEnabled && authManagerEnabled && authentikEnabled) [
+      { "n8n-auth" = {
+          forwardAuth = {
+            address = "http://127.0.0.1:${toString authManagerPort}/auth/n8n";
+            # Copy Authentik headers to auth-manager
+            authRequestHeaders = [
+              "X-Authentik-Email"
+              "X-Authentik-Username"
+              "X-Authentik-Name"
+              "X-Authentik-Uid"
+              "X-Authentik-Groups"
+            ];
+          };
+        };
+      }
+    ]
     ++ optionals n8nEnabled [
       { "n8n-headers" = {
           headers.customRequestHeaders."X-Forwarded-Prefix" = n8nNormalizedPath;
@@ -591,6 +665,14 @@ let
       }
       { "n8n-buffering" = {
           buffering.maxRequestBodyBytes = 104857600;
+        };
+      }
+      { "n8n-slash-redirect" = {
+          redirectRegex = {
+            regex = "^(https?://[^/]+${n8nRedirectPath})$";
+            replacement = "$1/";
+            permanent = true;
+          };
         };
       }
     ]
@@ -796,41 +878,84 @@ let
         };
       }
     ]
-    ++ optionals mattermostEnabled [
-      { "mattermost-main" = {
-          rule = "${hostRule host} && ${pathPrefixRule "/mattermost"}";
-          service = "mattermost";
-          middlewares = defaultSecurityMiddlewares ++ [ "mattermost-strip-prefix" "mattermost-buffering" ];
-          priority = 70;
-        };
-      }
-    ]
-    ++ optionals mattermostLoopbackEnabled [
-      { "mattermost-loopback" = {
-          rule = "${hostRule host} && ${pathPrefixRule "/mattermost"}";
-          service = "mattermost";
-          entryPoints = [ "mattermostHttps" ];
-          middlewares = defaultSecurityMiddlewares ++ [ "mattermost-strip-prefix" "mattermost-buffering" ];
-        };
-      }
-    ]
-    ++ optionals (mattermostEnabled && chatDomain != null && !behindPomerium) [
-      { "mattermost-chat-domain" = {
-          rule = hostRule chatDomain;
-          service = "mattermost";
-          middlewares = defaultSecurityMiddlewares ++ [ "mattermost-strip-prefix" "mattermost-buffering" ];
-        };
-      }
-    ]
-    ++ optionals n8nEnabled [
-      { "n8n" = {
-          rule = "${hostRule host} && ${pathPrefixRule n8nNormalizedPath}";
-          service = "n8n";
-          middlewares = defaultSecurityMiddlewares ++ [ "n8n-strip-prefix" "n8n-headers" "n8n-buffering" ];
-          priority = 90;
-        };
-      }
-    ]
+    # Mattermost SSO middlewares: when auth-manager is enabled, chain authentik-forward-auth then mattermost-auth
+    # This provides full SSO: Authentik authenticates, auth-manager creates Mattermost session
+    ++ optionals mattermostEnabled (
+      let
+        # SSO middleware chain: Authentik forward-auth sets X-Authentik-* headers, then auth-manager creates MM session
+        ssoMiddlewares =
+          if authManagerEnabled && authentikEnabled
+          then [ "authentik-forward-auth" "mattermost-auth" ]
+          else [];
+        baseMiddlewares = defaultSecurityMiddlewares ++ ssoMiddlewares ++ [ "mattermost-strip-prefix" "mattermost-buffering" ];
+      in [
+        { "mattermost-main" = {
+            rule = "${hostRule host} && ${pathPrefixRule "/mattermost"}";
+            service = "mattermost";
+            middlewares = baseMiddlewares;
+            priority = 70;
+          };
+        }
+      ]
+    )
+    ++ optionals mattermostLoopbackEnabled (
+      let
+        ssoMiddlewares =
+          if authManagerEnabled && authentikEnabled
+          then [ "authentik-forward-auth" "mattermost-auth" ]
+          else [];
+        baseMiddlewares = defaultSecurityMiddlewares ++ ssoMiddlewares ++ [ "mattermost-strip-prefix" "mattermost-buffering" ];
+      in [
+        { "mattermost-loopback" = {
+            rule = "${hostRule host} && ${pathPrefixRule "/mattermost"}";
+            service = "mattermost";
+            entryPoints = [ "mattermostHttps" ];
+            middlewares = baseMiddlewares;
+          };
+        }
+      ]
+    )
+    ++ optionals (mattermostEnabled && chatDomain != null && !behindPomerium) (
+      let
+        ssoMiddlewares =
+          if authManagerEnabled && authentikEnabled
+          then [ "authentik-forward-auth" "mattermost-auth" ]
+          else [];
+        baseMiddlewares = defaultSecurityMiddlewares ++ ssoMiddlewares ++ [ "mattermost-strip-prefix" "mattermost-buffering" ];
+      in [
+        { "mattermost-chat-domain" = {
+            rule = hostRule chatDomain;
+            service = "mattermost";
+            middlewares = baseMiddlewares;
+          };
+        }
+      ]
+    )
+    ++ optionals n8nEnabled (
+      let
+        # SSO middleware chain: Authentik forward-auth sets X-Authentik-* headers, then auth-manager provisions n8n user
+        ssoMiddlewares =
+          if authManagerEnabled && authentikEnabled
+          then [ "authentik-forward-auth" "n8n-auth" ]
+          else [];
+        baseMiddlewares = defaultSecurityMiddlewares ++ ssoMiddlewares ++ [ "n8n-strip-prefix" "n8n-headers" "n8n-buffering" ];
+      in [
+        { "n8n" = {
+            rule = "${hostRule host} && ${pathPrefixRule n8nNormalizedPath}";
+            service = "n8n";
+            middlewares = baseMiddlewares;
+            priority = 90;
+          };
+        }
+        { "n8n-root-redirect" = {
+            rule = "${hostRule host} && ${exactPathRule n8nRedirectPath}";
+            service = "n8n";
+            middlewares = [ "n8n-slash-redirect" ];
+            priority = 95;
+          };
+        }
+      ]
+    )
     ++ optionals monitoringEnabled [
       { "grafana" = {
           rule = "${hostRule host} && ${pathPrefixRule grafanaPath}";

@@ -38,6 +38,30 @@ let
     fallback = cfg.oidc.clientSecret;
   } else "";
 
+  # Derive OIDC endpoints based on provider type and configuration
+  oidcBaseUrl =
+    if cfg.oidc.baseUrl != "" then cfg.oidc.baseUrl
+    else if cfg.oidc.provider == "gitlab" then cfg.oidc.gitlabUrl
+    else "";
+  oidcBaseUrlNormalized =
+    if oidcBaseUrl != "" && lib.hasSuffix "/" oidcBaseUrl then oidcBaseUrl
+    else if oidcBaseUrl != "" then "${oidcBaseUrl}/"
+    else "";
+  # For Authentik: /application/o/<slug>/authorize/, etc.
+  # For GitLab: /oauth/authorize, etc.
+  oidcAuthUri =
+    if cfg.oidc.authUri != null then cfg.oidc.authUri
+    else if cfg.oidc.provider == "authentik" then "${oidcBaseUrlNormalized}application/o/authorize/"
+    else "${oidcBaseUrlNormalized}oauth/authorize";
+  oidcTokenUri =
+    if cfg.oidc.tokenUri != null then cfg.oidc.tokenUri
+    else if cfg.oidc.provider == "authentik" then "${oidcBaseUrlNormalized}application/o/token/"
+    else "${oidcBaseUrlNormalized}oauth/token";
+  oidcUserUri =
+    if cfg.oidc.userUri != null then cfg.oidc.userUri
+    else if cfg.oidc.provider == "authentik" then "${oidcBaseUrlNormalized}application/o/userinfo/"
+    else "${oidcBaseUrlNormalized}api/v4/user";
+
   redisHost = if cfg.redis.host != null then cfg.redis.host else sharedRedisHost;
   defaultRedisPort = if cfg.managedRedis then 6380 else sharedRedisPort;
   redisPort = if cfg.redis.port != null then cfg.redis.port else defaultRedisPort;
@@ -212,18 +236,31 @@ in {
       enable = mkOption {
         type = types.bool;
         default = true;
-        description = "Enable GitLab OIDC login";
+        description = "Enable OIDC login (via Authentik or other provider)";
       };
 
+      provider = mkOption {
+        type = types.enum [ "authentik" "gitlab" ];
+        default = "authentik";
+        description = "OIDC provider type (affects default endpoint configuration)";
+      };
+
+      baseUrl = mkOption {
+        type = types.str;
+        default = "";
+        description = "Base URL for the OIDC provider (e.g. https://auth.example.com/ for Authentik)";
+      };
+
+      # Legacy option for backward compatibility
       gitlabUrl = mkOption {
         type = types.str;
         default = "https://localhost:8443/gitlab";
-        description = "GitLab base URL";
+        description = "GitLab base URL (deprecated, use baseUrl instead)";
       };
 
       clientId = mkOption {
         type = types.str;
-        default = "penpot";
+        default = "rave-penpot";
         description = "OAuth client ID";
       };
 
@@ -237,6 +274,48 @@ in {
         type = types.nullOr types.path;
         default = null;
         description = "Optional secret file for the OAuth client secret";
+      };
+
+      clientName = mkOption {
+        type = types.str;
+        default = "Authentik";
+        description = "Display name for the OIDC provider";
+      };
+
+      authUri = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Custom authorization endpoint (auto-derived from baseUrl if not set)";
+      };
+
+      tokenUri = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Custom token endpoint (auto-derived from baseUrl if not set)";
+      };
+
+      userUri = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Custom userinfo endpoint (auto-derived from baseUrl if not set)";
+      };
+
+      scopes = mkOption {
+        type = types.str;
+        default = "openid profile email";
+        description = "OIDC scopes to request";
+      };
+
+      nameAttr = mkOption {
+        type = types.str;
+        default = "name";
+        description = "OIDC claim for user's display name";
+      };
+
+      emailAttr = mkOption {
+        type = types.str;
+        default = "email";
+        description = "OIDC claim for user's email";
       };
     };
   };
@@ -339,14 +418,14 @@ in {
         PENPOT_SMTP_SSL = "false";
       } // optionalAttrs cfg.oidc.enable {
         PENPOT_OIDC_CLIENT_ID = cfg.oidc.clientId;
-        PENPOT_OIDC_BASE_URI = cfg.oidc.gitlabUrl;
-        PENPOT_OIDC_CLIENT_NAME = "GitLab";
-        PENPOT_OIDC_AUTH_URI = "${cfg.oidc.gitlabUrl}/oauth/authorize";
-        PENPOT_OIDC_TOKEN_URI = "${cfg.oidc.gitlabUrl}/oauth/token";
-        PENPOT_OIDC_USER_URI = "${cfg.oidc.gitlabUrl}/api/v4/user";
-        PENPOT_OIDC_SCOPES = "openid profile email";
-        PENPOT_OIDC_NAME_ATTR = "name";
-        PENPOT_OIDC_EMAIL_ATTR = "email";
+        PENPOT_OIDC_BASE_URI = oidcBaseUrlNormalized;
+        PENPOT_OIDC_CLIENT_NAME = cfg.oidc.clientName;
+        PENPOT_OIDC_AUTH_URI = oidcAuthUri;
+        PENPOT_OIDC_TOKEN_URI = oidcTokenUri;
+        PENPOT_OIDC_USER_URI = oidcUserUri;
+        PENPOT_OIDC_SCOPES = cfg.oidc.scopes;
+        PENPOT_OIDC_NAME_ATTR = cfg.oidc.nameAttr;
+        PENPOT_OIDC_EMAIL_ATTR = cfg.oidc.emailAttr;
       };
 
       serviceConfig = {

@@ -78,6 +78,62 @@ in {
       default = "/n8n";
       description = "Base path served via the ingress proxy";
     };
+
+    oidc = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Enable OIDC authentication (e.g. via Authentik)";
+      };
+
+      clientId = lib.mkOption {
+        type = lib.types.str;
+        default = "rave-n8n";
+        description = "OAuth2/OIDC client ID";
+      };
+
+      clientSecret = lib.mkOption {
+        type = lib.types.str;
+        default = "n8n-oidc-secret";
+        description = "Fallback OAuth2/OIDC client secret";
+      };
+
+      clientSecretFile = lib.mkOption {
+        type = lib.types.nullOr pathOrString;
+        default = null;
+        description = "Path to file containing OIDC client secret (preferred for production)";
+      };
+
+      issuerUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "OIDC issuer URL (e.g. https://auth.example.com/application/o/n8n/)";
+      };
+
+      authUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "OIDC authorization endpoint";
+      };
+
+      tokenUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "OIDC token endpoint";
+      };
+
+      userInfoUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "OIDC userinfo endpoint";
+      };
+
+      scopes = lib.mkOption {
+        type = lib.types.str;
+        default = "openid profile email";
+        description = "OIDC scopes to request";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -101,6 +157,16 @@ in {
               "${pkgs.bash}/bin/bash -c '${pkgs.docker}/bin/docker volume create n8n-data || true'"
             ];
             ExecStart = pkgs.writeShellScript "n8n-start" ''
+              set -euo pipefail
+${lib.optionalString (cfg.oidc.enable && cfg.oidc.clientSecretFile != null) ''
+              if [ -s ${cfg.oidc.clientSecretFile} ]; then
+                OIDC_SECRET="$(cat ${cfg.oidc.clientSecretFile} | tr -d '\n')"
+              else
+                OIDC_SECRET=${lib.escapeShellArg cfg.oidc.clientSecret}
+              fi
+''}${lib.optionalString (cfg.oidc.enable && cfg.oidc.clientSecretFile == null) ''
+              OIDC_SECRET=${lib.escapeShellArg cfg.oidc.clientSecret}
+''}
               exec ${pkgs.docker}/bin/docker run \
                 --name n8n \
                 --rm \
@@ -124,10 +190,24 @@ in {
                 -e EXECUTIONS_DATA_SAVE_ON_ERROR=all \
                 -e EXECUTIONS_DATA_SAVE_ON_SUCCESS=none \
                 -e EXECUTIONS_DATA_PRUNE=true \
-                -e N8N_BASIC_AUTH_ACTIVE=true \
+${lib.optionalString (!cfg.oidc.enable) ''                -e N8N_BASIC_AUTH_ACTIVE=true \
                 -e N8N_BASIC_AUTH_USER=admin \
                 -e N8N_BASIC_AUTH_PASSWORD=${cfg.basicAuthPassword} \
-                ${cfg.dockerImage}
+''}${lib.optionalString cfg.oidc.enable ''                -e N8N_AUTH_EXCLUDE_ENDPOINTS="/healthz" \
+                -e N8N_USER_MANAGEMENT_DISABLED=false \
+                -e N8N_SSO_ENABLED=true \
+                -e N8N_SSO_JUST_IN_TIME_PROVISIONING=true \
+                -e N8N_SSO_REDIRECT_LOGIN_TO_SSO=true \
+                -e EXTERNAL_FRONTEND_HOOKS_URLS="" \
+                -e N8N_OIDC_ENABLED=true \
+                -e N8N_OIDC_CLIENT_ID=${cfg.oidc.clientId} \
+                -e N8N_OIDC_CLIENT_SECRET="$OIDC_SECRET" \
+                -e N8N_OIDC_ISSUER_URL=${cfg.oidc.issuerUrl} \
+''}${lib.optionalString (cfg.oidc.enable && cfg.oidc.authUrl != "") ''                -e N8N_OIDC_AUTHORIZATION_URL=${cfg.oidc.authUrl} \
+''}${lib.optionalString (cfg.oidc.enable && cfg.oidc.tokenUrl != "") ''                -e N8N_OIDC_TOKEN_URL=${cfg.oidc.tokenUrl} \
+''}${lib.optionalString (cfg.oidc.enable && cfg.oidc.userInfoUrl != "") ''                -e N8N_OIDC_USERINFO_URL=${cfg.oidc.userInfoUrl} \
+''}${lib.optionalString cfg.oidc.enable ''                -e N8N_OIDC_SCOPES="${cfg.oidc.scopes}" \
+''}                ${cfg.dockerImage}
             '';
             ExecStop = "${pkgs.docker}/bin/docker stop n8n";
         };

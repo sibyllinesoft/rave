@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -16,112 +14,73 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/rave-org/rave/apps/auth-manager/internal/bridge"
 	"github.com/rave-org/rave/apps/auth-manager/internal/config"
 	"github.com/rave-org/rave/apps/auth-manager/internal/mattermost"
-	"github.com/rave-org/rave/apps/auth-manager/internal/pomerium"
+	"github.com/rave-org/rave/apps/auth-manager/internal/n8n"
 	"github.com/rave-org/rave/apps/auth-manager/internal/shadow"
-	"github.com/rave-org/rave/apps/auth-manager/internal/tokens"
+	"github.com/rave-org/rave/apps/auth-manager/internal/webhook"
 )
 
 // Server owns the HTTP surface area for the auth-manager control plane.
 type Server struct {
-	cfg                    config.Config
-	shadowStore            shadow.Store
-	httpServer             *http.Server
-	pomeriumSecret         []byte
-	mmClient               *mattermost.Client
-	tokenIssuer            *tokens.Issuer
-	metricsRegistry        *prometheus.Registry
-	mattermostSessions     prometheus.Counter
-	tokensIssued           prometheus.Counter
-	mattermostProxy        *httputil.ReverseProxy
-	mattermostPublicURL    *url.URL
-	mattermostPathPrefix   string
-	mattermostCookieDomain string
-	mattermostCookiePath   string
-	mattermostCookieSecure bool
-	logger                 *slog.Logger
-	mmBreaker              *circuitBreaker
+	cfg              config.Config
+	shadowStore      shadow.Store
+	httpServer       *http.Server
+	mmClient         *mattermost.Client
+	n8nClient        *n8n.Client
+	metricsRegistry  *prometheus.Registry
+	usersProvisioned prometheus.Counter
+	webhooksReceived prometheus.Counter
+	logger           *slog.Logger
+	mmBreaker        *circuitBreaker
+	n8nBreaker       *circuitBreaker
 }
 
-// New wires up the HTTP server, routes, and store. A nil store falls back to the
-// in-memory implementation so developers can run the binary without extra
-// dependencies.
+// New wires up the HTTP server, routes, and store.
 func New(cfg config.Config, store shadow.Store, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
 	srv := &Server{
-		cfg:            cfg,
-		logger:         logger,
-		pomeriumSecret: pomerium.DecodeSharedSecret(cfg.PomeriumSharedSecret),
-		mmBreaker:      newCircuitBreaker(5, 30*time.Second),
+		cfg:        cfg,
+		logger:     logger,
+		mmBreaker:  newCircuitBreaker(5, 30*time.Second),
+		n8nBreaker: newCircuitBreaker(5, 30*time.Second),
 	}
 	if store == nil {
 		store = srv.newStoreFromConfig()
 	}
 	srv.shadowStore = store
 
-	mux := http.NewServeMux()
-
-	publicURL, err := url.Parse(cfg.MattermostURL)
-	if err != nil {
-		logger.Error("invalid mattermost URL", "url", cfg.MattermostURL, "err", err)
-		panic(err)
-	}
-	internalURL, err := url.Parse(cfg.MattermostInternalURL)
-	if err != nil {
-		logger.Error("invalid mattermost internal URL", "url", cfg.MattermostInternalURL, "err", err)
-		panic(err)
-	}
-	srv.mattermostPublicURL = publicURL
-	srv.mattermostPathPrefix = normalizePathPrefix(publicURL.Path)
-	srv.mattermostCookiePath = srv.mattermostPathPrefix
-	if srv.mattermostCookiePath == "" {
-		srv.mattermostCookiePath = "/"
-	}
-	srv.mattermostCookieDomain = publicURL.Hostname()
-	srv.mattermostCookieSecure = strings.EqualFold(publicURL.Scheme, "https")
-	srv.mattermostProxy = newMattermostProxy(internalURL, srv.mattermostPathPrefix)
-	if srv.mattermostProxy != nil {
-		srv.mattermostProxy.ErrorHandler = srv.handleProxyError
-	}
-
 	if cfg.MattermostAdminToken != "" {
 		srv.mmClient = mattermost.NewClient(cfg.MattermostInternalURL, cfg.MattermostAdminToken)
 	}
-	if issuer, err := tokens.NewIssuer(cfg.SigningKey); err != nil {
-		logger.Error("invalid signing key", "err", err)
-		panic(err)
-	} else {
-		srv.tokenIssuer = issuer
+
+	if cfg.N8NEnabled && cfg.N8NOwnerEmail != "" && cfg.N8NOwnerPass != "" {
+		srv.n8nClient = n8n.NewClient(cfg.N8NInternalURL, cfg.N8NOwnerEmail, cfg.N8NOwnerPass)
 	}
 
 	reg := prometheus.NewRegistry()
 	srv.metricsRegistry = reg
-	srv.mattermostSessions = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "auth_manager_mattermost_sessions_total",
-		Help: "Number of Mattermost sessions issued via the bridge",
+	srv.usersProvisioned = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "auth_manager_users_provisioned_total",
+		Help: "Number of users provisioned to downstream services",
 	})
-	srv.tokensIssued = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "auth_manager_tokens_issued_total",
-		Help: "Number of JWT tokens issued via /api/v1/tokens/issue",
+	srv.webhooksReceived = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "auth_manager_webhooks_received_total",
+		Help: "Number of webhook events received from Authentik",
 	})
-	reg.MustRegister(srv.mattermostSessions, srv.tokensIssued)
+	reg.MustRegister(srv.usersProvisioned, srv.webhooksReceived)
 
+	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/readyz", srv.handleReady)
 	mux.HandleFunc("/api/v1/shadow-users", srv.handleShadowUsers)
-	mux.HandleFunc("/api/v1/oauth/exchange", srv.handleExchange)
-	if srv.mattermostProxy != nil {
-		mux.Handle("/mattermost", srv.requirePomerium(srv.handleMattermostProxy))
-		mux.Handle("/mattermost/", srv.requirePomerium(srv.handleMattermostProxy))
-	}
-	mux.HandleFunc("/bridge/mattermost", srv.requirePomerium(srv.handleMattermostLegacy))
-	mux.HandleFunc("/api/v1/tokens/issue", srv.requirePomerium(srv.handleTokenIssue))
-	mux.HandleFunc("/api/v1/tokens/validate", srv.requirePomerium(srv.handleTokenValidate))
+	mux.HandleFunc("/webhook/authentik", srv.handleAuthentikWebhook)
+	mux.HandleFunc("/api/v1/sync", srv.handleManualSync)
+	mux.HandleFunc("/auth/mattermost", srv.handleMattermostForwardAuth)
+	mux.HandleFunc("/auth/n8n", srv.handleN8NForwardAuth)
 	mux.Handle("/metrics", promhttp.HandlerFor(srv.metricsRegistry, promhttp.HandlerOpts{}))
 
 	srv.httpServer = &http.Server{
@@ -137,7 +96,7 @@ func New(cfg config.Config, store shadow.Store, logger *slog.Logger) *Server {
 
 // Start begins serving HTTP requests.
 func (s *Server) Start() error {
-	s.logger.Info("auth-manager listening", "addr", s.cfg.ListenAddr, "idp", s.cfg.SourceIDP, "mattermost", s.cfg.MattermostURL)
+	s.logger.Info("auth-manager listening", "addr", s.cfg.ListenAddr, "mattermost", s.cfg.MattermostURL)
 	if err := s.cfg.Validate(); err != nil {
 		return err
 	}
@@ -162,7 +121,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	s.respondJSON(w, http.StatusOK, map[string]any{
 		"status":       "ok",
-		"source_idp":   s.cfg.SourceIDP,
 		"mattermost":   s.cfg.MattermostURL,
 		"current_time": time.Now().UTC().Format(time.RFC3339Nano),
 	})
@@ -189,364 +147,369 @@ func (s *Server) handleShadowUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.respondJSON(w, http.StatusOK, map[string]any{"shadow_users": users})
-	case http.MethodPost:
-		var payload struct {
-			Provider   string            `json:"provider"`
-			Subject    string            `json:"subject"`
-			Email      string            `json:"email"`
-			Name       string            `json:"name"`
-			Attributes map[string]string `json:"attributes"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			s.respondError(w, http.StatusBadRequest, err)
-			return
-		}
-		if payload.Provider == "" || payload.Subject == "" {
-			if identity, err := pomerium.IdentityFromRequest(r, s.pomeriumSecret); err == nil {
-				payload.Provider = "pomerium"
-				payload.Subject = identity.Subject
-				if payload.Email == "" {
-					payload.Email = identity.Email
-				}
-				if payload.Name == "" {
-					payload.Name = identity.Name
-				}
-				if payload.Attributes == nil {
-					payload.Attributes = map[string]string{}
-				}
-				if identity.User != "" {
-					payload.Attributes["user"] = identity.User
-				}
-				if len(identity.Groups) > 0 {
-					payload.Attributes["groups"] = strings.Join(identity.Groups, ",")
-				}
-			}
-		}
-		if payload.Provider == "" || payload.Subject == "" {
-			s.respondError(w, http.StatusBadRequest, errors.New("provider and subject are required"))
-			return
-		}
-		user, err := s.shadowStore.Upsert(r.Context(), shadow.Identity{
-			Provider: payload.Provider,
-			Subject:  payload.Subject,
-			Email:    payload.Email,
-			Name:     payload.Name,
-		}, payload.Attributes)
-		if err != nil {
-			s.respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		s.respondJSON(w, http.StatusCreated, user)
 	default:
-		w.Header().Set("Allow", "GET, POST")
+		w.Header().Set("Allow", "GET")
 		s.respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
 }
 
-func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
-	s.respondJSON(w, http.StatusNotImplemented, map[string]string{
-		"error": "oauth exchange pipeline not yet implemented",
-	})
-}
-
-func (s *Server) handleMattermostProxy(w http.ResponseWriter, r *http.Request) {
-	identity, ok := pomerium.IdentityFromContext(r.Context())
-	if !ok {
-		s.respondError(w, http.StatusUnauthorized, errors.New("pomerium identity missing from context"))
+// handleAuthentikWebhook receives webhook notifications from Authentik.
+// Authentik sends these when users are created, updated, or deleted.
+func (s *Server) handleAuthentikWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		s.respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
 
-	if s.mmClient == nil || s.mattermostProxy == nil {
-		s.respondError(w, http.StatusNotImplemented, errors.New("mattermost client not configured"))
-		return
-	}
-
-	if s.mmBreaker != nil && !s.mmBreaker.allow() {
-		wait := s.mmBreaker.remaining()
-		s.respondError(w, http.StatusServiceUnavailable, fmt.Errorf("mattermost temporarily unavailable, retry in %s", wait.Truncate(time.Second)))
-		return
-	}
-
-	if identity.Email == "" {
-		s.respondError(w, http.StatusBadRequest, errors.New("pomerium identity missing email claim"))
-		return
-	}
-
-	if needsRedirectToSlash(r.URL.Path, s.mattermostPathPrefix) {
-		target := ensureTrailingSlash(r.URL.Path)
-		if r.URL.RawQuery != "" {
-			target = target + "?" + r.URL.RawQuery
-		}
-		http.Redirect(w, r, target, http.StatusFound)
-		return
-	}
-
-	if !hasMattermostCookie(r) {
-		session, err := s.ensureMattermostSession(r.Context(), identity)
-		if err != nil {
-			s.recordMattermostFailure(err)
-			s.respondError(w, http.StatusBadGateway, err)
-			return
-		}
-		s.recordMattermostSuccess()
-		for _, cookie := range s.buildMattermostCookies(session.UserID, session.Token) {
-			http.SetCookie(w, cookie)
-			r.AddCookie(requestCookieFor(cookie))
-		}
-	}
-
-	s.mattermostProxy.ServeHTTP(w, r)
-	s.recordMattermostSuccess()
-}
-
-func (s *Server) handleMattermostLegacy(w http.ResponseWriter, r *http.Request) {
-	identity, ok := pomerium.IdentityFromContext(r.Context())
-	if !ok {
-		s.respondError(w, http.StatusUnauthorized, errors.New("pomerium identity missing from context"))
-		return
-	}
-
-	if s.mmClient == nil {
-		s.respondError(w, http.StatusNotImplemented, errors.New("mattermost client not configured"))
-		return
-	}
-
-	if identity.Email == "" {
-		s.respondError(w, http.StatusBadRequest, errors.New("pomerium identity missing email claim"))
-		return
-	}
-
-	session, err := s.ensureMattermostSession(r.Context(), identity)
+	event, err := webhook.ParseRequest(r, s.cfg.WebhookSecret)
 	if err != nil {
-		s.recordMattermostFailure(err)
-		s.respondError(w, http.StatusBadGateway, err)
-		return
-	}
-	s.recordMattermostSuccess()
-
-	s.respondJSON(w, http.StatusOK, map[string]any{
-		"session": session,
-	})
-}
-
-func (s *Server) ensureMattermostSession(ctx context.Context, identity pomerium.Identity) (mattermost.Session, error) {
-	canon := bridge.FromPomerium(identity)
-	mmIdent := canon.MattermostIdentity()
-
-	attributes := map[string]string{}
-	if mmIdent.User != "" {
-		attributes["user"] = mmIdent.User
-	}
-	if len(identity.Groups) > 0 {
-		attributes["groups"] = strings.Join(identity.Groups, ",")
-	}
-
-	mmUser, err := s.mmClient.EnsureUser(ctx, mmIdent)
-	if err != nil {
-		return mattermost.Session{}, err
-	}
-
-	session, err := s.mmClient.CreateSession(ctx, mmUser.ID)
-	if err != nil {
-		return mattermost.Session{}, err
-	}
-	if s.mattermostSessions != nil {
-		s.mattermostSessions.Inc()
-	}
-
-	attributes["mattermost_user_id"] = mmUser.ID
-	_, err = s.shadowStore.Upsert(ctx, shadow.Identity{
-		Provider: "pomerium",
-		Subject:  canon.Subject,
-		Email:    canon.Email,
-		Name:     mmIdent.Name,
-	}, attributes)
-	if err != nil {
-		return mattermost.Session{}, err
-	}
-
-	return session, nil
-}
-
-func hasMattermostCookie(r *http.Request) bool {
-	if _, err := r.Cookie("MMAUTHTOKEN"); err == nil {
-		return true
-	}
-	return false
-}
-
-func needsRedirectToSlash(path, prefix string) bool {
-	if prefix == "" || prefix == "/" {
-		return false
-	}
-	trimmed := strings.TrimSuffix(prefix, "/")
-	if trimmed == "" {
-		trimmed = "/"
-	}
-	return path == trimmed && !strings.HasSuffix(path, "/")
-}
-
-func ensureTrailingSlash(path string) string {
-	if strings.HasSuffix(path, "/") {
-		return path
-	}
-	return path + "/"
-}
-
-func (s *Server) buildMattermostCookies(userID, token string) []*http.Cookie {
-	path := s.mattermostCookiePath
-	if path == "" {
-		path = "/"
-	}
-	domain := s.mattermostCookieDomain
-	secure := s.mattermostCookieSecure
-	return []*http.Cookie{
-		{
-			Name:     "MMAUTHTOKEN",
-			Value:    token,
-			Path:     path,
-			Domain:   domain,
-			Secure:   secure,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		},
-		{
-			Name:     "MMUSERID",
-			Value:    userID,
-			Path:     path,
-			Domain:   domain,
-			Secure:   secure,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		},
-	}
-}
-
-func requestCookieFor(c *http.Cookie) *http.Cookie {
-	return &http.Cookie{
-		Name:  c.Name,
-		Value: c.Value,
-	}
-}
-
-func (s *Server) requirePomerium(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		identity, err := pomerium.IdentityFromRequest(r, s.pomeriumSecret)
-		if err != nil {
-			status := http.StatusUnauthorized
-			if errors.Is(err, pomerium.ErrInvalidAssertion) {
-				status = http.StatusForbidden
-			}
-			s.respondError(w, status, err)
-			return
-		}
-		ctx := pomerium.WithIdentity(r.Context(), identity)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	}
-}
-
-func (s *Server) handleTokenIssue(w http.ResponseWriter, r *http.Request) {
-	if s.tokenIssuer == nil {
-		s.respondError(w, http.StatusInternalServerError, errors.New("token issuer not configured"))
-		return
-	}
-
-	identity, ok := pomerium.IdentityFromContext(r.Context())
-	if !ok {
-		s.respondError(w, http.StatusUnauthorized, errors.New("pomerium identity missing from context"))
-		return
-	}
-
-	var payload struct {
-		Subject    string                 `json:"subject"`
-		Audience   []string               `json:"audience"`
-		TTLSeconds int                    `json:"ttl_seconds"`
-		Claims     map[string]interface{} `json:"claims"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		s.respondError(w, http.StatusBadRequest, err)
-		return
-	}
-	if payload.Subject == "" {
-		payload.Subject = identity.Subject
-	}
-	if payload.Claims == nil {
-		payload.Claims = map[string]interface{}{}
-	}
-	ttl := time.Duration(payload.TTLSeconds) * time.Second
-	if ttl <= 0 {
-		ttl = 5 * time.Minute
-	}
-
-	token, err := s.tokenIssuer.Issue(payload.Subject, payload.Audience, ttl, payload.Claims)
-	if err != nil {
-		s.respondError(w, http.StatusBadRequest, err)
-		return
-	}
-	if s.tokensIssued != nil {
-		s.tokensIssued.Inc()
-	}
-	s.respondJSON(w, http.StatusOK, map[string]any{
-		"token":         token.Value,
-		"expires_at":    token.ExpiresAt.Format(time.RFC3339Nano),
-		"subject":       payload.Subject,
-		"issued_to":     identity.Subject,
-		"audience":      payload.Audience,
-		"custom_claims": payload.Claims,
-	})
-}
-
-func (s *Server) handleTokenValidate(w http.ResponseWriter, r *http.Request) {
-	if s.tokenIssuer == nil {
-		s.respondError(w, http.StatusInternalServerError, errors.New("token issuer not configured"))
-		return
-	}
-
-	var payload struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		s.respondError(w, http.StatusBadRequest, err)
-		return
-	}
-	if payload.Token == "" {
-		s.respondError(w, http.StatusBadRequest, errors.New("token is required"))
-		return
-	}
-
-	claims, err := s.tokenIssuer.Validate(payload.Token)
-	if err != nil {
+		s.logger.Warn("webhook parse failed", "err", err)
 		s.respondError(w, http.StatusUnauthorized, err)
 		return
 	}
-	s.respondJSON(w, http.StatusOK, map[string]any{
-		"claims": claims,
-	})
-}
 
-func (s *Server) respondJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		s.logger.Error("write response", "err", err)
+	s.webhooksReceived.Inc()
+	s.logger.Info("webhook received",
+		"action", event.Action(),
+		"is_user_event", event.IsUserEvent(),
+		"severity", event.Severity,
+	)
+
+	// Only process user-related events
+	if !event.IsUserEvent() {
+		s.respondJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "not a user event"})
+		return
+	}
+
+	userInfo := event.ExtractUser()
+	if userInfo.Email == "" {
+		s.respondJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "no email in event"})
+		return
+	}
+
+	// Process based on action
+	switch event.Action() {
+	case webhook.ActionModelCreated, webhook.ActionModelUpdated, webhook.ActionUserWrite, webhook.ActionLogin:
+		if err := s.provisionUser(r.Context(), userInfo); err != nil {
+			s.logger.Error("provision failed", "email", userInfo.Email, "err", err)
+			s.respondError(w, http.StatusInternalServerError, err)
+			return
+		}
+		s.respondJSON(w, http.StatusOK, map[string]any{
+			"status": "provisioned",
+			"email":  userInfo.Email,
+		})
+	case webhook.ActionModelDeleted:
+		// For now, just log deletion - don't deprovision
+		s.logger.Info("user deleted in authentik", "email", userInfo.Email)
+		s.respondJSON(w, http.StatusOK, map[string]any{
+			"status": "noted",
+			"action": "deleted",
+			"email":  userInfo.Email,
+		})
+	default:
+		s.respondJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "unhandled action"})
 	}
 }
 
-func (s *Server) respondError(w http.ResponseWriter, status int, err error) {
-	s.respondJSON(w, status, map[string]string{"error": err.Error()})
-}
+// handleMattermostForwardAuth is called by Traefik's ForwardAuth middleware.
+// It reads Authentik identity headers (set by Authentik's proxy outpost forward-auth),
+// ensures the user exists in Mattermost, creates a session, and returns Set-Cookie headers.
+//
+// Flow:
+// 1. User visits /mattermost
+// 2. Traefik calls Authentik's outpost forward-auth endpoint (e.g., /outpost.goauthentik.io/auth/traefik)
+// 3. If not authenticated, Authentik redirects to login
+// 4. After login, Authentik sets X-Authentik-* headers
+// 5. Traefik then calls this endpoint with those headers
+// 6. We create Mattermost session and return cookies via addAuthCookiesToResponse
+func (s *Server) handleMattermostForwardAuth(w http.ResponseWriter, r *http.Request) {
+	// Extract user identity from Authentik headers (set by Authentik proxy outpost)
+	email := r.Header.Get("X-Authentik-Email")
+	username := r.Header.Get("X-Authentik-Username")
+	name := r.Header.Get("X-Authentik-Name")
 
-func (s *Server) handleProxyError(w http.ResponseWriter, r *http.Request, err error) {
-	s.recordMattermostFailure(err)
-	s.respondError(w, http.StatusBadGateway, err)
-}
+	// Log all X-Authentik headers for debugging
+	for key, values := range r.Header {
+		if strings.HasPrefix(strings.ToLower(key), "x-authentik") {
+			s.logger.Debug("authentik header", "key", key, "values", values)
+		}
+	}
 
-func (s *Server) logRequest(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		s.logger.Info("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
+	// If no Authentik headers, check if user already has Mattermost cookies
+	if email == "" {
+		// Check for existing Mattermost session
+		if _, err := r.Cookie("MMAUTHTOKEN"); err == nil {
+			// User already has a Mattermost session, allow through
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// No Authentik identity and no Mattermost session - deny
+		s.logger.Debug("no authentik identity headers found", "path", r.URL.Path)
+		http.Error(w, "Unauthorized - no Authentik session", http.StatusUnauthorized)
+		return
+	}
+
+	s.logger.Info("forward auth request",
+		"email", email,
+		"username", username,
+		"name", name,
+		"path", r.Header.Get("X-Forwarded-Uri"),
+	)
+
+	if s.mmClient == nil {
+		s.logger.Error("mattermost client not configured")
+		http.Error(w, "Mattermost not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Check circuit breaker
+	if s.mmBreaker != nil && !s.mmBreaker.allow() {
+		s.logger.Warn("mattermost circuit open", "email", email)
+		http.Error(w, "Mattermost temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Ensure user exists in Mattermost
+	mmUser, err := s.mmClient.EnsureUser(ctx, mattermost.Identity{
+		Email: email,
+		Name:  name,
+		User:  username,
 	})
+	if err != nil {
+		s.recordMattermostFailure(err)
+		s.logger.Error("failed to ensure mattermost user", "email", email, "err", err)
+		http.Error(w, "Failed to provision user", http.StatusInternalServerError)
+		return
+	}
+	s.recordMattermostSuccess()
+
+	// Create Mattermost session
+	session, err := s.mmClient.CreateSession(ctx, mmUser.ID)
+	if err != nil {
+		s.recordMattermostFailure(err)
+		s.logger.Error("failed to create mattermost session", "email", email, "user_id", mmUser.ID, "err", err)
+		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		return
+	}
+	s.recordMattermostSuccess()
+
+	s.logger.Info("mattermost session created",
+		"email", email,
+		"mattermost_user_id", mmUser.ID,
+		"session_id", session.ID,
+	)
+
+	// Set Mattermost session cookies
+	// These cookies will be passed through by Traefik to the client
+	http.SetCookie(w, &http.Cookie{
+		Name:     "MMAUTHTOKEN",
+		Value:    session.Token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "MMUSERID",
+		Value:    mmUser.ID,
+		Path:     "/",
+		HttpOnly: false, // Mattermost client JS needs this
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	// Return 200 to allow the request through
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleN8NForwardAuth is called by Traefik's ForwardAuth middleware for n8n.
+// It reads Authentik identity headers (set by Authentik's proxy outpost forward-auth),
+// ensures the user exists in n8n, and allows the request through.
+//
+// Unlike Mattermost which uses session cookies, n8n SSO via proxy works by:
+// 1. User visits /n8n
+// 2. Traefik calls Authentik's outpost forward-auth endpoint
+// 3. If not authenticated, Authentik redirects to login
+// 4. After login, Authentik sets X-Authentik-* headers
+// 5. Traefik then calls this endpoint with those headers
+// 6. We ensure the n8n user exists and allow through
+// 7. n8n sees the authenticated user headers from Authentik
+func (s *Server) handleN8NForwardAuth(w http.ResponseWriter, r *http.Request) {
+	// Extract user identity from Authentik headers (set by Authentik proxy outpost)
+	email := r.Header.Get("X-Authentik-Email")
+	username := r.Header.Get("X-Authentik-Username")
+	name := r.Header.Get("X-Authentik-Name")
+
+	// Log all X-Authentik headers for debugging
+	for key, values := range r.Header {
+		if strings.HasPrefix(strings.ToLower(key), "x-authentik") {
+			s.logger.Debug("n8n authentik header", "key", key, "values", values)
+		}
+	}
+
+	// If no Authentik headers, deny access
+	if email == "" {
+		s.logger.Debug("no authentik identity headers found for n8n", "path", r.URL.Path)
+		http.Error(w, "Unauthorized - no Authentik session", http.StatusUnauthorized)
+		return
+	}
+
+	s.logger.Info("n8n forward auth request",
+		"email", email,
+		"username", username,
+		"name", name,
+		"path", r.Header.Get("X-Forwarded-Uri"),
+	)
+
+	// If n8n client is not configured, just allow through (n8n will handle its own auth)
+	if s.n8nClient == nil {
+		s.logger.Debug("n8n client not configured, allowing through")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Check circuit breaker
+	if s.n8nBreaker != nil && !s.n8nBreaker.allow() {
+		s.logger.Warn("n8n circuit open", "email", email)
+		// Allow through anyway - n8n will handle auth
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Ensure user exists in n8n (best effort - don't block if it fails)
+	_, err := s.n8nClient.EnsureUser(ctx, n8n.Identity{
+		Email:    email,
+		Name:     name,
+		Username: username,
+	})
+	if err != nil {
+		s.recordN8NFailure(err)
+		s.logger.Warn("failed to ensure n8n user (allowing through)", "email", email, "err", err)
+		// Don't block - just log and allow through
+	} else {
+		s.recordN8NSuccess()
+		s.logger.Info("n8n user ensured", "email", email)
+	}
+
+	// Return 200 to allow the request through
+	// n8n will see the X-Authentik-* headers and can use them for user identification
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) recordN8NFailure(err error) {
+	if s.n8nBreaker == nil {
+		return
+	}
+	if opened := s.n8nBreaker.recordFailure(); opened {
+		s.logger.Error("n8n circuit opened", "cooldown", s.n8nBreaker.remaining(), "err", err)
+	} else {
+		s.logger.Warn("n8n operation failed", "err", err)
+	}
+}
+
+func (s *Server) recordN8NSuccess() {
+	if s.n8nBreaker == nil {
+		return
+	}
+	s.n8nBreaker.recordSuccess()
+}
+
+// handleManualSync allows triggering a sync for a specific user via API.
+func (s *Server) handleManualSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		s.respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	var payload struct {
+		Email    string `json:"email"`
+		Username string `json:"username"`
+		Name     string `json:"name"`
+		Subject  string `json:"subject"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		s.respondError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if payload.Email == "" {
+		s.respondError(w, http.StatusBadRequest, errors.New("email is required"))
+		return
+	}
+
+	userInfo := &webhook.UserInfo{
+		Email:    payload.Email,
+		Username: payload.Username,
+		Name:     payload.Name,
+		Subject:  payload.Subject,
+	}
+
+	if err := s.provisionUser(r.Context(), userInfo); err != nil {
+		s.respondError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.respondJSON(w, http.StatusOK, map[string]any{
+		"status": "provisioned",
+		"email":  payload.Email,
+	})
+}
+
+// provisionUser ensures a user exists in all downstream services.
+func (s *Server) provisionUser(ctx context.Context, info *webhook.UserInfo) error {
+	// Store in shadow database
+	subject := info.Subject
+	if subject == "" {
+		subject = info.Email // Use email as fallback subject
+	}
+
+	attributes := map[string]string{}
+	if info.Username != "" {
+		attributes["username"] = info.Username
+	}
+
+	shadowUser, err := s.shadowStore.Upsert(ctx, shadow.Identity{
+		Provider: "authentik",
+		Subject:  subject,
+		Email:    info.Email,
+		Name:     info.Name,
+	}, attributes)
+	if err != nil {
+		return fmt.Errorf("shadow store upsert: %w", err)
+	}
+
+	// Provision to Mattermost
+	if s.mmClient != nil {
+		if s.mmBreaker != nil && !s.mmBreaker.allow() {
+			s.logger.Warn("mattermost circuit open, skipping provisioning", "email", info.Email)
+		} else {
+			mmUser, err := s.mmClient.EnsureUser(ctx, mattermost.Identity{
+				Email: info.Email,
+				Name:  info.Name,
+				User:  info.Username,
+			})
+			if err != nil {
+				s.recordMattermostFailure(err)
+				return fmt.Errorf("mattermost provision: %w", err)
+			}
+			s.recordMattermostSuccess()
+			s.logger.Info("user provisioned to mattermost",
+				"email", info.Email,
+				"mattermost_id", mmUser.ID,
+				"shadow_id", shadowUser.ID,
+			)
+		}
+	}
+
+	s.usersProvisioned.Inc()
+	return nil
 }
 
 func (s *Server) recordMattermostFailure(err error) {
@@ -567,6 +530,26 @@ func (s *Server) recordMattermostSuccess() {
 	s.mmBreaker.recordSuccess()
 }
 
+func (s *Server) respondJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		s.logger.Error("write response", "err", err)
+	}
+}
+
+func (s *Server) respondError(w http.ResponseWriter, status int, err error) {
+	s.respondJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func (s *Server) logRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		s.logger.Info("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
+	})
+}
+
 func (s *Server) newStoreFromConfig() shadow.Store {
 	if s.cfg.DatabaseURL == "" {
 		return shadow.NewMemoryStore()
@@ -581,23 +564,6 @@ func (s *Server) newStoreFromConfig() shadow.Store {
 		return shadow.NewMemoryStore()
 	}
 	return store
-}
-
-func newMattermostProxy(target *url.URL, publicPrefix string) *httputil.ReverseProxy {
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	prefix := normalizePathPrefix(publicPrefix)
-	basePath := target.Path
-	proxy.Director = func(req *http.Request) {
-		req.URL.Scheme = target.Scheme
-		req.URL.Host = target.Host
-		req.Host = target.Host
-		trimmed := stripPublicPrefix(req.URL.Path, prefix)
-		req.URL.Path = singleJoiningSlash(basePath, trimmed)
-		if req.URL.RawPath != "" {
-			req.URL.RawPath = req.URL.Path
-		}
-	}
-	return proxy
 }
 
 type circuitBreaker struct {
@@ -656,49 +622,4 @@ func (c *circuitBreaker) recordFailure() (opened bool) {
 		return true
 	}
 	return false
-}
-
-func normalizePathPrefix(prefix string) string {
-	if prefix == "" {
-		return "/"
-	}
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	if prefix != "/" && strings.HasSuffix(prefix, "/") {
-		prefix = strings.TrimSuffix(prefix, "/")
-	}
-	if prefix == "" {
-		return "/"
-	}
-	return prefix
-}
-
-func stripPublicPrefix(path, prefix string) string {
-	if prefix == "/" || prefix == "" {
-		return path
-	}
-	if strings.HasPrefix(path, prefix) {
-		stripped := strings.TrimPrefix(path, prefix)
-		if stripped == "" {
-			return "/"
-		}
-		if !strings.HasPrefix(stripped, "/") {
-			return "/" + stripped
-		}
-		return stripped
-	}
-	return path
-}
-
-func singleJoiningSlash(a, b string) string {
-	aslash := strings.HasSuffix(a, "/")
-	bslash := strings.HasPrefix(b, "/")
-	switch {
-	case aslash && bslash:
-		return a + b[1:]
-	case !aslash && !bslash:
-		return a + "/" + b
-	}
-	return a + b
 }

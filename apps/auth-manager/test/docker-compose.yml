@@ -1,0 +1,62 @@
+version: '3.8'
+
+# Integration test environment for auth-manager
+# Run: docker-compose up -d
+# Test: curl http://localhost:8088/healthz
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: rave
+      POSTGRES_PASSWORD: rave
+      POSTGRES_DB: auth_manager
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rave -d auth_manager"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mattermost:
+    image: mattermost/mattermost-team-edition:latest
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://rave:rave@postgres:5432/mattermost?sslmode=disable
+      MM_SERVICESETTINGS_SITEURL: http://localhost:8065
+      # Create initial admin user for testing
+      MM_SQLSETTINGS_DISABLEDATABASESEARCH: "false"
+    ports:
+      - "8065:8065"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  auth-manager:
+    build:
+      context: ../
+      dockerfile: test/Dockerfile
+    environment:
+      AUTH_MANAGER_LISTEN_ADDR: ":8088"
+      AUTH_MANAGER_MATTERMOST_URL: "http://localhost:8065"
+      AUTH_MANAGER_MATTERMOST_INTERNAL_URL: "http://mattermost:8065"
+      AUTH_MANAGER_MATTERMOST_ADMIN_TOKEN: "${MATTERMOST_ADMIN_TOKEN:-}"
+      AUTH_MANAGER_WEBHOOK_SECRET: "test-webhook-secret"
+      AUTH_MANAGER_DATABASE_URL: "postgres://rave:rave@postgres:5432/auth_manager?sslmode=disable"
+    ports:
+      - "8088:8088"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# Additional database for mattermost
+  postgres-init:
+    image: postgres:15-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: rave
+    command: >
+      sh -c "psql -h postgres -U rave -d postgres -c 'CREATE DATABASE mattermost;' || true"

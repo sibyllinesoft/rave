@@ -120,6 +120,68 @@ in
         description = "Optional file containing the webhook secret (preferred for production).";
       };
     };
+
+    oidc = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Enable OIDC authentication (e.g. via Authentik)";
+      };
+
+      clientId = lib.mkOption {
+        type = lib.types.str;
+        default = "rave-outline";
+        description = "OAuth2/OIDC client ID";
+      };
+
+      clientSecret = lib.mkOption {
+        type = lib.types.str;
+        default = "outline-oidc-secret";
+        description = "Fallback OAuth2/OIDC client secret";
+      };
+
+      clientSecretFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "Path to file containing OIDC client secret (preferred for production)";
+      };
+
+      displayName = lib.mkOption {
+        type = lib.types.str;
+        default = "Authentik";
+        description = "Display name for the OIDC provider on the login screen";
+      };
+
+      authUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "OIDC authorization endpoint";
+      };
+
+      tokenUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "OIDC token endpoint";
+      };
+
+      userInfoUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "OIDC userinfo endpoint";
+      };
+
+      scopes = lib.mkOption {
+        type = lib.types.str;
+        default = "openid profile email";
+        description = "OIDC scopes to request (space-separated)";
+      };
+
+      usernameClaim = lib.mkOption {
+        type = lib.types.str;
+        default = "preferred_username";
+        description = "OIDC claim to use for username";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -200,6 +262,15 @@ ${optionalString (cfg.webhook.enable && cfg.webhook.secretFile != null) ''
 ''}${optionalString (cfg.webhook.enable && cfg.webhook.secretFile == null) ''
           WEBHOOK_SECRET=${lib.escapeShellArg cfg.webhook.secret}
 ''}
+${optionalString (cfg.oidc.enable && cfg.oidc.clientSecretFile != null) ''
+          if [ -s ${cfg.oidc.clientSecretFile} ]; then
+            OIDC_SECRET="$(${pkgs.coreutils}/bin/cat ${cfg.oidc.clientSecretFile} | ${trimNewline})"
+          else
+            OIDC_SECRET=${lib.escapeShellArg cfg.oidc.clientSecret}
+          fi
+''}${optionalString (cfg.oidc.enable && cfg.oidc.clientSecretFile == null) ''
+          OIDC_SECRET=${lib.escapeShellArg cfg.oidc.clientSecret}
+''}
 
           exec ${pkgs.docker}/bin/docker run \
             --rm \
@@ -220,6 +291,14 @@ ${optionalString (cfg.webhook.enable && cfg.webhook.secretFile != null) ''
             -e FILE_STORAGE_LOCAL_SERVER_ROOT=${publicUrlNormalized}uploads \
             ${optionalString cfg.webhook.enable ''-e WEBHOOK_ENDPOINT="${cfg.webhook.endpoint}" \''}
             ${optionalString cfg.webhook.enable ''-e WEBHOOK_SECRET="$WEBHOOK_SECRET" \''}
+            ${optionalString cfg.oidc.enable ''-e OIDC_CLIENT_ID="${cfg.oidc.clientId}" \''}
+            ${optionalString cfg.oidc.enable ''-e OIDC_CLIENT_SECRET="$OIDC_SECRET" \''}
+            ${optionalString cfg.oidc.enable ''-e OIDC_AUTH_URI="${cfg.oidc.authUrl}" \''}
+            ${optionalString cfg.oidc.enable ''-e OIDC_TOKEN_URI="${cfg.oidc.tokenUrl}" \''}
+            ${optionalString cfg.oidc.enable ''-e OIDC_USERINFO_URI="${cfg.oidc.userInfoUrl}" \''}
+            ${optionalString cfg.oidc.enable ''-e OIDC_DISPLAY_NAME="${cfg.oidc.displayName}" \''}
+            ${optionalString cfg.oidc.enable ''-e OIDC_SCOPES="${cfg.oidc.scopes}" \''}
+            ${optionalString cfg.oidc.enable ''-e OIDC_USERNAME_CLAIM="${cfg.oidc.usernameClaim}" \''}
             ${cfg.dockerImage}
         '';
         ExecStop = "${pkgs.docker}/bin/docker stop outline";

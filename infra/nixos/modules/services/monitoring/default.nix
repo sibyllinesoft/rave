@@ -171,6 +171,80 @@ in
           description = "Path to a file containing the Grafana database password.";
         };
       };
+
+      oidc = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Enable OIDC authentication (e.g. via Authentik)";
+        };
+
+        clientId = mkOption {
+          type = types.str;
+          default = "rave-grafana";
+          description = "OAuth2/OIDC client ID";
+        };
+
+        clientSecret = mkOption {
+          type = types.str;
+          default = "grafana-oidc-secret";
+          description = "Fallback OAuth2/OIDC client secret";
+        };
+
+        clientSecretFile = mkOption {
+          type = types.nullOr pathOrString;
+          default = null;
+          description = "Path to file containing OIDC client secret (preferred for production)";
+        };
+
+        name = mkOption {
+          type = types.str;
+          default = "Authentik";
+          description = "Display name for the OAuth provider";
+        };
+
+        authUrl = mkOption {
+          type = types.str;
+          default = "";
+          description = "OIDC authorization endpoint";
+        };
+
+        tokenUrl = mkOption {
+          type = types.str;
+          default = "";
+          description = "OIDC token endpoint";
+        };
+
+        apiUrl = mkOption {
+          type = types.str;
+          default = "";
+          description = "OIDC userinfo endpoint";
+        };
+
+        scopes = mkOption {
+          type = types.str;
+          default = "openid profile email";
+          description = "OIDC scopes to request (space-separated)";
+        };
+
+        roleAttributePath = mkOption {
+          type = types.str;
+          default = "contains(groups[*], 'Grafana Admins') && 'Admin' || contains(groups[*], 'Grafana Editors') && 'Editor' || 'Viewer'";
+          description = "JMESPath expression to determine user role from OIDC claims";
+        };
+
+        allowSignUp = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Allow new users to sign up via OIDC";
+        };
+
+        autoLogin = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Automatically redirect to OIDC login";
+        };
+      };
     };
 
     prometheus = {
@@ -352,6 +426,24 @@ in
         analytics = {
           reporting_enabled = false;
           check_for_updates = false;
+        };
+      } // optionalAttrs cfg.grafana.oidc.enable {
+        "auth.generic_oauth" = {
+          enabled = true;
+          name = cfg.grafana.oidc.name;
+          allow_sign_up = cfg.grafana.oidc.allowSignUp;
+          auto_login = cfg.grafana.oidc.autoLogin;
+          client_id = cfg.grafana.oidc.clientId;
+          scopes = cfg.grafana.oidc.scopes;
+          auth_url = cfg.grafana.oidc.authUrl;
+          token_url = cfg.grafana.oidc.tokenUrl;
+          api_url = cfg.grafana.oidc.apiUrl;
+          role_attribute_path = cfg.grafana.oidc.roleAttributePath;
+          use_pkce = true;
+        } // optionalAttrs (cfg.grafana.oidc.clientSecretFile == null) {
+          client_secret = cfg.grafana.oidc.clientSecret;
+        } // optionalAttrs (cfg.grafana.oidc.clientSecretFile != null) {
+          client_secret = fileProviderValue cfg.grafana.oidc.clientSecretFile;
         };
       };
       provision = {
