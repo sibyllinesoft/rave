@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  inherit (lib) mkOption mkEnableOption mkIf mkMerge types mkDefault optionalString;
+  inherit (lib) mkOption mkEnableOption mkIf mkMerge types mkDefault optionalString optionalAttrs;
   cfg = config.services.rave.authentik;
 
   pathOrString = types.either types.path types.str;
@@ -89,6 +89,11 @@ in {
         default = "admin@example.com";
         description = "Bootstrap administrator email address.";
       };
+      password = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Bootstrap administrator password (use env file for secrets in prod).";
+      };
       enableDefaultUser = mkOption {
         type = types.bool;
         default = true;
@@ -116,6 +121,11 @@ in {
         type = types.str;
         default = "authentik";
         description = "Database user Authentik authenticates as.";
+      };
+      password = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Database password (prefer environmentFile or secret management in production).";
       };
     };
 
@@ -216,6 +226,12 @@ in {
       default = ./blueprints;
       description = "Path containing Authentik blueprint YAML files to apply declaratively.";
     };
+
+    secretKey = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Secret key for signing; fallback to AUTHENTIK_SECRET_KEY from environmentFile when null.";
+    };
   };
 
   config = mkIf cfg.enable (mkMerge [
@@ -233,7 +249,7 @@ in {
           enableACME = cfg.nginx.enableACME;
           host = cfg.nginx.host;
         };
-        settings = mkMerge [
+        settings = mkMerge ([
           {
             log_level = cfg.logLevel;
             default_user_enabled = cfg.bootstrap.enableDefaultUser;
@@ -270,8 +286,17 @@ in {
               (mkIf (cfg.email.fromName != null) { from_name = cfg.email.fromName; })
             ]);
           }
-          cfg.extraSettings
-        ];
+        ]
+        ++ lib.optionalAttrs (cfg.bootstrap.password != null) {
+          bootstrap_password = cfg.bootstrap.password;
+        }
+        ++ lib.optionalAttrs (cfg.database.password != null) {
+          postgresql.password = cfg.database.password;
+        }
+        ++ lib.optionalAttrs (cfg.secretKey != null) {
+          secret_key = cfg.secretKey;
+        }
+        ++ [ cfg.extraSettings ]);
       };
 
       systemd.services.authentik-apply-blueprints = {

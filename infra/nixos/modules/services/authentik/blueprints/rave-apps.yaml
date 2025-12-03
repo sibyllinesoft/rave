@@ -1,0 +1,148 @@
+version: 1
+metadata:
+  name: rave-core-applications
+  labels:
+    managed-by: rave
+    component: authentik
+
+# This blueprint provisions the common OIDC providers/applications used by the RAVE stack.
+# Secrets (client_secret) are pulled from environment variables so production can still
+# rely on sops-nix without hard-coding sensitive values.
+entries:
+  - model: authentik_core.application
+    id: app_gitlab
+    attrs:
+      name: GitLab
+      slug: gitlab
+      protocol_provider: !Ref provider_gitlab
+      launch_url: https://auth.localtest.me:8443/gitlab
+      meta_description: GitLab via Authentik
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider_gitlab
+    attrs:
+      name: GitLab
+      slug: gitlab
+      client_id: !Env RAVE_GITLAB_CLIENT_ID
+      client_secret: !Env RAVE_GITLAB_CLIENT_SECRET
+      authorization_flow: !FindFlow slug:default-provider-authorization-implicit-consent
+      redirect_uris:
+        - https://auth.localtest.me:8443/gitlab/users/auth/openid_connect/callback
+      signing_key: !FindOrCreateCryptoKey "authentik Internal JWT Certificate"
+      property_mappings:
+        - !FindPropertyMapping slug:authentik_default_oidc_mapping
+
+  - model: authentik_core.application
+    id: app_mattermost
+    attrs:
+      name: Mattermost
+      slug: mattermost
+      protocol_provider: !Ref provider_mattermost
+      launch_url: https://auth.localtest.me:8443/mattermost
+      meta_description: Mattermost chat via Authentik
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider_mattermost
+    attrs:
+      name: Mattermost
+      slug: mattermost
+      client_id: !Env RAVE_MATTERMOST_CLIENT_ID
+      client_secret: !Env RAVE_MATTERMOST_CLIENT_SECRET
+      authorization_flow: !FindFlow slug:default-provider-authorization-implicit-consent
+      redirect_uris:
+        - https://auth.localtest.me:8443/mattermost/signup/openid/complete
+      signing_key: !FindOrCreateCryptoKey "authentik Internal JWT Certificate"
+      property_mappings:
+        - !FindPropertyMapping slug:authentik_default_oidc_mapping
+
+  - model: authentik_core.application
+    id: app_grafana
+    attrs:
+      name: Grafana
+      slug: grafana
+      protocol_provider: !Ref provider_grafana
+      launch_url: https://auth.localtest.me:8443/grafana/
+      meta_description: Grafana dashboards via Authentik
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider_grafana
+    attrs:
+      name: Grafana
+      slug: grafana
+      client_id: !Env RAVE_GRAFANA_CLIENT_ID
+      client_secret: !Env RAVE_GRAFANA_CLIENT_SECRET
+      authorization_flow: !FindFlow slug:default-provider-authorization-implicit-consent
+      redirect_uris:
+        - https://auth.localtest.me:8443/grafana/login/generic_oauth
+      signing_key: !FindOrCreateCryptoKey "authentik Internal JWT Certificate"
+      property_mappings:
+        - !FindPropertyMapping slug:authentik_default_oidc_mapping
+
+  - model: authentik_core.application
+    id: app_outline
+    attrs:
+      name: Outline
+      slug: outline
+      protocol_provider: !Ref provider_outline
+      launch_url: https://auth.localtest.me:8443/outline/
+      meta_description: Outline wiki via Authentik
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider_outline
+    attrs:
+      name: Outline
+      slug: outline
+      client_id: !Env RAVE_OUTLINE_CLIENT_ID
+      client_secret: !Env RAVE_OUTLINE_CLIENT_SECRET
+      authorization_flow: !FindFlow slug:default-provider-authorization-implicit-consent
+      redirect_uris:
+        - https://auth.localtest.me:8443/outline/auth/oidc.callback
+      signing_key: !FindOrCreateCryptoKey "authentik Internal JWT Certificate"
+      property_mappings:
+        - !FindPropertyMapping slug:authentik_default_oidc_mapping
+
+  - model: authentik_core.application
+    id: app_penpot
+    attrs:
+      name: Penpot
+      slug: penpot
+      protocol_provider: !Ref provider_penpot
+      launch_url: https://auth.localtest.me:8443/penpot
+      meta_description: Penpot via Authentik
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider_penpot
+    attrs:
+      name: Penpot
+      slug: penpot
+      client_id: !Env RAVE_PENPOT_CLIENT_ID
+      client_secret: !Env RAVE_PENPOT_CLIENT_SECRET
+      authorization_flow: !FindFlow slug:default-provider-authorization-implicit-consent
+      redirect_uris:
+        - https://auth.localtest.me:8443/penpot/api/login-oidc-callback
+      signing_key: !FindOrCreateCryptoKey "authentik Internal JWT Certificate"
+      property_mappings:
+        - !FindPropertyMapping slug:authentik_default_oidc_mapping
+
+  - model: authentik_core.application
+    id: app_n8n
+    attrs:
+      name: n8n
+      slug: n8n
+      protocol_provider: !Ref provider_n8n
+      launch_url: https://auth.localtest.me:8443/n8n
+      meta_description: n8n via Authentik
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: provider_n8n
+    attrs:
+      name: n8n
+      slug: n8n-oidc
+      client_id: !Env RAVE_N8N_CLIENT_ID
+      client_secret: !Env RAVE_N8N_CLIENT_SECRET
+      authorization_flow: !FindFlow slug:default-provider-authorization-implicit-consent
+      redirect_uris:
+        - https://auth.localtest.me:8443/n8n/rest/sso/oidc/callback
+      signing_key: !FindOrCreateCryptoKey "authentik Internal JWT Certificate"
+      property_mappings:
+        - !FindPropertyMapping slug:authentik_default_oidc_mapping

@@ -173,21 +173,14 @@ IP.2 = ::1
   authentikPublicUrl = "${externalHttpsBase}/";
   authentikHostPort = 9130;
   authentikMetricsPort = 9131;
-  authentikDockerArchivePath = ../../../artifacts/docker/authentik-server-2024.6.2.tar;
-  authentikDockerArchive =
-    if builtins.pathExists authentikDockerArchivePath then
-      builtins.path {
-        path = authentikDockerArchivePath;
-        name = "authentik-server-2024.6.2.tar";
-      }
-    else
-      null;
+  authentikSecretKey = "authentik-development-secret";
   authentikSecretKeyFile = if useSecrets
     then "/run/secrets/authentik/secret-key"
-    else pkgs.writeText "authentik-secret-key" "authentik-development-secret";
+    else pkgs.writeText "authentik-secret-key" authentikSecretKey;
+  authentikBootstrapPassword = "SuperSecurePassword123!";
   authentikBootstrapPasswordFile = if useSecrets
     then "/run/secrets/authentik/bootstrap-password"
-    else pkgs.writeText "authentik-bootstrap-password" "SuperSecurePassword123!";
+    else pkgs.writeText "authentik-bootstrap-password" authentikBootstrapPassword;
   authentikDbPassword = "authentik-db-password";
   authentikDbPasswordFile = if useSecrets
     then "/run/secrets/database/authentik-password"
@@ -200,6 +193,28 @@ IP.2 = ::1
   penpotOidcClientSecretFile = if useSecrets
     then "/run/secrets/penpot/oidc-client-secret"
     else pkgs.writeText "penpot-oidc-client-secret" "penpot-oidc-secret";
+  authentikEnvFile = pkgs.writeText "authentik.env" ''
+AUTHENTIK_SECRET_KEY=${authentikSecretKey}
+AUTHENTIK_BOOTSTRAP_PASSWORD=${authentikBootstrapPassword}
+AUTHENTIK_BOOTSTRAP_EMAIL=admin@auth.localtest.me
+AUTHENTIK_POSTGRESQL__PASSWORD=${authentikDbPassword}
+RAVE_GITLAB_CLIENT_ID=${gitlabOidcClientId}
+RAVE_GITLAB_CLIENT_SECRET=${gitlabOidcClientSecretFallback}
+RAVE_MATTERMOST_CLIENT_ID=${mattermostGitlabClientId}
+RAVE_MATTERMOST_CLIENT_SECRET=${mattermostGitlabSecretFallback}
+RAVE_GRAFANA_CLIENT_ID=${authentikGrafanaClientId}
+RAVE_GRAFANA_CLIENT_SECRET=grafana-oidc-secret
+RAVE_PENPOT_CLIENT_ID=${penpotOidcClientId}
+RAVE_PENPOT_CLIENT_SECRET=penpot-oidc-secret
+RAVE_OUTLINE_CLIENT_ID=${outlineOidcClientId}
+RAVE_OUTLINE_CLIENT_SECRET=outline-oidc-secret
+RAVE_N8N_CLIENT_ID=${n8nOidcClientId}
+RAVE_N8N_CLIENT_SECRET=n8n-oidc-secret
+RAVE_GOOGLE_CLIENT_ID=${googleOauthClientId}
+RAVE_GOOGLE_CLIENT_SECRET=${googleOauthClientSecret}
+RAVE_GITHUB_CLIENT_ID=${githubOauthClientId}
+RAVE_GITHUB_CLIENT_SECRET=${githubOauthClientSecret}
+'';
   traefikBackendPort = 9443;
   traefikBackendUrl = "http://127.0.0.1:${toString traefikBackendPort}";
   authManagerListenAddr = config.services.rave.auth-manager.listenAddress or ":8088";
@@ -401,182 +416,32 @@ in
 
   services.rave.authentik = {
     enable = true;
+    environmentFile = authentikEnvFile;
     publicUrl = authentikPublicUrl;
     hostPort = authentikHostPort;
     metricsPort = authentikMetricsPort;
-    dockerImageArchive = authentikDockerArchive;
     rootDomain = "auth.localtest.me";
     defaultExternalPort = baseHttpsPort;
-    secretKey = if useSecrets then null else "authentik-development-secret";
-    secretKeyFile = if useSecrets then authentikSecretKeyFile else null;
+    secretKey = authentikSecretKey;
     bootstrap = {
       email = "admin@auth.localtest.me";
-      password = if useSecrets then null else "authentik-admin-password";
-      passwordFile = if useSecrets then authentikBootstrapPasswordFile else null;
+      password = authentikBootstrapPassword;
     };
     database = {
       host = "127.0.0.1";
       port = 5432;
       name = "authentik";
       user = "authentik";
-      password = if useSecrets then null else "authentik-db-password";
-      passwordFile = if useSecrets then authentikDbPasswordFile else null;
+      password = authentikDbPassword;
     };
     redis = {
       database = config.services.rave.redis.allocations.authentik or 12;
     };
     email.enable = false;
-    oauthSources.google.clientIdFile = lib.mkForce googleOauthClientIdFile;
-    oauthSources.google.clientSecretFile = lib.mkForce googleOauthClientSecretFile;
-    oauthSources.github.clientIdFile = lib.mkForce githubOauthClientIdFile;
-    oauthSources.github.clientSecretFile = lib.mkForce githubOauthClientSecretFile;
-    applicationProviders = {
-      mattermost = {
-        enable = true;
-        slug = "mattermost";
-        displayName = "Mattermost";
-        clientId = mattermostGitlabClientId;
-        clientSecretFile = mattermostOidcClientSecretFile;
-        redirectUris = [ "${mattermostPublicUrl}/signup/openid/complete" ];
-        scopes = [ "openid" "profile" "email" ];
-        signingKeyName = "authentik Internal JWT Certificate";
-        application = {
-          slug = "mattermost";
-          name = "Mattermost";
-          launchUrl = mattermostPublicUrl;
-          description = "Mattermost chat via Authentik";
-        };
-      };
-      gitlab = {
-        enable = true;
-        slug = gitlabOidcSlug;
-        displayName = "GitLab";
-        clientId = gitlabOidcClientId;
-        clientSecretFile = gitlabOidcClientSecretFile;
-        redirectUris = [ "${gitlabExternalUrl}/users/auth/openid_connect/callback" ];
-        scopes = [ "openid" "profile" "email" ];
-        signingKeyName = "authentik Internal JWT Certificate";
-        application = {
-          slug = "gitlab";
-          name = "GitLab";
-          launchUrl = gitlabExternalUrl;
-          description = "GitLab via Authentik";
-        };
-      };
-      grafana = {
-        enable = true;
-        slug = "grafana";
-        displayName = "Grafana";
-        clientId = authentikGrafanaClientId;
-        clientSecretFile = authentikGrafanaClientSecretFile;
-        redirectUris = [ "${externalHttpsBase}/grafana/login/generic_oauth" ];
-        scopes = [ "openid" "profile" "email" ];
-        application = {
-          slug = "grafana";
-          name = "Grafana";
-          launchUrl = "${externalHttpsBase}/grafana/";
-          description = "Grafana via Authentik";
-        };
-      };
-      penpot = {
-        enable = true;
-        slug = "penpot";
-        displayName = "Penpot";
-        clientId = penpotOidcClientId;
-        clientSecretFile = penpotOidcClientSecretFile;
-        redirectUris = [ "${penpotPublicUrl}/api/login-oidc-callback" ];
-        scopes = [ "openid" "profile" "email" ];
-        application = {
-          slug = "penpot";
-          name = "Penpot";
-          launchUrl = penpotPublicUrl;
-          description = "Penpot via Authentik";
-        };
-      };
-      outline = {
-        enable = true;
-        slug = "outline";
-        displayName = "Outline";
-        clientId = outlineOidcClientId;
-        clientSecretFile = outlineOidcClientSecretFile;
-        redirectUris = [ "${outlinePublicUrl}auth/oidc.callback" ];
-        scopes = [ "openid" "profile" "email" ];
-        application = {
-          slug = "outline";
-          name = "Outline";
-          launchUrl = outlinePublicUrl;
-          description = "Outline wiki via Authentik";
-          icon = outlineIcon;
-        };
-      };
-      n8n = {
-        enable = true;
-        slug = n8nOidcSlug;
-        displayName = "n8n";
-        clientId = n8nOidcClientId;
-        clientSecretFile = n8nOidcClientSecretFile;
-        # n8n's OIDC callback lives under the base path
-        redirectUris = [ "${n8nPublicUrl}/rest/sso/oidc/callback" ];
-        scopes = [ "openid" "profile" "email" ];
-        application = {
-          slug = n8nOidcSlug;
-          name = "n8n";
-          launchUrl = n8nPublicUrl;
-          description = "n8n via Authentik OIDC";
-        };
-      };
-    };
-    # Webhook transport for auth-manager user provisioning
-    webhookTransports = {
-      auth-manager = {
-        enable = true;
-        name = "auth-manager";
-        webhookUrl = "http://127.0.0.1:8088/webhook/authentik";
-        secret = lib.mkIf (!useSecrets) "auth-manager-webhook-secret";
-        secretFile = lib.mkIf useSecrets "/run/secrets/auth-manager/webhook-secret";
-        sendOnce = false;
-        events = [ "model_created" "model_updated" "login" ];
-        modelFilters = [ "authentik_core.user" ];
-      };
-    };
-
-    # Proxy providers for ForwardAuth-based SSO (apps that don't support OIDC natively)
-    # These create proxy providers in Authentik that provide forward-auth protection
-    proxyProviders = {
-      mattermost-sso = {
-        enable = true;
-        name = "Mattermost SSO";
-        slug = "mattermost-sso";
-        externalHost = mattermostPublicUrl;  # Must include full path for forward_single mode
-        mode = "forward_single";
-        authorizationFlow = "default-provider-authorization-implicit-consent";
-        # Skip auth for Mattermost API endpoints that need to work without SSO
-        skipPathRegex = "^/(api/v4/(websocket|users/login)|static/).*";
-        basicAuthEnabled = false;
-        application = {
-          name = "Mattermost (SSO)";
-          launchUrl = mattermostPublicUrl;
-          description = "Mattermost with ForwardAuth SSO via auth-manager";
-        };
-        addToOutpost = true;
-      };
-      n8n = {
-        enable = true;
-        name = "n8n";
-        slug = "n8n";
-        externalHost = n8nPublicUrl;  # Must include full path for forward_single mode
-        mode = "forward_single";
-        authorizationFlow = "default-provider-authorization-implicit-consent";
-        # Skip auth for n8n webhook endpoints and healthcheck
-        skipPathRegex = "^/(webhook|webhook-test|healthz|rest/oauth2-credential).*";
-        basicAuthEnabled = false;
-        application = {
-          name = "n8n";
-          launchUrl = n8nPublicUrl;
-          description = "n8n with ForwardAuth SSO via auth-manager";
-        };
-        addToOutpost = true;
-      };
+    nginx = {
+      enable = true;
+      enableACME = false;
+      host = traefikHost;
     };
   };
 
@@ -830,6 +695,7 @@ in
     ../modules/foundation/networking.nix
     ../modules/foundation/nix-config.nix
     ../modules/foundation/ports.nix
+    ../modules/foundation/secrets.nix
 
     # Service modules
     ../modules/services/gitlab/default.nix

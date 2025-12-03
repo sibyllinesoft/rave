@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -226,13 +227,30 @@ func (s *Server) handleAuthentikWebhook(w http.ResponseWriter, r *http.Request) 
 // 6. We create Mattermost session and return cookies via addAuthCookiesToResponse
 func (s *Server) handleMattermostForwardAuth(w http.ResponseWriter, r *http.Request) {
 	// Extract user identity from Authentik headers (set by Authentik proxy outpost)
-	email := r.Header.Get("X-Authentik-Email")
-	username := r.Header.Get("X-Authentik-Username")
-	name := r.Header.Get("X-Authentik-Name")
+	email := headerFirst(r,
+		"X-Authentik-Email",
+		"X-Auth-Request-Email",
+		"X-Forwarded-Email",
+	)
+	username := headerFirst(r,
+		"X-Authentik-Username",
+		"X-Auth-Request-User",
+		"X-Forwarded-User",
+		"Remote-User",
+	)
+	name := headerFirst(r,
+		"X-Authentik-Name",
+		"X-Auth-Request-Name",
+		"X-Auth-Request-User",
+		"X-Forwarded-User",
+	)
+	isXHR := strings.EqualFold(r.Header.Get("X-Requested-With"), "XMLHttpRequest") ||
+		strings.Contains(strings.ToLower(r.Header.Get("Accept")), "json")
 
 	// Log all X-Authentik headers for debugging
 	for key, values := range r.Header {
-		if strings.HasPrefix(strings.ToLower(key), "x-authentik") {
+		lowerKey := strings.ToLower(key)
+		if strings.HasPrefix(lowerKey, "x-authentik") || strings.HasPrefix(lowerKey, "x-auth-request") {
 			s.logger.Debug("authentik header", "key", key, "values", values)
 		}
 	}
@@ -259,6 +277,7 @@ func (s *Server) handleMattermostForwardAuth(w http.ResponseWriter, r *http.Requ
 	)
 
 	if s.mmClient == nil {
+		w.Header().Set("X-Rave-Auth-Error", "mattermost-client-misconfigured")
 		s.logger.Error("mattermost client not configured")
 		http.Error(w, "Mattermost not configured", http.StatusServiceUnavailable)
 		return
@@ -266,6 +285,10 @@ func (s *Server) handleMattermostForwardAuth(w http.ResponseWriter, r *http.Requ
 
 	// Check circuit breaker
 	if s.mmBreaker != nil && !s.mmBreaker.allow() {
+		w.Header().Set("X-Rave-Auth-Error", "mattermost-circuit-open")
+		if retry := int(s.mmBreaker.remaining().Seconds()); retry > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+		}
 		s.logger.Warn("mattermost circuit open", "email", email)
 		http.Error(w, "Mattermost temporarily unavailable", http.StatusServiceUnavailable)
 		return
@@ -282,6 +305,7 @@ func (s *Server) handleMattermostForwardAuth(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		s.recordMattermostFailure(err)
 		s.logger.Error("failed to ensure mattermost user", "email", email, "err", err)
+		w.Header().Set("X-Rave-Auth-Error", "mattermost-provision-failed")
 		http.Error(w, "Failed to provision user", http.StatusInternalServerError)
 		return
 	}
@@ -292,6 +316,7 @@ func (s *Server) handleMattermostForwardAuth(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		s.recordMattermostFailure(err)
 		s.logger.Error("failed to create mattermost session", "email", email, "user_id", mmUser.ID, "err", err)
+		w.Header().Set("X-Rave-Auth-Error", "mattermost-session-failed")
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -322,6 +347,12 @@ func (s *Server) handleMattermostForwardAuth(w http.ResponseWriter, r *http.Requ
 		SameSite: http.SameSiteLaxMode,
 	})
 
+	if isXHR {
+		bearer := "Bearer " + session.Token
+		w.Header().Set("Authorization", bearer)
+		w.Header().Set("X-MMAUTHTOKEN", session.Token)
+	}
+
 	// Return 200 to allow the request through
 	w.WriteHeader(http.StatusOK)
 }
@@ -340,13 +371,28 @@ func (s *Server) handleMattermostForwardAuth(w http.ResponseWriter, r *http.Requ
 // 7. n8n sees the authenticated user headers from Authentik
 func (s *Server) handleN8NForwardAuth(w http.ResponseWriter, r *http.Request) {
 	// Extract user identity from Authentik headers (set by Authentik proxy outpost)
-	email := r.Header.Get("X-Authentik-Email")
-	username := r.Header.Get("X-Authentik-Username")
-	name := r.Header.Get("X-Authentik-Name")
+	email := headerFirst(r,
+		"X-Authentik-Email",
+		"X-Auth-Request-Email",
+		"X-Forwarded-Email",
+	)
+	username := headerFirst(r,
+		"X-Authentik-Username",
+		"X-Auth-Request-User",
+		"X-Forwarded-User",
+		"Remote-User",
+	)
+	name := headerFirst(r,
+		"X-Authentik-Name",
+		"X-Auth-Request-Name",
+		"X-Auth-Request-User",
+		"X-Forwarded-User",
+	)
 
 	// Log all X-Authentik headers for debugging
 	for key, values := range r.Header {
-		if strings.HasPrefix(strings.ToLower(key), "x-authentik") {
+		lowerKey := strings.ToLower(key)
+		if strings.HasPrefix(lowerKey, "x-authentik") || strings.HasPrefix(lowerKey, "x-auth-request") {
 			s.logger.Debug("n8n authentik header", "key", key, "values", values)
 		}
 	}
@@ -542,6 +588,16 @@ func (s *Server) respondError(w http.ResponseWriter, status int, err error) {
 	s.respondJSON(w, status, map[string]string{"error": err.Error()})
 }
 
+// headerFirst returns the first non-empty header value from the provided list of keys.
+func headerFirst(r *http.Request, keys ...string) string {
+	for _, key := range keys {
+		if val := strings.TrimSpace(r.Header.Get(key)); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
 func (s *Server) logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -552,6 +608,7 @@ func (s *Server) logRequest(next http.Handler) http.Handler {
 
 func (s *Server) newStoreFromConfig() shadow.Store {
 	if s.cfg.DatabaseURL == "" {
+		s.logger.Warn("AUTH_MANAGER_DATABASE_URL not set; using in-memory shadow store (data lost on restart)")
 		return shadow.NewMemoryStore()
 	}
 

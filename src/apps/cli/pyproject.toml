@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
   "click>=8.0",
   "pydantic>=2.0",
+  "pydantic-settings>=2.0",
   "PyYAML>=6.0",
   "requests>=2.31",
 ]

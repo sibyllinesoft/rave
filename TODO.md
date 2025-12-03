@@ -1,137 +1,95 @@
-### 1. The Authentik Fix (Priority)
-The current setup (inferred from docs/scripts) attempts to run Authentik via Docker containers inside the NixOS VM. This causes networking friction between the host, the Traefik proxy, and the internal Postgres/Redis services.
+### 1. Maintenance & Project Hygiene
+To make the project easier to develop and maintain, consider the following structural changes:
 
-**The Issue:**
-In `docs/how-to/authentik.md`, you define manual steps or `authentik-sync-oidc-applications.service` to configure providers. This is brittle because if the Docker container restarts, state or connectivity to the "host" (VM) database might be lost or race-conditioned.
+**A. Manage Go Dependencies properly**
+The repository includes the `vendor/` directory (files 5-23, 60-197). This accounts for the vast majority of the file count and noise.
+*   **Action:** Remove `src/apps/auth-manager/vendor` from source control.
+*   **Fix:** Add `vendor/` to `.gitignore`. Let Nix handle dependencies using `vendorHash` in your `buildGoModule` derivation, or use standard Go modules locally.
 
-**The Solution: Use Native NixOS Modules**
-NixOS has a first-class `services.authentik` module. Switching to this removes the Docker layer, allowing systemd to manage dependencies (Postgres/Redis) and file permissions natively.
+**B. Centralize and Decouple Scripts**
+You have Python scripts embedded in `infra/nixos/modules/...` (e.g., File 3: `ensure-gitlab-mattermost-ci.py`).
+*   **Issue:** Editing Python inside a Nix module definition or a deep subdirectory is difficult for linting and testing.
+*   **Fix:** Move these scripts to `src/scripts/` or `src/tools/`. In your Nix configuration, reference them by path or package them as binaries. This allows you to run standard Python linters (black, mypy, ruff) on them.
 
-**Refactor Plan:**
-1.  Remove the Docker container definition for Authentik.
-2.  Enable the native module in your `infra/nixos/modules/services/authentik/default.nix`:
+**C. Unify Entry Points**
+You have various shell scripts for testing (`scripts/test-e2e.sh`, `scripts/spinup_smoke.sh`).
+*   **Recommendation:** Create a `Justfile` or `Makefile`. This documents the "official" way to run things.
+    *   Example: `just test-auth`, `just dev-vm`, `just lint`.
 
-```nix
-# infra/nixos/modules/services/authentik/default.nix
-{ config, lib, pkgs, ... }:
-let
-  cfg = config.services.rave.authentik;
-in {
-  config = lib.mkIf cfg.enable {
-    services.authentik = {
-      enable = true;
-      # The environment file provided by sops-nix
-      environmentFile = config.sops.secrets."authentik/env".path;
-      settings = {
-        email.host = "smtp.example.com";
-        disable_startup_analytics = true;
-        avatars = "gravatar";
-      };
-      # Automatically provision the ingress
-      nginx = {
-        enable = true;
-        enableACME = false;
-        host = "auth.localtest.me";
-      };
-    };
+---
 
-    # Declarative Configuration (Blueprints)
-    # This replaces manual setup steps for Mattermost/Grafana integration
-    systemd.services.authentik-apply-blueprints = {
-      wantedBy = [ "multi-user.target" ];
-      after = [ "authentik-worker.service" "authentik-web.service" ];
-      script = ''
-        ${pkgs.authentik}/bin/ak apply_blueprint ${./blueprints}
-      '';
-    };
-  };
+### 2. Authentik Integration Issues
+The Authentik setup "isn't working." Based on `src/apps/auth-manager/internal/server/server.go` (File 11) and `src/apps/auth-manager/internal/webhook/authentik.go` (File 37), here are the likely causes:
+
+#### Issue A: Webhook Payload Mismatch
+In `src/apps/auth-manager/internal/webhook/authentik.go` (File 37), the struct `AuthentikEvent` expects a highly specific JSON structure:
+
+```go
+type EventContext struct {
+    // ...
+    User *EventUser `json:"user"` // Expects a nested user object
+    // ...
 }
 ```
 
-### 2. Repository Structural Refactoring
-The current structure mixes source code (`apps/`), infrastructure (`infra/`), and massive artifacts (`*.qcow2` files in root or artifacts folder).
+**The Problem:** Default Authentik webhooks do **not** send this structure. They usually send a flat event or a different structure depending on the event transport type.
+**The Fix:**
+1.  In Authentik, go to **Events -> Notifications -> Transports**.
+2.  Select your Webhook transport.
+3.  Ensure the **Property Mapping** is creating the JSON structure your Go code expects.
+4.  **Debugging:** In `server.go` line 168 (`handleAuthentikWebhook`), the logger warns `webhook parse failed` or logs `ignored`. Check the `auth-manager` logs. You likely need to update the Go struct to match the *actual* JSON Authentik is sending, or update Authentik's transformation.
 
-**Action Items:**
-1.  **Strict Separation:** Ensure `.gitignore` is extremely aggressive about `*.qcow2`. The hygiene script (`scripts/repo/hygiene-check.sh`) is good, but you should move *all* binary artifacts to a dedicated S3/R2 bucket or use `git-lfs` if you must track them.
-2.  **Unified "Src" Directory:** Move `services/` and `apps/` into a single `src/` directory to simplify tooling paths.
-3.  **Shell Script Consolidation:** You have `scripts/`, `scripts/build`, `scripts/demo`, `scripts/security`, etc.
-    *   **Refactor:** Replace the many bash scripts with a **Justfile**. `Just` is a command runner perfect for Nix projects. It allows you to document commands and dependencies clearly.
+#### Issue B: Forward Auth Header Mismatch
+In `src/apps/auth-manager/internal/server/server.go` (File 11), the `handleMattermostForwardAuth` function strictly looks for these headers:
 
-**Example `Justfile`:**
-```makefile
-# Instead of scripts/build/build-vm.sh
-build profile="development":
-    nix build .#{{profile}} --show-trace
-
-# Instead of apps/cli/rave vm launch-local
-launch profile="development":
-    ./apps/cli/rave vm launch-local --profile {{profile}}
-
-# Replaces scripts/security/p1-security-verification.sh
-verify-security:
-    trivy fs --severity HIGH,CRITICAL .
+```go
+email := r.Header.Get("X-Authentik-Email")
+username := r.Header.Get("X-Authentik-Username")
+name := r.Header.Get("X-Authentik-Name")
 ```
 
-### 3. Python CLI Refactoring (`apps/cli`)
-`vm_manager.py` is becoming a "God Class" (13,000+ tokens). It handles SSH injection, QEMU management, disk creation, and config parsing.
-
-**Refactor Plan:**
-1.  **Split `vm_manager.py`:**
-    *   `qemu_driver.py`: Pure functions to generate QEMU command lines.
-    *   `ssh_client.py`: A dedicated wrapper for `subprocess.run(["ssh", ...])` that handles connection retries and `sshpass` fallback logic centrally.
-    *   `provisioner.py`: Logic for `install_age_key` and `inject_ssh_key`.
-2.  **Use `pydantic-settings`:** Currently, you parse `.env` files manually in `rave` (main file). Use Pydantic to load environment variables automatically, ensuring types are correct before the CLI starts.
-3.  **Remove `PlatformManager` checks:** NixOS provides a uniform environment inside the VM. The CLI runs on the host, but using Python's `pathlib` and standard libraries usually negates the need for complex OS switching logic unless you are supporting Windows directly (which QEMU/Nix usually implies WSL2 anyway).
-
-### 4. Nix Flake Simplification
-The `flake.nix` (inferred from context) seems to export many packages and checks.
-
-**Refactor Plan:**
-Use **`flake-parts`**. This is the modern standard for maintaining complex Nix flakes. It allows you to split your flake logic into multiple files without the boilerplate of standard flakes.
-
-**Proposed Structure:**
-```
-repo/
-├── flake.nix (using flake-parts)
-├── parts/
-│   ├── devshells.nix (dev environments)
-│   ├── vms.nix (nixosConfigurations and image generators)
-│   └── packages.nix (CLI tools)
-```
-
-### 5. `auth-manager` Improvements
-The `auth-manager` Go service (`apps/auth-manager`) attempts to create shadow users for Mattermost.
-
-**Code Review of `internal/server/server.go`:**
-*   **Circuit Breakers:** You are initializing new circuit breakers in `New()`, which is good. However, in `handleMattermostForwardAuth`, if the breaker is open, you return `503`. Traefik might interpret this as "Auth server down" and block the request entirely.
-    *   *Improvement:* Ensure Traefik `forwardAuth` middleware is configured with `failResponseHeaders`.
-*   **Cookie Handling:**
-    ```go
-    // In handleMattermostForwardAuth
-    http.SetCookie(w, &http.Cookie{Name: "MMAUTHTOKEN", ...})
+**The Problem:** Authentik's Proxy Provider does not send `X-Authentik-Email` by default. It usually sends `X-Auth-Request-Email` or `Remote-User` / `X-Forwarded-User`.
+**The Fix:**
+1.  In Authentik, go to **Applications -> Providers -> (Your Proxy Provider)**.
+2.  Edit the provider.
+3.  Look for **Advanced protocol settings**.
+4.  Under **Additional Headers**, you must explicitly map them:
+    ```text
+    X-Authentik-Email: user.email
+    X-Authentik-Username: user.username
+    X-Authentik-Name: user.name
     ```
-    Mattermost expects the token in the header `Authorization: Bearer <token>` for API calls, or the `MMAUTHTOKEN` cookie for browser access. Ensure your logic handles the `X-Requested-With: XMLHttpRequest` header correctly, as Mattermost's SPA behaves differently than standard browser navigation.
+    *Without this configuration in Authentik, the variables in your Go server will be empty strings, and it will return `401 Unauthorized`.*
 
-### 6. Secret Management UX
-The current workflow requires `rave secrets init` and manual `sops` editing.
+#### Issue C: Circuit Breaker False Positives
+Your server uses a circuit breaker (File 11, Line 48: `newCircuitBreaker(5, 30*time.Second)`).
+**The Risk:** If Authentik misconfigures or the database is slow on startup (common in dev VMs), the circuit breaker opens.
+*   **Observation:** The `handleMattermostForwardAuth` function returns `503 Service Unavailable` if the breaker is open.
+*   **Fix:** Check your logs for `"mattermost circuit open"`. If this happens during boot, your `STARTUP_TIMEOUT` in `run-auth-manager-local.sh` (File 30) might be too short, or the breaker sensitivity is too high for a local dev environment.
 
-**Improvement:**
-Implement a **Development Mode Secret Generator**.
-In `infra/nixos/modules/foundation/secrets.nix` (create if missing), add logic:
+### 3. Code Specific Findings
 
-```nix
-config.sops.secrets = lib.mkIf config.services.rave.devMode {
-  "mattermost/admin-password" = {
-    format = "binary";
-    sopsFile = pkgs.writeText "dummy" "password123"; # Insecure, dev only
-  };
-}
-```
-This allows a developer to run `nix build .#development` without needing to set up GPG/Age keys immediately, lowering the barrier to entry for new contributors.
+**1. Hardcoded Secrets in Scripts**
+*   File 25 (`fix-certificates.sh`) contains `sshpass -p 'debug123'`.
+*   File 43 (`start-rave-demo.sh`) contains `Password: rave-development-password`.
+*   **Recommendation:** Ensure these are only used in local dev/sandbox environments. If these scripts run in CI/CD or Production, switch to SSH keys or environment variable injection immediately.
+
+**2. Insecure TLS Skipping**
+*   File 45 (`check_database.sh`) and others use `curl -k`.
+*   **Recommendation:** You have a script `fix-certificates.sh` (File 25). Ensure this runs *before* health checks so you can drop the `-k` flag and actually verify TLS is working correctly.
+
+**3. Shadow User Database Logic**
+*   In `src/apps/auth-manager/internal/server/server.go`:
+    ```go
+    if cfg.DatabaseURL == "" {
+        return shadow.NewMemoryStore()
+    }
+    ```
+*   **Risk:** If the Postgres connection fails or isn't configured in the environment variables, it silently falls back to `MemoryStore`. Users will be provisioned, work fine, and then **disappear** when the service restarts.
+*   **Fix:** Make `DatabaseURL` mandatory in production, or add a massive warning log when falling back to Memory Store.
 
 ### Summary of Next Steps
-
-1.  **Immediate Fix:** Create a `infra/nixos/modules/services/authentik.nix` using the native NixOS module system to replace the Docker-based setup.
-2.  **Cleanup:** Run the `hygiene-check.sh` and move all `*.qcow2` files to a `.gitignore`d `artifacts/` folder.
-3.  **Refactor:** Break `apps/cli/vm_manager.py` into `qemu.py`, `ssh.py`, and `provision.py`.
-4.  **Tooling:** Install `just` and create a `Justfile` to replace the `scripts/` directory chaos.
+1.  **Git:** Add `src/apps/auth-manager/vendor/` to `.gitignore`.
+2.  **Authentik:** Configure "Additional Headers" in the Authentik Proxy Provider to send `X-Authentik-Email`.
+3.  **Authentik:** Verify the Webhook JSON body matches the Go struct tags in `authentik.go`.
+4.  **Go:** Check `auth-manager` logs to see if it's falling back to `MemoryStore` unintentionally.

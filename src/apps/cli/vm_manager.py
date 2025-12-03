@@ -10,7 +10,6 @@ import shlex
 import socket
 import shutil
 import subprocess
-import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -21,6 +20,15 @@ from pydantic import ValidationError
 from models import VMConfigModel
 from process_utils import ProcessError, ProcessResult, run_command
 from platform_utils import PlatformManager
+from provisioner import (
+    create_blank_disk,
+    ensure_root_authorized_key,
+    inject_ssh_key,
+    inject_ssh_key_cloud_init,
+    inject_ssh_key_simple,
+    install_age_key_into_image,
+)
+from ssh_client import build_ssh_command, run_remote_script, run_remote_stream
 
 
 class VMManager:
@@ -98,42 +106,7 @@ class VMManager:
         *,
         connect_timeout: int = 10,
     ) -> Dict[str, any]:
-        """Construct an SSH command for running a remote script."""
-
-        ports = config["ports"]
-        keypair_path = config.get("keypair")
-
-        ssh_common = [
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-p",
-            str(ports["ssh"]),
-            "root@localhost",
-            "bash",
-            "-lc",
-            remote_script,
-        ]
-
-        if keypair_path and Path(keypair_path).exists():
-            command = ["ssh", "-i", keypair_path, *ssh_common]
-            return {"success": True, "command": command}
-
-        if not shutil.which("sshpass"):
-            return {
-                "success": False,
-                "error": "sshpass not available; provide an SSH keypair for VM access",
-            }
-
-        command = [
-            "sshpass",
-            "-p",
-            "debug123",
-            "ssh",
-            *ssh_common,
-        ]
-        return {"success": True, "command": command}
+        return build_ssh_command(config, remote_script, connect_timeout=connect_timeout)
 
     def _run_remote_script(
         self,
@@ -147,48 +120,16 @@ class VMManager:
         initial_delay: float = 1.0,
         max_delay: float = 16.0,
     ) -> Dict[str, any]:
-        """Execute a remote script over SSH with exponential backoff."""
-
-        delay = initial_delay
-        last_error = ""
-
-        for attempt in range(1, max_attempts + 1):
-            build_result = self._build_ssh_command(
-                config, remote_script, connect_timeout=connect_timeout
-            )
-            if not build_result.get("success"):
-                return build_result
-
-            ssh_cmd = build_result["command"]
-
-            try:
-                result_obj = run_command(
-                    ssh_cmd,
-                    timeout=timeout,
-                )
-            except ProcessError as exc:
-                last_error = (
-                    exc.result.stderr.strip()
-                    or exc.result.stdout.strip()
-                    or f"{description} attempt {attempt} failed"
-                )
-            else:
-                if result_obj.returncode == 0:
-                    return {"success": True, "result": result_obj}
-
-                stderr = result_obj.stderr.strip()
-                stdout = result_obj.stdout.strip()
-                last_error = (
-                    stderr
-                    or stdout
-                    or f"{description} failed with exit code {result_obj.returncode}"
-                )
-
-            if attempt < max_attempts:
-                time.sleep(delay)
-                delay = min(delay * 2, max_delay)
-
-        return {"success": False, "error": last_error or description}
+        return run_remote_script(
+            config,
+            remote_script,
+            timeout=timeout,
+            description=description,
+            connect_timeout=connect_timeout,
+            max_attempts=max_attempts,
+            initial_delay=initial_delay,
+            max_delay=max_delay,
+        )
 
     def _run_remote_stream(
         self,
@@ -200,39 +141,14 @@ class VMManager:
         description: str,
         connect_timeout: int = 10,
     ) -> Dict[str, any]:
-        """Execute a remote script while streaming binary data to stdin."""
-
-        build_result = self._build_ssh_command(
+        return run_remote_stream(
             config,
             remote_script,
+            data=data,
+            timeout=timeout,
+            description=description,
             connect_timeout=connect_timeout,
         )
-        if not build_result.get("success"):
-            return build_result
-
-        ssh_cmd = build_result["command"]
-
-        try:
-            result = run_command(
-                ssh_cmd,
-                timeout=timeout,
-                capture_output=True,
-                text=False,
-                input_data=data,
-            )
-        except ProcessError as exc:
-            return {
-                "success": False,
-                "error": exc.result.stderr or exc.result.stdout or description,
-                "stdout": exc.result.stdout,
-                "stderr": exc.result.stderr,
-            }
-
-        return {
-            "success": True,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-        }
 
     def _get_port_range(self, requested_ports: Optional[Dict[str, int]] = None) -> tuple:
         """Get port range for VM using defaults or requested ports."""
@@ -381,305 +297,25 @@ class VMManager:
         ], cwd="/home/nathan/Projects/rave", capture_output=True, text=True)
 
     def _create_blank_disk(self, target: Path, size_gb: int = 20) -> Dict[str, any]:
-        """Create a fresh QCOW2 disk image using qemu-img and mkfs."""
-
-        qemu_img = shutil.which("qemu-img")
-        mkfs_ext4 = shutil.which("mkfs.ext4")
-
-        if not qemu_img or not mkfs_ext4:
-            missing = []
-            if not qemu_img:
-                missing.append("qemu-img")
-            if not mkfs_ext4:
-                missing.append("mkfs.ext4")
-            return {
-                "success": False,
-                "error": f"Required tooling missing: {', '.join(missing)}",
-            }
-
-        target.parent.mkdir(parents=True, exist_ok=True)
-
-        raw_temp = None
-        try:
-            with tempfile.NamedTemporaryFile(prefix="rave-disk-", suffix=".raw", delete=False) as tmp:
-                raw_temp = Path(tmp.name)
-
-            subprocess.run(
-                [qemu_img, "create", "-f", "raw", str(raw_temp), f"{size_gb}G"],
-                check=True,
-            )
-
-            subprocess.run(
-                [mkfs_ext4, "-F", "-L", "nixos", str(raw_temp)],
-                check=True,
-            )
-
-            subprocess.run(
-                [qemu_img, "convert", "-f", "raw", "-O", "qcow2", str(raw_temp), str(target)],
-                check=True,
-            )
-
-            target.chmod(0o644)
-            return {"success": True}
-        except subprocess.CalledProcessError as exc:
-            return {
-                "success": False,
-                "error": exc.stderr.strip() if exc.stderr else str(exc),
-            }
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
-        finally:
-            if raw_temp and raw_temp.exists():
-                try:
-                    raw_temp.unlink()
-                except OSError:
-                    pass
+        """Create a fresh QCOW2 disk image using shared helper."""
+        return create_blank_disk(target, size_gb)
     
     def _inject_ssh_key(self, image_path: str, ssh_public_key: str) -> Dict[str, any]:
-        """Inject SSH public key into VM image using guestfish."""
-        try:
-            # Use guestfish to modify the VM image
-            # Escape the SSH key properly for guestfish
-            escaped_key = ssh_public_key.replace('"', '\\"')
-            guestfish_script = f'''launch
-list-filesystems
-mount /dev/sda1 /
-mkdir-p /root/.ssh
-write /root/.ssh/authorized_keys "{escaped_key}\\n"
-chmod 0700 /root/.ssh
-chmod 0600 /root/.ssh/authorized_keys
-chown 0 0 /root/.ssh
-chown 0 0 /root/.ssh/authorized_keys
-sync
-umount /
-exit
-'''
-            
-            # Run guestfish with proper error handling
-            result = subprocess.run([
-                "guestfish", "--add", image_path, "--rw"
-            ], input=guestfish_script, text=True, capture_output=True)
-            
-            if result.returncode != 0:
-                print(f"Guestfish failed: {result.stderr}")
-                # Fallback: rely on runtime provisioning
-                return self._inject_ssh_key_cloud_init(image_path, ssh_public_key)
-            
-            return {"success": True, "method": "guestfish"}
-            
-        except FileNotFoundError:
-            # guestfish not available, use virt-customize approach
-            return self._inject_ssh_key_cloud_init(image_path, ssh_public_key)
-        except Exception as e:
-            print(f"Guestfish exception: {e}")
-            return self._inject_ssh_key_cloud_init(image_path, ssh_public_key)
+        """Inject SSH public key into VM image using shared helper."""
+        return inject_ssh_key(image_path, ssh_public_key)
 
     def _install_age_key_into_image(self, image_path: str, age_key_path: Path) -> Dict[str, any]:
-        """Install the Age key into the VM image so secrets decrypt on first boot."""
-        if not age_key_path.exists():
-            return {"success": False, "error": f"Age key not found at {age_key_path}"}
-
-        if shutil.which("guestfish") is None:
-            return {
-                "success": False,
-                "error": (
-                    "guestfish is not installed; install libguestfs-tools to embed the Age key during image build"
-                ),
-            }
-
-        temp_key_path: Optional[Path] = None
-        try:
-            key_bytes = age_key_path.read_bytes()
-        except OSError as exc:
-            return {
-                "success": False,
-                "error": f"Failed to read Age key: {exc}",
-            }
-
-        try:
-            with tempfile.NamedTemporaryFile(prefix="rave-age-key-", delete=False) as tmp:
-                temp_key_path = Path(tmp.name)
-                tmp.write(key_bytes)
-                tmp.flush()
-
-            remote_path = "/var/lib/sops-nix/key.txt"
-            guestfish_script = f'''launch
-list-filesystems
-mount /dev/disk/by-label/nixos /
-mkdir-p /var/lib/sops-nix
-upload {temp_key_path} {remote_path}
-chmod 0700 /var/lib/sops-nix
-chmod 0400 {remote_path}
-chown 0 0 /var/lib/sops-nix
-chown 0 0 {remote_path}
-sync
-umount /
-exit
-'''
-
-            result = subprocess.run(
-                ["guestfish", "--add", image_path, "--rw"],
-                input=guestfish_script,
-                text=True,
-                capture_output=True,
-            )
-            if result.returncode != 0:
-                stderr = result.stderr.strip() if result.stderr else ""
-                return {
-                    "success": False,
-                    "error": (
-                        f"guestfish failed to install Age key"
-                        + (f": {stderr}" if stderr else "")
-                    ),
-                }
-
-            return {"success": True}
-        except subprocess.CalledProcessError as exc:
-            return {
-                "success": False,
-                "error": exc.stderr.strip() if exc.stderr else str(exc),
-            }
-        finally:
-            if temp_key_path and temp_key_path.exists():
-                try:
-                    temp_key_path.unlink()
-                except OSError:
-                    pass
+        """Install the Age key into the VM image using shared helper."""
+        return install_age_key_into_image(image_path, age_key_path)
 
     def _inject_ssh_key_simple(self, image_path: str, ssh_public_key: str) -> Dict[str, any]:
-        """SSH key injection using loop mount approach."""
-        try:
-            import tempfile
-            import os
-            
-            # Create a temporary mount point
-            with tempfile.TemporaryDirectory() as temp_dir:
-                mount_point = os.path.join(temp_dir, "mnt")
-                os.makedirs(mount_point)
-                
-                # Get the partition offset using qemu-img
-                result = subprocess.run([
-                    "qemu-img", "info", image_path
-                ], capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    return {"success": False, "error": f"Failed to get image info: {result.stderr}"}
-                
-                # Try to mount the image directly
-                # First convert to raw format temporarily if needed
-                raw_image = os.path.join(temp_dir, "temp.raw")
-                subprocess.run([
-                    "qemu-img", "convert", "-f", "qcow2", "-O", "raw", image_path, raw_image
-                ], capture_output=True, text=True)
-                
-                # Try to mount as ext4 filesystem
-                # Get partition table info
-                result = subprocess.run([
-                    "parted", "-m", raw_image, "print"
-                ], capture_output=True, text=True)
-                
-                if result.returncode == 0:
-                    # Parse partition info to find the root partition
-                    lines = result.stdout.strip().split('\n')
-                    for line in lines[2:]:  # Skip header lines
-                        parts = line.split(':')
-                        if len(parts) >= 5 and ('ext' in parts[4] or 'linux' in parts[5].lower()):
-                            # Found a Linux partition, try to mount it
-                            start_sector = parts[1].rstrip('s')
-                            try:
-                                start_bytes = int(start_sector) * 512
-                                
-                                # Mount with offset
-                                mount_result = subprocess.run([
-                                    "sudo", "mount", "-o", f"loop,offset={start_bytes}", raw_image, mount_point
-                                ], capture_output=True, text=True)
-                                
-                                if mount_result.returncode == 0:
-                                    # Successfully mounted, inject SSH key
-                                    ssh_dir = os.path.join(mount_point, "root", ".ssh")
-                                    authorized_keys = os.path.join(ssh_dir, "authorized_keys")
-                                    
-                                    # Create .ssh directory and add key
-                                    subprocess.run(["sudo", "mkdir", "-p", ssh_dir], check=True)
-                                    subprocess.run(["sudo", "sh", "-c", f"echo '{ssh_public_key}' > {authorized_keys}"], check=True)
-                                    subprocess.run(["sudo", "chmod", "700", ssh_dir], check=True)
-                                    subprocess.run(["sudo", "chmod", "600", authorized_keys], check=True)
-                                    subprocess.run(["sudo", "chown", "root:root", ssh_dir], check=True)
-                                    subprocess.run(["sudo", "chown", "root:root", authorized_keys], check=True)
-                                    
-                                    # Unmount
-                                    subprocess.run(["sudo", "umount", mount_point], check=True)
-                                    
-                                    # Convert back to qcow2
-                                    subprocess.run([
-                                        "qemu-img", "convert", "-f", "raw", "-O", "qcow2", raw_image, image_path
-                                    ], check=True)
-                                    
-                                    return {"success": True, "method": "loop_mount"}
-                                
-                            except (ValueError, subprocess.CalledProcessError) as e:
-                                # Clean up mount if it exists
-                                subprocess.run(["sudo", "umount", mount_point], capture_output=True)
-                                continue
-                
-                # If we get here, loop mount failed - fall back to a simpler approach
-                return self._inject_ssh_key_cloud_init(image_path, ssh_public_key)
-                
-        except Exception as e:
-            return {"success": False, "error": f"Loop mount injection failed: {e}"}
-    
+        return inject_ssh_key_simple(image_path, ssh_public_key)
+
     def _inject_ssh_key_cloud_init(self, image_path: str, ssh_public_key: str) -> Dict[str, any]:
-        """Fallback: Store SSH key info for runtime SSH use."""
-        # Since image modification is complex, we'll rely on the SSH client
-        # using the stored keypair information for authentication
-        print(f"💡 SSH key injection skipped - will use keypair directly for SSH authentication")
-        return {"success": True, "method": "runtime_auth", "note": "SSH will use stored keypair for authentication"}
+        return inject_ssh_key_cloud_init(image_path, ssh_public_key)
 
     def _ensure_root_authorized_key(self, config: Dict[str, any]) -> bool:
-        """Ensure the VM has the requested root SSH key configured via the agent account."""
-        public_key = config.get("ssh_public_key")
-        if not public_key:
-            return False
-
-        if not shutil.which("sshpass"):
-            print("⚠️  sshpass not available - skipping automatic SSH key provisioning")
-            return False
-
-        ssh_port = config["ports"]["ssh"]
-        escaped_key = public_key.replace("'", "'\"'\"'")
-        remote_cmd = (
-            "sudo mkdir -p /root/.ssh && "
-            f"sudo sh -c \"grep -qxF '{escaped_key}' /root/.ssh/authorized_keys || echo '{escaped_key}' >> /root/.ssh/authorized_keys\" && "
-            "sudo chmod 700 /root/.ssh && sudo chmod 600 /root/.ssh/authorized_keys"
-        )
-
-        ssh_cmd = [
-            "sshpass", "-p", "agent",
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=10",
-            "-p", str(ssh_port),
-            "agent@localhost",
-            remote_cmd
-        ]
-
-        max_attempts = 30
-        delay_seconds = 6
-
-        for attempt in range(1, max_attempts + 1):
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                return True
-
-            print(
-                f"⏳ Waiting for VM SSH to accept key injection "
-                f"({attempt}/{max_attempts})..."
-            )
-            time.sleep(delay_seconds)
-
-        print("⚠️  Unable to inject SSH key automatically; password login may be required")
-        return False
+        return ensure_root_authorized_key(config)
 
     def create_vm(
         self,

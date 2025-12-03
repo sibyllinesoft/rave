@@ -5,6 +5,7 @@
   ];
 
   config = {
+    services.rave.devMode = lib.mkForce true;
     services.rave.outline.enable = lib.mkForce false;
     services.rave.n8n.enable = lib.mkForce false;
     services.rave.penpot.enable = lib.mkForce false;

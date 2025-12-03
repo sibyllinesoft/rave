@@ -76,7 +76,7 @@ Use the following options when you need to change how the integration behaves:
   options; the CLI’s `--profile` flag picks the right file automatically.
 
 Whenever you update the Python automation helpers (`ensure-gitlab-mattermost-ci.py`,
-`update-mattermost-config.py`), edit them inside `infra/nixos/modules/services/mattermost/` so every profile stays in sync.
+`update-mattermost-config.py`), edit them inside `src/scripts/mattermost/` so every profile stays in sync.
 
 ### Runtime Environment
 
@@ -165,7 +165,7 @@ To modify the integration:
 1. Update the relevant `services.rave.mattermost` / `services.rave.gitlab` options in the profile you are targeting
    (`infra/nixos/configs/production.nix`, `development.nix`, or `demo.nix`).
 2. If automation logic needs to change, edit the helper scripts inside
-   `infra/nixos/modules/services/mattermost/` so every profile picks up the same behavior.
+   `src/scripts/mattermost/` so every profile picks up the same behavior.
 3. Rebuild an image: `nix build .#production` (or another profile attribute).
 4. Launch it via the CLI: `./apps/cli/rave vm launch-local --profile production`.
 5. Run `./test-integration.sh` for an end-to-end verification.

@@ -9,6 +9,8 @@ let
 
   pythonWithRequests = pkgs.python3.withPackages (ps: with ps; [ requests ]);
 
+  mattermostScriptsDir = ../../../../../src/scripts/mattermost;
+
   mattermostPath =
     let
       matchResult = builtins.match "https?://[^/]+(.*)" cfg.publicUrl;
@@ -99,7 +101,7 @@ let
 
   ensureGitlabMattermostCiScript = pkgs.writeScript "ensure-gitlab-mattermost-ci.py" ''
 #!${pythonWithRequests}/bin/python3
-${builtins.readFile ./ensure-gitlab-mattermost-ci.py}
+${builtins.readFile "${mattermostScriptsDir}/ensure-gitlab-mattermost-ci.py"}
 '';
 
   updateMattermostScript = pkgs.writeText "update-mattermost-config.py"
@@ -114,7 +116,7 @@ ${builtins.readFile ./ensure-gitlab-mattermost-ci.py}
         (if cfg.openid.enable then "True" else "False")
         (builtins.toJSON cfg.openid.clientSecretFallback)
       ]
-      (builtins.readFile ./update-mattermost-config.py));
+      (builtins.readFile "${mattermostScriptsDir}/update-mattermost-config.py"));
 
 in
 {

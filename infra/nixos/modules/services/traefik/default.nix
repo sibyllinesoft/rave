@@ -629,6 +629,10 @@ let
               "MMAUTHTOKEN"
               "MMUSERID"
             ];
+            # Forward bearer token for XHR/API calls when the auth service sets it.
+            authResponseHeaders = [ "Authorization" "X-MMAUTHTOKEN" ];
+            # Surface errors back to Traefik/clients when breaker trips.
+            failResponseHeaders = [ "X-Rave-Auth-Error" "Retry-After" ];
           };
         };
       }
@@ -647,6 +651,7 @@ let
               "X-Authentik-Uid"
               "X-Authentik-Groups"
             ];
+            failResponseHeaders = [ "X-Rave-Auth-Error" "Retry-After" ];
           };
         };
       }

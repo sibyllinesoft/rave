@@ -31,6 +31,7 @@ if REPO_ROOT.name == "apps":
     REPO_ROOT = REPO_ROOT.parent
 sys.path.insert(0, str(CLI_DIR))
 
+from settings import CLISettings
 from vm_manager import VMManager
 from user_manager import UserManager
 from oauth_manager import OAuthManager
@@ -44,10 +45,12 @@ from override_manager import (
 )
 
 # Platform + config locations
+SETTINGS = CLISettings()
 PLATFORM = PlatformManager()
-CONFIG_DIR = PLATFORM.get_config_dir()
+CONFIG_DIR = SETTINGS.config_dir
 CONFIG_FILE = CONFIG_DIR / "config.json"
 VMS_DIR = CONFIG_DIR / "vms"
+DEFAULT_PORT_CONFIG = SETTINGS.port_config()
 
 # Constants for secrets management
 DEFAULT_AGE_KEY_PATH = Path.home() / ".config" / "sops" / "age" / "keys.txt"
@@ -761,7 +764,7 @@ def cli(ctx):
     ctx.obj['config'] = config
     
     # Extract port configuration from config file
-    port_config = config.get('default_ports', {})
+    port_config = DEFAULT_PORT_CONFIG | config.get('default_ports', {})
     ctx.obj['vm_manager'] = VMManager(VMS_DIR, port_config)
     ctx.obj['user_manager'] = UserManager(CONFIG_DIR)
     ctx.obj['oauth_manager'] = OAuthManager(CONFIG_DIR)
