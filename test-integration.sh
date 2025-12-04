@@ -3,11 +3,19 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
+
+# shellcheck disable=SC1090
+[ -f "${PROJECT_ROOT}/config/rave.env" ] && source "${PROJECT_ROOT}/config/rave.env"
+
 echo "🧪 Testing GitLab-Mattermost Integration"
 echo "======================================="
 
-HTTPS_PORT="${HTTPS_PORT:-8443}"
-BASE_URL="https://localhost:${HTTPS_PORT}"
+HTTPS_PORT="${HTTPS_PORT:-${VM_HTTPS_PORT:-8443}}"
+SSH_PORT="${SSH_PORT:-${VM_SSH_PORT:-2224}}"
+SSH_PASS="${VM_PASS:-debug123}"
+BASE_URL="https://${VM_HOST:-localhost}:${HTTPS_PORT}"
 MATTERMOST_URL="${BASE_URL}/mattermost/"
 GITLAB_URL="${BASE_URL}/gitlab/"
 
@@ -39,7 +47,7 @@ fi
 # Test CI bridge service status via SSH
 echo "🔗 Testing CI Bridge Service..."
 if command -v sshpass > /dev/null 2>&1; then
-    bridge_status=$(sshpass -p 'debug123' ssh -o "StrictHostKeyChecking=no" root@localhost -p 2224 \
+    bridge_status=$(sshpass -p "${SSH_PASS}" ssh -o "StrictHostKeyChecking=no" root@localhost -p "${SSH_PORT}" \
         "systemctl is-active gitlab-mattermost-ci-bridge.service" 2>/dev/null || echo "unknown")
     
     case $bridge_status in
@@ -48,7 +56,7 @@ if command -v sshpass > /dev/null 2>&1; then
             ;;
         "inactive"|"failed")
             echo "⚠️  CI Bridge service status: $bridge_status"
-            echo "Check logs with: sshpass -p 'debug123' ssh root@localhost -p 2224 'journalctl -u gitlab-mattermost-ci-bridge.service'"
+            echo "Check logs with: sshpass -p '${SSH_PASS}' ssh root@localhost -p ${SSH_PORT} 'journalctl -u gitlab-mattermost-ci-bridge.service'"
             ;;
         *)
             echo "❓ CI Bridge service status: $bridge_status"
@@ -61,12 +69,12 @@ fi
 # Test webhook integration file
 echo "📊 Checking integration results..."
 if command -v sshpass > /dev/null 2>&1; then
-    if sshpass -p 'debug123' ssh -o "StrictHostKeyChecking=no" root@localhost -p 2224 \
+    if sshpass -p "${SSH_PASS}" ssh -o "StrictHostKeyChecking=no" root@localhost -p "${SSH_PORT}" \
         "test -f /var/lib/rave/gitlab-mattermost-ci.json" 2>/dev/null; then
         echo "✅ Integration configuration file found"
         
         # Show integration summary
-        integration_summary=$(sshpass -p 'debug123' ssh -o "StrictHostKeyChecking=no" root@localhost -p 2224 \
+        integration_summary=$(sshpass -p "${SSH_PASS}" ssh -o "StrictHostKeyChecking=no" root@localhost -p "${SSH_PORT}" \
             "cat /var/lib/rave/gitlab-mattermost-ci.json" 2>/dev/null || echo "{}")
         
         if [ "$integration_summary" != "{}" ]; then

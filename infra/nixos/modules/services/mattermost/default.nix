@@ -476,6 +476,7 @@ in
       "d /var/lib/mattermost 0755 mattermost mattermost -"
       "d /var/lib/mattermost/plugins 0755 mattermost mattermost -"
       "d /var/lib/rave 0755 mattermost mattermost -"
+      "d /run/mattermost 0750 mattermost mattermost -"
     ];
 
     services.mattermost = {
@@ -483,10 +484,13 @@ in
       package = cfg.package;
       siteUrl = cfg.publicUrl;
       siteName = cfg.siteName;
-      localDatabaseCreate = false;
+      database = {
+        create = false;
+        fromEnvironment = true;
+      };
       mutableConfig = true;
       environmentFile = envFilePath;
-      extraConfig = {
+      settings = {
         ServiceSettings = {
           SiteURL = cfg.publicUrl;
           EnableLocalMode = false;
@@ -581,7 +585,7 @@ in
         ${pkgs.coreutils}/bin/mkdir -p /var/lib/mattermost
         ${pkgs.coreutils}/bin/chown -R mattermost:mattermost /var/lib/mattermost
         ${pkgs.coreutils}/bin/rm -rf /var/lib/mattermost/.client-tmp
-        ${pkgs.coreutils}/bin/cp -R ${cfg.package}/client /var/lib/mattermost/.client-tmp
+        ${pkgs.coreutils}/bin/cp -RL ${cfg.package}/client /var/lib/mattermost/.client-tmp
         ${pkgs.coreutils}/bin/rm -rf /var/lib/mattermost/client
         ${pkgs.coreutils}/bin/mv /var/lib/mattermost/.client-tmp /var/lib/mattermost/client
         ${pkgs.coreutils}/bin/chown -R mattermost:mattermost /var/lib/mattermost/client
@@ -589,6 +593,9 @@ in
         ${pkgs.coreutils}/bin/install -Dm755 ${updateMattermostScript} /var/lib/rave/update-mattermost-config.py
       '')
     ];
+
+    # Run ExecStartPre as root so chown/cp steps can modify /var/lib/mattermost even though the service runs as the mattermost user.
+    systemd.services.mattermost.serviceConfig.PermissionsStartOnly = true;
 
     systemd.services.mattermost.after = mkAfter (lib.optional cfg.gitlab.enable "gitlab-mattermost-oauth.service");
 

@@ -16,6 +16,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 VM_IMAGE="$PROJECT_ROOT/rave-dev.qcow2"
 
+# Shared configuration
+if [ -f "${PROJECT_ROOT}/config/rave.env" ]; then
+    # shellcheck disable=SC1090
+    source "${PROJECT_ROOT}/config/rave.env"
+fi
+
 # Functions
 print_usage() {
     cat << EOF
@@ -71,17 +77,17 @@ vm_start() {
         -drive file="$VM_IMAGE",format=qcow2 \
         -m 12G \
         -smp 4 \
-        -netdev user,id=net0,hostfwd=tcp::8081-:80,hostfwd=tcp::8889-:8080,hostfwd=tcp::2224-:22,hostfwd=tcp::8443-:443,hostfwd=tcp::8888-:8888 \
+        -netdev user,id=net0,hostfwd=tcp::8081-:80,hostfwd=tcp::8889-:8080,hostfwd=tcp::${VM_SSH_PORT:-2224}-:22,hostfwd=tcp::${VM_HTTPS_PORT:-8443}-:443,hostfwd=tcp::${VM_HTTP_PORT:-8888}-:8888 \
         -device virtio-net-pci,netdev=net0 \
         -nographic > /tmp/rave-vm.log 2>&1 &
     
     echo -e "${GREEN}✅ VM started successfully!${NC}"
     echo -e "${BLUE}📱 Access URLs:${NC}"
-    echo "  • HTTPS (with SSL): https://localhost:8443/"
+    echo "  • HTTPS (with SSL): https://localhost:${VM_HTTPS_PORT:-8443}/"
     echo "  • HTTP (no SSL):    http://localhost:8888/"
     echo "  • VM Status:        http://localhost:8889/"
-    echo "  • SSH Access:       ssh root@localhost -p 2224"
-    echo "  • NATS Monitor:     https://localhost:8443/nats/"
+    echo "  • SSH Access:       ssh ${VM_USER:-root}@localhost -p ${VM_SSH_PORT:-2224}"
+    echo "  • NATS Monitor:     https://localhost:${VM_HTTPS_PORT:-8443}/nats/"
     echo ""
     echo -e "${YELLOW}⏳ Wait 60+ seconds for all services to initialize${NC}"
 }
@@ -110,7 +116,7 @@ vm_status() {
         fi
         
         # Test services
-        if curl -s -m 5 -k https://localhost:8443/ > /dev/null 2>&1; then
+        if curl -s -m 5 -k "https://localhost:${VM_HTTPS_PORT:-8443}/" > /dev/null 2>&1; then
             echo -e "${GREEN}✅ HTTPS Service: Running${NC}"
         else
             echo -e "${RED}❌ HTTPS Service: Not responding${NC}"
@@ -129,7 +135,7 @@ vm_status() {
 
 vm_ssh() {
     echo -e "${BLUE}🔐 Connecting to RAVE VM via SSH...${NC}"
-    sshpass -p 'debug123' ssh -o "StrictHostKeyChecking=no" root@localhost -p 2224 "$@"
+    sshpass -p "${VM_PASS:-debug123}" ssh -o "StrictHostKeyChecking=no" "${VM_USER:-root}@${VM_HOST:-localhost}" -p "${VM_SSH_PORT:-2224}" "$@"
 }
 
 vm_rebuild() {
@@ -288,9 +294,9 @@ health_check() {
     # Test endpoints
     ENDPOINTS=(
         "http://localhost:8889/|VM Status Page"
-        "http://localhost:8888/|HTTP (No SSL)" 
-        "https://localhost:8443/|HTTPS (SSL)"
-        "https://localhost:8443/nats/|NATS Monitor"
+        "http://localhost:${VM_HTTP_PORT:-8888}/|HTTP (No SSL)" 
+        "https://localhost:${VM_HTTPS_PORT:-8443}/|HTTPS (SSL)"
+        "https://localhost:${VM_HTTPS_PORT:-8443}/nats/|NATS Monitor"
     )
     
     for endpoint in "${ENDPOINTS[@]}"; do
@@ -301,6 +307,23 @@ health_check() {
             echo -e "${RED}❌ $desc: Failed${NC}"
         fi
     done
+
+    # If detailed health checks exist, run them too
+    local hc_dir="${PROJECT_ROOT}/scripts/health_checks"
+    if [ -d "$hc_dir" ]; then
+        echo ""
+        echo -e "${BLUE}🩺 Running detailed health checks...${NC}"
+        local status=0
+        for check_script in "$hc_dir"/*.sh; do
+            [ -x "$check_script" ] || continue
+            echo "→ $(basename "$check_script")"
+            if ! "$check_script"; then
+                status=1
+            fi
+            echo ""
+        done
+        [ $status -eq 0 ] || return $status
+    fi
 }
 
 show_logs() {
@@ -320,6 +343,114 @@ run_tests() {
         echo -e "${YELLOW}⚠️  Dedicated smoke test not found, running basic health check${NC}"
         health_check
     fi
+}
+
+wait_for() {
+    local desc="$1"
+    local cmd="$2"
+    local max_retries="${MAX_RETRIES:-20}"
+    local sleep_interval="${SLEEP_INTERVAL:-15}"
+    local attempt=0
+    echo -e "${BLUE}⌛ Waiting for ${desc}${NC}"
+    while [ "$attempt" -lt "$max_retries" ]; do
+        if eval "$cmd"; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        echo -n "."
+        sleep "$sleep_interval"
+    done
+    echo ""
+    echo -e "${YELLOW}⚠️  Timeout waiting for ${desc}${NC}"
+    return 1
+}
+
+monitor_boot() {
+    echo -e "${BLUE}🔍 Monitoring VM Boot Progress on port ${VM_HTTPS_PORT:-8443}${NC}"
+    if wait_for "SSH availability" "vm_ssh true >/dev/null 2>&1"; then
+        echo -e "${GREEN}✅ SSH is ready!${NC}"
+    else
+        exit 1
+    fi
+
+    echo -e "${BLUE}📊 Checking internal services...${NC}"
+    vm_ssh <<'EOF'
+systemctl is-active postgresql.service || echo "Postgres failed"
+systemctl is-active redis-main.service || echo "Redis failed"
+systemctl is-active gitlab.service || echo "GitLab failed"
+systemctl is-active traefik.service || echo "Traefik failed"
+EOF
+
+    echo -e "${BLUE}🌐 Checking GitLab HTTP response...${NC}"
+    response=$(curl -k -s -o /dev/null -w "%{http_code}" "https://localhost:${VM_HTTPS_PORT:-8443}/gitlab/")
+    if [[ "$response" =~ ^(200|302)$ ]]; then
+        echo -e "${GREEN}🎉 GitLab is ready at https://localhost:${VM_HTTPS_PORT:-8443}/gitlab/${NC}"
+    else
+        echo -e "${YELLOW}⚠️  GitLab returned HTTP $response. It might still be initializing.${NC}"
+    fi
+}
+
+gitlab_ready() {
+    echo -e "${BLUE}🔍 Checking GitLab Startup Progress${NC}"
+    echo "Time: $(date)"
+    local checks=0
+    local max_checks="${MAX_RETRIES:-20}"
+    local base_url="https://localhost:${VM_HTTPS_PORT:-8443}"
+    while [ "$checks" -lt "$max_checks" ]; do
+        checks=$((checks + 1))
+        echo -n "[$checks/$max_checks] Testing GitLab response... "
+        response=$(curl -k -s -o /dev/null -w "%{http_code}" "${base_url}/gitlab/" 2>/dev/null)
+        case "$response" in
+            200|302|401)
+                echo "✅ SUCCESS! GitLab is ready (HTTP $response)"
+                echo "🎉 GitLab is accessible at: ${base_url}/gitlab/"
+                return 0
+                ;;
+            502)
+                echo "⏳ Still starting (Bad Gateway - backend not ready)"
+                ;;
+            500)
+                echo "⚠️  Internal Server Error (may indicate configuration issue)"
+                ;;
+            000|"")
+                echo "❌ No response (Traefik may not be started yet)"
+                ;;
+            *)
+                echo "❓ Unexpected response: HTTP $response"
+                ;;
+        esac
+        if [ "$checks" -lt "$max_checks" ]; then
+            echo "   Waiting 30 seconds before next check..."
+            sleep 30
+        fi
+    done
+    echo "⚠️  GitLab startup taking longer than expected"
+    return 1
+}
+
+cert_fix() {
+    echo -e "${BLUE}🔧 Fixing SSL certificate paths...${NC}"
+    if ! vm_ssh true >/dev/null 2>&1; then
+        echo -e "${RED}❌ Cannot SSH into VM. Ensure VM is running.${NC}"
+        exit 1
+    fi
+    vm_ssh "bash -s" <<'EOF'
+mkdir -p /var/lib/acme/localhost
+if [ -d /var/lib/acme/rave.local ]; then
+    cp -r /var/lib/acme/rave.local/* /var/lib/acme/localhost/
+else
+    openssl req -x509 -newkey rsa:4096 \
+      -keyout /var/lib/acme/localhost/key.pem \
+      -out /var/lib/acme/localhost/cert.pem \
+      -days 365 -nodes \
+      -subj '/CN=localhost'
+fi
+chown -R traefik:traefik /var/lib/acme/localhost/
+chmod 640 /var/lib/acme/localhost/key.pem
+chmod 644 /var/lib/acme/localhost/cert.pem
+systemctl restart traefik
+EOF
+    echo -e "${GREEN}✅ Certificates applied and Traefik restarted.${NC}"
 }
 
 # Main command parsing
@@ -360,16 +491,25 @@ case "${1:-}" in
             "generate")
                 cert_generate
                 ;;
+            "fix")
+                cert_fix
+                ;;
             "real")
                 shift 2
                 cert_real "$@"
                 ;;
             *)
                 echo -e "${RED}❌ Unknown cert command: ${2:-}${NC}"
-                echo "Available: status, generate, real"
+                echo "Available: status, generate, fix, real"
                 exit 1
                 ;;
         esac
+        ;;
+    "vm-monitor")
+        monitor_boot
+        ;;
+    "gitlab-ready")
+        gitlab_ready
         ;;
     "health")
         health_check

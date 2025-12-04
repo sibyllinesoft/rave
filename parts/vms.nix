@@ -31,7 +31,27 @@
           buildGo124Module = unstable.buildGo124Module;
         };
 
-      overlaysList = [ authOverlay goOverlay ];
+      libcapOverlay = final: prev: {
+        libcap = prev.libcap.override { withGo = false; };
+      };
+
+      redisOverlay = final: prev: {
+        redis = prev.redis.overrideAttrs (_: { doCheck = false; });
+        valkey = prev.valkey.overrideAttrs (_: { doCheck = false; });
+      };
+
+      compatOverlay = final: prev: {
+        lib = prev.lib // {
+          types = prev.lib.types // {
+            pathWith = prev.lib.types.pathWith or prev.lib.types.path;
+          };
+        };
+        nodejs_24 = prev.nodejs_24 or prev.nodejs_23 or prev.nodejs_22;
+      };
+
+      authentikOverlay = final: prev: (inputs.authentik-nix.overlays.default or (_: _: {})) final prev;
+
+      overlaysList = [ authOverlay goOverlay compatOverlay authentikOverlay libcapOverlay redisOverlay ];
 
       mkImage = { configModule, format ? "qcow", httpsPort ? 8443, extraModules ? [] }:
         let

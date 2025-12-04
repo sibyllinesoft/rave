@@ -47,35 +47,6 @@
       # Disable Pomerium so Traefik terminates TLS directly (per request).
       services.rave.pomerium.enable = lib.mkForce false;
 
-      # Feed Authentik OAuth sources from the developer .env credentials.
-      # Set explicit fields so we don’t lose defaults if the module changes.
-      services.rave.authentik.oauthSources = {
-        google = {
-          displayName = "Google";
-          slug = "google";
-          providerType = "google";
-          clientIdFile = googleClientIdFile;
-          clientSecretFile = googleClientSecretFile;
-          extraScopes = [ "openid" "email" "profile" ];
-          enrollmentFlow = "default-source-enrollment";
-          authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth";
-          accessTokenUrl = "https://oauth2.googleapis.com/token";
-          profileUrl = "https://openidconnect.googleapis.com/v1/userinfo";
-          oidcWellKnownUrl = "https://accounts.google.com/.well-known/openid-configuration";
-        };
-        github = {
-          displayName = "GitHub";
-          slug = "github";
-          providerType = "github";
-          clientIdFile = githubClientIdFile;
-          clientSecretFile = githubClientSecretFile;
-          extraScopes = [ "read:user" "user:email" ];
-          enrollmentFlow = "default-source-enrollment";
-          authorizationUrl = "https://github.com/login/oauth/authorize";
-          accessTokenUrl = "https://github.com/login/oauth/access_token";
-          profileUrl = "https://api.github.com/user";
-        };
-      };
       # Ensure Authentik generates callbacks on the forwarded host/port we expose locally.
       services.rave.authentik.publicUrl = lib.mkForce "https://auth.localtest.me:8443/";
       services.rave.authentik.defaultExternalPort = lib.mkForce "8443";

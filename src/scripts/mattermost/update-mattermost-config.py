@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 CONFIG_PATH = Path("/var/lib/mattermost/config/config.json")
-LOG_PATH = Path("/var/lib/rave/update-mattermost-config.log")
+LOG_PATH = Path("/run/mattermost/update-mattermost-config.log")
 SITE_URL_DEFAULT = @SITE_URL@
 BRAND_TEXT_DEFAULT = @BRAND_TEXT@
 GITLAB_SETTINGS_DEFAULT = json.loads('@GITLAB_SETTINGS@')

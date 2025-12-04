@@ -8,6 +8,8 @@ let
   # External host/port clients use to reach the VM front door (keep host in sync with Traefik host override).
   externalHost = config.services.rave.traefik.host or "auth.localtest.me";
   externalHttpsBase = "https://${externalHost}:${baseHttpsPort}";
+  # Disable the legacy nginx front door; Traefik terminates TLS for all services.
+  nix.nginxDisabled = true;
   
   useSecrets = config.services.rave.gitlab.useSecrets;
   gitlabDbPasswordFile = if useSecrets
@@ -86,7 +88,7 @@ IP.2 = ::1
   mattermostDbPassword = "mmpgsecret";
   mattermostGitlabClientId = "41622b028bfb499bcadfcdf42a8618734a6cebc901aa8f77661bceeebc7aabba";
   mattermostGitlabClientSecretFile = if useSecrets
-    then "/run/secrets/gitlab/oauth-mattermost-client-secret"
+    then "/run/secrets/mattermost/oauth-mattermost-client-secret"
     else null;
   mattermostGitlabSecretFallback = "gloas-18f9021e792192dda9f50be4df02cee925db5d36a09bf6867a33762fb874d539";
   mattermostOidcClientSecretFile =
@@ -170,6 +172,8 @@ IP.2 = ::1
     path = ../assets/gitlab-schema.sql;
     name = "gitlab-schema.sql";
   };
+  # Provide Authentik component set for the upstream module.
+  services.authentik.authentikComponents = pkgs.authentikComponents;
   authentikPublicUrl = "${externalHttpsBase}/";
   authentikHostPort = 9130;
   authentikMetricsPort = 9131;
@@ -193,28 +197,7 @@ IP.2 = ::1
   penpotOidcClientSecretFile = if useSecrets
     then "/run/secrets/penpot/oidc-client-secret"
     else pkgs.writeText "penpot-oidc-client-secret" "penpot-oidc-secret";
-  authentikEnvFile = pkgs.writeText "authentik.env" ''
-AUTHENTIK_SECRET_KEY=${authentikSecretKey}
-AUTHENTIK_BOOTSTRAP_PASSWORD=${authentikBootstrapPassword}
-AUTHENTIK_BOOTSTRAP_EMAIL=admin@auth.localtest.me
-AUTHENTIK_POSTGRESQL__PASSWORD=${authentikDbPassword}
-RAVE_GITLAB_CLIENT_ID=${gitlabOidcClientId}
-RAVE_GITLAB_CLIENT_SECRET=${gitlabOidcClientSecretFallback}
-RAVE_MATTERMOST_CLIENT_ID=${mattermostGitlabClientId}
-RAVE_MATTERMOST_CLIENT_SECRET=${mattermostGitlabSecretFallback}
-RAVE_GRAFANA_CLIENT_ID=${authentikGrafanaClientId}
-RAVE_GRAFANA_CLIENT_SECRET=grafana-oidc-secret
-RAVE_PENPOT_CLIENT_ID=${penpotOidcClientId}
-RAVE_PENPOT_CLIENT_SECRET=penpot-oidc-secret
-RAVE_OUTLINE_CLIENT_ID=${outlineOidcClientId}
-RAVE_OUTLINE_CLIENT_SECRET=outline-oidc-secret
-RAVE_N8N_CLIENT_ID=${n8nOidcClientId}
-RAVE_N8N_CLIENT_SECRET=n8n-oidc-secret
-RAVE_GOOGLE_CLIENT_ID=${googleOauthClientId}
-RAVE_GOOGLE_CLIENT_SECRET=${googleOauthClientSecret}
-RAVE_GITHUB_CLIENT_ID=${githubOauthClientId}
-RAVE_GITHUB_CLIENT_SECRET=${githubOauthClientSecret}
-'';
+  authentikEnvFile = "/run/secrets/authentik/env";
   traefikBackendPort = 9443;
   traefikBackendUrl = "http://127.0.0.1:${toString traefikBackendPort}";
   authManagerListenAddr = config.services.rave.auth-manager.listenAddress or ":8088";
@@ -283,7 +266,7 @@ RAVE_GITHUB_CLIENT_SECRET=${githubOauthClientSecret}
       role = "authentik";
       secret = "/run/secrets/database/authentik-password";
       fallback = authentikDbPassword;
-      dependent = "authentik-server";
+      dependent = "authentik";
       extraScript = "";
     }
   ];
@@ -422,17 +405,17 @@ in
     metricsPort = authentikMetricsPort;
     rootDomain = "auth.localtest.me";
     defaultExternalPort = baseHttpsPort;
-    secretKey = authentikSecretKey;
+    secretKey = if useSecrets then null else authentikSecretKey;
     bootstrap = {
       email = "admin@auth.localtest.me";
-      password = authentikBootstrapPassword;
+      password = if useSecrets then null else authentikBootstrapPassword;
     };
     database = {
       host = "127.0.0.1";
       port = 5432;
       name = "authentik";
       user = "authentik";
-      password = authentikDbPassword;
+      password = if useSecrets then null else authentikDbPassword;
     };
     redis = {
       database = config.services.rave.redis.allocations.authentik or 12;
@@ -815,7 +798,7 @@ sops = lib.mkIf false {
       owner = "gitlab";
       group = "gitlab";
       mode = "0400";
-      path = "/run/secrets/gitlab/oauth-mattermost-client-secret";
+      path = "/run/secrets/mattermost/oauth-mattermost-client-secret";
       restartUnits = [ "gitlab.service" "gitlab-mattermost-oauth.service" ];
     };
   };
@@ -837,7 +820,7 @@ sops = lib.mkIf false {
       { selector = "[\"gitlab\"][\"otp-key-base\"]"; path = "/run/secrets/gitlab/otp-key-base"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
       { selector = "[\"gitlab\"][\"jws-key-base\"]"; path = "/run/secrets/gitlab/jws-key-base"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
       { selector = "[\"gitlab\"][\"oauth-provider-client-secret\"]"; path = "/run/secrets/gitlab/oauth-provider-client-secret"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
-      { selector = "[\"gitlab\"][\"oauth-mattermost-client-secret\"]"; path = "/run/secrets/gitlab/oauth-mattermost-client-secret"; owner = "gitlab"; group = "gitlab"; mode = "0400"; }
+      { selector = "[\"gitlab\"][\"oauth-mattermost-client-secret\"]"; path = "/run/secrets/mattermost/oauth-mattermost-client-secret"; owner = "mattermost"; group = "mattermost"; mode = "0400"; }
       { selector = "[\"grafana\"][\"secret-key\"]"; path = "/run/secrets/grafana/secret-key"; owner = "grafana"; group = "grafana"; mode = "0400"; }
       { selector = "[\"grafana\"][\"db-password\"]"; path = "/run/secrets/grafana/db-password"; owner = "grafana"; group = "grafana"; mode = "0400"; }
       { selector = "[\"database\"][\"mattermost-password\"]"; path = "/run/secrets/database/mattermost-password"; owner = "root"; group = "postgres"; mode = "0440"; }
@@ -923,6 +906,14 @@ sops = lib.mkIf false {
   };
 
   # ===== CORE SERVICES =====
+
+  services.nginx = {
+    enable = lib.mkForce false;
+    virtualHosts = lib.mkForce { };
+  };
+
+  # Pin PostgreSQL to a GitLab-supported version (>= 16) to satisfy upstream assertions.
+  services.postgresql.package = lib.mkForce pkgs.postgresql_16;
 
   services.rave.postgresql = {
     enable = true;
@@ -1106,9 +1097,80 @@ sops = lib.mkIf false {
     passwordUnitServices
     passwordDependentOverrides
     {
+      authentik-env = {
+        description = "Generate Authentik environment file for blueprints and secrets";
+        wantedBy = [ "multi-user.target" ];
+        before = [ "authentik.service" "authentik-worker.service" ];
+        after = lib.mkAfter (lib.optionals useSecrets [ "sops-init.service" ]);
+        requires = lib.optionals useSecrets [ "sops-init.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          User = "root";
+          Group = "root";
+        };
+        script = ''
+          set -euo pipefail
+
+          target=${lib.escapeShellArg authentikEnvFile}
+          tmp="$(mktemp)"
+
+          write_var() {
+            local name="$1"
+            local file="$2"
+            local fallback="$3"
+            local value="$fallback"
+            if [ -n "$file" ] && [ -s "$file" ]; then
+              value="$(tr -d '\n' < "$file")"
+            fi
+            printf '%s=%s\n' "$name" "$value" >> "$tmp"
+          }
+
+          mkdir -p "$(dirname "$target")"
+          : > "$tmp"
+
+          write_var AUTHENTIK_SECRET_KEY ${lib.escapeShellArg authentikSecretKeyFile} ${lib.escapeShellArg authentikSecretKey}
+          write_var AUTHENTIK_BOOTSTRAP_PASSWORD ${lib.escapeShellArg authentikBootstrapPasswordFile} ${lib.escapeShellArg authentikBootstrapPassword}
+          write_var AUTHENTIK_BOOTSTRAP_EMAIL "" admin@auth.localtest.me
+          write_var AUTHENTIK_POSTGRESQL__PASSWORD ${lib.escapeShellArg authentikDbPasswordFile} ${lib.escapeShellArg authentikDbPassword}
+
+          write_var RAVE_GITLAB_CLIENT_ID "" ${lib.escapeShellArg gitlabOidcClientId}
+          write_var RAVE_GITLAB_CLIENT_SECRET ${lib.escapeShellArg gitlabOidcClientSecretFile} ${lib.escapeShellArg gitlabOidcClientSecretFallback}
+
+          write_var RAVE_MATTERMOST_CLIENT_ID "" ${lib.escapeShellArg mattermostGitlabClientId}
+          write_var RAVE_MATTERMOST_CLIENT_SECRET ${lib.escapeShellArg (if mattermostGitlabClientSecretFile == null then "" else mattermostGitlabClientSecretFile)} ${lib.escapeShellArg mattermostGitlabSecretFallback}
+
+          write_var RAVE_GRAFANA_CLIENT_ID "" ${lib.escapeShellArg authentikGrafanaClientId}
+          write_var RAVE_GRAFANA_CLIENT_SECRET ${lib.escapeShellArg authentikGrafanaClientSecretFile} ${lib.escapeShellArg "grafana-oidc-secret"}
+
+          write_var RAVE_PENPOT_CLIENT_ID "" ${lib.escapeShellArg penpotOidcClientId}
+          write_var RAVE_PENPOT_CLIENT_SECRET ${lib.escapeShellArg penpotOidcClientSecretFile} ${lib.escapeShellArg "penpot-oidc-secret"}
+
+          write_var RAVE_OUTLINE_CLIENT_ID "" ${lib.escapeShellArg outlineOidcClientId}
+          write_var RAVE_OUTLINE_CLIENT_SECRET ${lib.escapeShellArg outlineOidcClientSecretFile} ${lib.escapeShellArg "outline-oidc-secret"}
+
+          write_var RAVE_N8N_CLIENT_ID "" ${lib.escapeShellArg n8nOidcClientId}
+          write_var RAVE_N8N_CLIENT_SECRET ${lib.escapeShellArg n8nOidcClientSecretFile} ${lib.escapeShellArg "n8n-oidc-secret"}
+
+          write_var RAVE_GOOGLE_CLIENT_ID ${lib.escapeShellArg googleOauthClientIdFile} ${lib.escapeShellArg googleOauthClientId}
+          write_var RAVE_GOOGLE_CLIENT_SECRET ${lib.escapeShellArg googleOauthClientSecretFile} ${lib.escapeShellArg googleOauthClientSecret}
+
+          write_var RAVE_GITHUB_CLIENT_ID ${lib.escapeShellArg githubOauthClientIdFile} ${lib.escapeShellArg githubOauthClientId}
+          write_var RAVE_GITHUB_CLIENT_SECRET ${lib.escapeShellArg githubOauthClientSecretFile} ${lib.escapeShellArg githubOauthClientSecret}
+
+          install -m 0400 -o root -g root "$tmp" "$target"
+        '';
+      };
       postgresql = {
         after = lib.mkAfter [ "docker.service" ];
         wants = lib.mkAfter [ "docker.service" ];
+      };
+      authentik = {
+        after = lib.mkAfter [ "authentik-env.service" ];
+        requires = [ "authentik-env.service" ];
+      };
+      authentik-worker = {
+        after = lib.mkAfter [ "authentik-env.service" ];
+        requires = [ "authentik-env.service" ];
       };
       gitlab-sidekiq = {
         unitConfig.BindsTo = lib.mkForce "";

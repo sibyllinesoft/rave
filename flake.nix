@@ -2,7 +2,7 @@
   description = "RAVE - Reproducible AI Virtual Environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     nixos-generators = {
       url = "github:nix-community/nixos-generators/1.8.0";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -12,7 +12,10 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-parts.url = "github:hercules-ci/flake-parts";
-    authentik-nix.url = "github:nix-community/authentik-nix";
+    authentik-nix = {
+      url = "github:nix-community/authentik-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs@{ self, flake-parts, ... }:

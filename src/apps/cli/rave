@@ -27,7 +27,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # Add the cli directory to Python path for imports
 CLI_DIR = Path(__file__).resolve().parent
 REPO_ROOT = CLI_DIR.parent
+# When the CLI is invoked via the repo's symlinked layout (apps -> src/apps),
+# the resolved path lives under /src/apps/, so normalize back to the actual
+# repository root.
 if REPO_ROOT.name == "apps":
+    REPO_ROOT = REPO_ROOT.parent
+if REPO_ROOT.name == "src":
     REPO_ROOT = REPO_ROOT.parent
 sys.path.insert(0, str(CLI_DIR))
 

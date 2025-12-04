@@ -96,70 +96,10 @@ echo "Deployment initiated. Monitoring startup..."
 
 #### Health Check Validation
 ```bash
-#!/bin/bash
-# health-check-deployment.sh
-
-set -e
-
-echo "=== Post-Deployment Health Checks ==="
-
-# Wait for system boot
-echo "Waiting for system availability..."
-for i in {1..30}; do
-  if nc -z localhost 3002; then
-    echo "System responding on port 3002"
-    break
-  fi
-  echo "Waiting for system startup... ($i/30)"
-  sleep 10
-done
-
-# Check critical services
-SERVICES=(
-  "traefik"
-  "postgresql" 
-  "grafana"
-  "prometheus"
-  "webhook-dispatcher"
-)
-
-echo "Checking systemd services..."
-for service in "${SERVICES[@]}"; do
-  if systemctl is-active "$service" >/dev/null 2>&1; then
-    echo "✅ $service is running"
-  else
-    echo "❌ $service is not running"
-    systemctl status "$service"
-    exit 1
-  fi
-done
-
-# Validate HTTP endpoints
-ENDPOINTS=(
-  "https://localhost:3002/ 200"
-  "https://localhost:3002/grafana/ 200"
-  "https://localhost:3002/webhook 405"  # POST only
-  "http://localhost:9090/-/healthy 200"
-)
-
-echo "Checking HTTP endpoints..."
-for endpoint in "${ENDPOINTS[@]}"; do
-  url=$(echo $endpoint | cut -d' ' -f1)
-  expected_code=$(echo $endpoint | cut -d' ' -f2)
-  
-  actual_code=$(curl -k -s -o /dev/null -w "%{http_code}" "$url" || echo "000")
-  
-  if [ "$actual_code" = "$expected_code" ]; then
-    echo "✅ $url responds with $actual_code"
-  else
-    echo "❌ $url responds with $actual_code (expected $expected_code)"
-    exit 1
-  fi
-done
-
-echo "🎉 All health checks passed!"
-echo "System is ready for production traffic"
+cd /opt/rave
+./scripts/rave health
 ```
+This CLI command performs VM status checks, service readiness, endpoint probes, and runs any detailed scripts under `scripts/health_checks/` when present. It centralizes health validation—no separate shell script needed.
 
 ### Emergency Deployment Rollback
 

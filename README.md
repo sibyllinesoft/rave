@@ -260,7 +260,7 @@ nix build .#demo          # Demo VM
 nix build .#checks.x86_64-linux.minimal-test
 
 # Health checks
-scripts/health_checks/
+./scripts/rave health   # runs status + any scripts/health_checks/*.sh
 
 # Auth Manager unit tests (inside the dev shell)
 cd apps/auth-manager

@@ -528,7 +528,7 @@ mv /var/lib/rave/production-new.qcow2 /var/lib/rave/production.qcow2
 systemctl start rave-production
 
 # 7. Verify system health
-./scripts/health-check-post-deployment.sh
+./scripts/rave health
 
 # 8. Confirm security patch effectiveness
 trivy fs --severity HIGH,CRITICAL .

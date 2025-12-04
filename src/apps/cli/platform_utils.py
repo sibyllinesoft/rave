@@ -15,6 +15,10 @@ from qemu_driver import build_vm_command
 class PlatformManager:
     """Minimal host helpers (Linux-first) used by the CLI."""
 
+    def get_qemu_binary(self) -> Optional[str]:
+        """Return the path to qemu-system-x86_64 if available."""
+        return shutil.which("qemu-system-x86_64")
+
     def check_prerequisites(self) -> Dict[str, any]:
         missing: List[str] = []
         warnings: List[str] = []

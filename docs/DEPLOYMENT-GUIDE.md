@@ -496,6 +496,8 @@ fi
 
 ### Monitoring and Health Checks
 
+The RAVE CLI now owns health monitoring. Use the built-in command instead of bespoke scripts.
+
 ```bash
 #!/bin/bash
 # continuous-health-monitoring.sh
@@ -504,67 +506,24 @@ set -e
 
 echo "=== RAVE Continuous Health Monitoring ==="
 
-# Create monitoring script for systemd timer
-sudo tee /opt/rave/scripts/health-check.sh << 'EOF'
-#!/bin/bash
+# Ensure repo is present at /opt/rave (production deploy path)
+cd /opt/rave
 
-set -e
-
-TIMESTAMP=$(date -Iseconds)
-LOG_FILE="/var/log/rave-health.log"
-
-# Function to log with timestamp
-log_message() {
-  echo "[$TIMESTAMP] $1" >> "$LOG_FILE"
-}
-
-# Check core services
-SERVICES=("traefik" "grafana" "prometheus" "webhook-dispatcher")
-for service in "${SERVICES[@]}"; do
-  if systemctl is-active "$service" >/dev/null 2>&1; then
-    log_message "✅ $service is active"
-  else
-    log_message "❌ $service is inactive"
-    # Attempt restart
-    systemctl restart "$service" && log_message "🔄 $service restarted successfully"
-  fi
-done
-
-# Check endpoints
-if curl -k -s https://localhost:3002/ >/dev/null; then
-  log_message "✅ Main endpoint responding"
-else
-  log_message "❌ Main endpoint not responding"
-fi
-
-# Check resource usage
-MEMORY_USAGE=$(free | awk 'NR==2{printf "%.1f", $3*100/$2}')
-CPU_USAGE=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | awk -F'%' '{print $1}')
-
-log_message "📊 Memory: ${MEMORY_USAGE}%, CPU: ${CPU_USAGE}%"
-
-# SAFE mode resource validation
-if [ "$SAFE" = "1" ] && (( $(echo "$MEMORY_USAGE > 85" | bc -l) )); then
-  log_message "⚠️  SAFE mode memory usage high: ${MEMORY_USAGE}%"
-fi
-EOF
-
-chmod +x /opt/rave/scripts/health-check.sh
-
-# Create systemd service for health monitoring
-sudo tee /etc/systemd/system/rave-health-check.service << EOF
+# systemd service that runs the CLI health check
+sudo tee /etc/systemd/system/rave-health-check.service << 'EOF'
 [Unit]
-Description=RAVE Health Check
+Description=RAVE Health Check (CLI)
 After=rave-production.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/rave/scripts/health-check.sh
+WorkingDirectory=/opt/rave
+ExecStart=/opt/rave/scripts/rave health
 User=root
 EOF
 
-# Create systemd timer for regular health checks
-sudo tee /etc/systemd/system/rave-health-check.timer << EOF
+# Timer to execute every 5 minutes
+sudo tee /etc/systemd/system/rave-health-check.timer << 'EOF'
 [Unit]
 Description=Run RAVE Health Check every 5 minutes
 Requires=rave-health-check.service
@@ -577,12 +536,10 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# Enable health monitoring
 sudo systemctl daemon-reload
-sudo systemctl enable rave-health-check.timer
-sudo systemctl start rave-health-check.timer
+sudo systemctl enable --now rave-health-check.timer
 
-echo "✅ Continuous health monitoring configured"
+echo "✅ Continuous health monitoring configured (via CLI)"
 ```
 
 ## Production Management

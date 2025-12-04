@@ -1,95 +1,116 @@
-### 1. Maintenance & Project Hygiene
-To make the project easier to develop and maintain, consider the following structural changes:
+Based on the file dump provided, you have a "VM building tool" (Project **Rave**) that relies heavily on Shell scripts and NixOS configurations. Currently, the logic is scattered across the root directory and various subfolders, with hardcoded values (ports, passwords) duplicated across multiple files.
 
-**A. Manage Go Dependencies properly**
-The repository includes the `vendor/` directory (files 5-23, 60-197). This accounts for the vast majority of the file count and noise.
-*   **Action:** Remove `src/apps/auth-manager/vendor` from source control.
-*   **Fix:** Add `vendor/` to `.gitignore`. Let Nix handle dependencies using `vendorHash` in your `buildGoModule` derivation, or use standard Go modules locally.
+Here is a comprehensive plan to refactor this project to be modular, maintainable, and robust.
 
-**B. Centralize and Decouple Scripts**
-You have Python scripts embedded in `infra/nixos/modules/...` (e.g., File 3: `ensure-gitlab-mattermost-ci.py`).
-*   **Issue:** Editing Python inside a Nix module definition or a deep subdirectory is difficult for linting and testing.
-*   **Fix:** Move these scripts to `src/scripts/` or `src/tools/`. In your Nix configuration, reference them by path or package them as binaries. This allows you to run standard Python linters (black, mypy, ruff) on them.
+### 1. Reorganize Directory Structure
 
-**C. Unify Entry Points**
-You have various shell scripts for testing (`scripts/test-e2e.sh`, `scripts/spinup_smoke.sh`).
-*   **Recommendation:** Create a `Justfile` or `Makefile`. This documents the "official" way to run things.
-    *   Example: `just test-auth`, `just dev-vm`, `just lint`.
+Move loose scripts from the root into a logical hierarchy. This separates "source" code from "configuration" and "documentation."
+
+**Proposed Structure:**
+```text
+rave/
+├── bin/                 # Entry point scripts (CLI wrappers)
+│   └── rave             # Main entry point
+├── config/              # Configuration files
+│   ├── rave.env         # Shared environment variables (Ports, Passwords)
+│   └── qemu-args.conf   # QEMU arguments
+├── lib/                 # Shared shell functions
+│   ├── utils.sh         # Logging, error handling
+│   ├── network.sh       # Port checks, curl wrappers
+│   └── ssh.sh           # SSH connection helpers
+├── scripts/             # Task-specific scripts
+│   ├── boot/            # Boot monitoring and startup
+│   ├── setup/           # Installation scripts (Nix, Certs)
+│   ├── health/          # Health checks
+│   └── demo/            # Demo scenarios
+└── infra/               # Existing NixOS infrastructure
+```
 
 ---
 
-### 2. Authentik Integration Issues
-The Authentik setup "isn't working." Based on `src/apps/auth-manager/internal/server/server.go` (File 11) and `src/apps/auth-manager/internal/webhook/authentik.go` (File 37), here are the likely causes:
+### 2. Centralize Configuration (`config/rave.env`)
 
-#### Issue A: Webhook Payload Mismatch
-In `src/apps/auth-manager/internal/webhook/authentik.go` (File 37), the struct `AuthentikEvent` expects a highly specific JSON structure:
+Stop hardcoding `8443`, `2224`, and `debug123` in every file. Create a single source of truth.
 
-```go
-type EventContext struct {
-    // ...
-    User *EventUser `json:"user"` // Expects a nested user object
-    // ...
-}
+```bash
+# config/rave.env
+
+# VM Connectivity
+export VM_HOST="localhost"
+export VM_SSH_PORT="2224"
+export VM_HTTP_PORT="8080"
+export VM_HTTPS_PORT="8443"
+
+# Credentials
+export VM_USER="root"
+export VM_PASS="debug123" # Consider using SSH keys instead of sshpass for prod
+
+# Timeouts
+export MAX_RETRIES=20
+export SLEEP_INTERVAL=15
+
+# URLs
+export BASE_URL="https://${VM_HOST}:${VM_HTTPS_PORT}"
 ```
 
-**The Problem:** Default Authentik webhooks do **not** send this structure. They usually send a flat event or a different structure depending on the event transport type.
-**The Fix:**
-1.  In Authentik, go to **Events -> Notifications -> Transports**.
-2.  Select your Webhook transport.
-3.  Ensure the **Property Mapping** is creating the JSON structure your Go code expects.
-4.  **Debugging:** In `server.go` line 168 (`handleAuthentikWebhook`), the logger warns `webhook parse failed` or logs `ignored`. Check the `auth-manager` logs. You likely need to update the Go struct to match the *actual* JSON Authentik is sending, or update Authentik's transformation.
+---
 
-#### Issue B: Forward Auth Header Mismatch
-In `src/apps/auth-manager/internal/server/server.go` (File 11), the `handleMattermostForwardAuth` function strictly looks for these headers:
+### 3. Create a Shared Library (`lib/`)
 
-```go
-email := r.Header.Get("X-Authentik-Email")
-username := r.Header.Get("X-Authentik-Username")
-name := r.Header.Get("X-Authentik-Name")
+Extract common logic used in `check-gitlab-ready.sh`, `monitor-boot.sh`, and `fix-certificates.sh`. ✅ Implemented as `lib/utils.sh`, `lib/ssh.sh` and wired into the Bash CLI.
+
+---
+
+### 4. Refactor Specific Scripts
+
+`monitor-boot`, `gitlab-ready`, and `fix-certificates` are now CLI subcommands (`rave vm-monitor`, `rave gitlab-ready`, `rave cert fix`). Legacy standalone scripts removed to keep functionality centralized.
+
+---
+
+### 5. Consolidate Health Checks
+
+Unified runner is now `rave health`, which also invokes any `scripts/health_checks/*.sh` when present. Legacy wrapper removed.
+
+---
+
+### 6. QEMU Launch Cleanup
+
+The script `final-rave-demo.sh` contained a very long QEMU command. This should be moved to a function or a variable to make it readable.
+
+**`scripts/vm/start.sh`**
+```bash
+#!/bin/bash
+source "$(dirname "$0")/../../config/rave.env"
+
+# Kill existing
+pkill -9 qemu-system-x86_64 2>/dev/null || true
+
+# Port Forwarding Configuration
+NET_OPTS="hostfwd=tcp:0.0.0.0:${VM_HTTP_PORT}-:8080"
+NET_OPTS+=",hostfwd=tcp:0.0.0.0:${VM_HTTPS_PORT}-:8081"
+NET_OPTS+=",hostfwd=tcp:0.0.0.0:${VM_SSH_PORT}-:22"
+
+echo "🚀 Starting VM..."
+qemu-system-x86_64 \
+  -enable-kvm \
+  -m 4G \
+  -smp 2 \
+  -drive file=gitlab-https-debug.qcow2,format=qcow2 \
+  -netdev user,id=net0,$NET_OPTS \
+  -device virtio-net,netdev=net0 \
+  -display none \
+  -daemonize
+
+echo "✅ VM process spawned. Run ./scripts/boot/monitor.sh to watch boot."
 ```
 
-**The Problem:** Authentik's Proxy Provider does not send `X-Authentik-Email` by default. It usually sends `X-Auth-Request-Email` or `Remote-User` / `X-Forwarded-User`.
-**The Fix:**
-1.  In Authentik, go to **Applications -> Providers -> (Your Proxy Provider)**.
-2.  Edit the provider.
-3.  Look for **Advanced protocol settings**.
-4.  Under **Additional Headers**, you must explicitly map them:
-    ```text
-    X-Authentik-Email: user.email
-    X-Authentik-Username: user.username
-    X-Authentik-Name: user.name
-    ```
-    *Without this configuration in Authentik, the variables in your Go server will be empty strings, and it will return `401 Unauthorized`.*
+### 7. Remove the Bundle
 
-#### Issue C: Circuit Breaker False Positives
-Your server uses a circuit breaker (File 11, Line 48: `newCircuitBreaker(5, 30*time.Second)`).
-**The Risk:** If Authentik misconfigures or the database is slow on startup (common in dev VMs), the circuit breaker opens.
-*   **Observation:** The `handleMattermostForwardAuth` function returns `503 Service Unavailable` if the breaker is open.
-*   **Fix:** Check your logs for `"mattermost circuit open"`. If this happens during boot, your `STARTUP_TIMEOUT` in `run-auth-manager-local.sh` (File 30) might be too short, or the breaker sensitivity is too high for a local dev environment.
+The file you provided (`rave.html`) includes an 800KB JavaScript bundle at the bottom. This is likely a visualization tool (Scribe) used to *generate* the file you uploaded.
+*   **Action:** Delete `infra/nixos/static/assets/index-CT1uqrYS.js` from your source control if it's a build artifact. Only keep the source code for your UI in `src/`.
 
-### 3. Code Specific Findings
-
-**1. Hardcoded Secrets in Scripts**
-*   File 25 (`fix-certificates.sh`) contains `sshpass -p 'debug123'`.
-*   File 43 (`start-rave-demo.sh`) contains `Password: rave-development-password`.
-*   **Recommendation:** Ensure these are only used in local dev/sandbox environments. If these scripts run in CI/CD or Production, switch to SSH keys or environment variable injection immediately.
-
-**2. Insecure TLS Skipping**
-*   File 45 (`check_database.sh`) and others use `curl -k`.
-*   **Recommendation:** You have a script `fix-certificates.sh` (File 25). Ensure this runs *before* health checks so you can drop the `-k` flag and actually verify TLS is working correctly.
-
-**3. Shadow User Database Logic**
-*   In `src/apps/auth-manager/internal/server/server.go`:
-    ```go
-    if cfg.DatabaseURL == "" {
-        return shadow.NewMemoryStore()
-    }
-    ```
-*   **Risk:** If the Postgres connection fails or isn't configured in the environment variables, it silently falls back to `MemoryStore`. Users will be provisioned, work fine, and then **disappear** when the service restarts.
-*   **Fix:** Make `DatabaseURL` mandatory in production, or add a massive warning log when falling back to Memory Store.
-
-### Summary of Next Steps
-1.  **Git:** Add `src/apps/auth-manager/vendor/` to `.gitignore`.
-2.  **Authentik:** Configure "Additional Headers" in the Authentik Proxy Provider to send `X-Authentik-Email`.
-3.  **Authentik:** Verify the Webhook JSON body matches the Go struct tags in `authentik.go`.
-4.  **Go:** Check `auth-manager` logs to see if it's falling back to `MemoryStore` unintentionally.
+### Summary of Benefits
+1.  **Single Config:** Change the port in `rave.env` and it updates in health checks, boot monitors, and VM startup scripts instantly.
+2.  **Dry Code:** SSH connection logic is defined once.
+3.  **Safety:** `set -e` prevents scripts from cascading errors.
+4.  **Readability:** New developers know exactly where to look (`config/` for settings, `scripts/` for logic).

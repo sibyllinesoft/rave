@@ -652,6 +652,11 @@ in
         otpFile = otpKeyBaseFile;
         dbFile = dbKeyBaseFile;
         jwsFile = jwsKeyBaseFile;
+        # GitLab 18+ assertions require ActiveRecord keys; reuse the main key base unless
+        # dedicated values are supplied via secrets overlays.
+        activeRecordPrimaryKeyFile = secretKeyBaseFile;
+        activeRecordDeterministicKeyFile = secretKeyBaseFile;
+        activeRecordSaltFile = secretKeyBaseFile;
         
         # Add missing Active Record secrets to prevent build warnings
         # Note: activeRecord secrets options removed in NixOS 24.11

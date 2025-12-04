@@ -60,7 +60,7 @@ let
     ++ optionals config.services.rave.outline.enable [ "outline" ]
     ++ optionals config.services.rave.n8n.enable [ "n8n" ]
     ++ optionals config.services.rave.pomerium.enable [ "pomerium" ]
-    ++ optionals config.services.rave.authentik.enable [ "authentik-server" "authentik-worker" ]
+    ++ optionals config.services.rave.authentik.enable [ "authentik" "authentik-worker" ]
     ++ cfg.extraStatusServices;
 
   statusServicesStr = concatStringsSep " " statusServices;

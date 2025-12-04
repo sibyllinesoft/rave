@@ -1,5 +1,64 @@
 { inputs, ... }:
 {
+  # Flake-wide metadata must live at the top level, not under perSystem.
+  flake.profileMetadata = {
+    production = {
+      attr = "production";
+      description = "Full stack (GitLab, Mattermost, Penpot, Outline, n8n, observability)";
+      defaultImage = "artifacts/qcow/production/rave-production-localhost.qcow2";
+      features = {
+        penpot = true;
+        outline = true;
+        n8n = true;
+        monitoring = true;
+      };
+    };
+    dataPlane = {
+      attr = "dataPlane";
+      description = "Data plane only (PostgreSQL + Redis, SSH, SOPS secrets)";
+      defaultImage = "artifacts/qcow/data-plane/rave-data-plane.qcow2";
+      features = {
+        penpot = false;
+        outline = false;
+        n8n = false;
+        monitoring = false;
+      };
+    };
+    appsPlane = {
+      attr = "appsPlane";
+      description = "Application plane (GitLab/Mattermost/etc.) targeting external data services";
+      defaultImage = "artifacts/qcow/apps-plane/rave-apps-plane.qcow2";
+      features = {
+        penpot = true;
+        outline = true;
+        n8n = true;
+        monitoring = true;
+      };
+    };
+    development = {
+      attr = "development";
+      description = "Slimmer build (Penpot/Outline/n8n disabled, lower RAM/disk)";
+      defaultImage = "artifacts/qcow/development/rave-development-localhost.qcow2";
+      features = {
+        penpot = false;
+        outline = false;
+        n8n = false;
+        monitoring = true;
+      };
+    };
+    demo = {
+      attr = "demo";
+      description = "Demo-friendly stack (observability + optional apps disabled)";
+      defaultImage = "artifacts/qcow/demo/rave-demo-localhost.qcow2";
+      features = {
+        penpot = false;
+        outline = false;
+        n8n = false;
+        monitoring = false;
+      };
+    };
+  };
+
   perSystem = { system, lib, pkgs, self', config, ... }:
     let
       mkImage = config._module.args.mkImage;
@@ -30,64 +89,6 @@
           exec python3 src/apps/cli/rave "$@"
         '';
         auth-manager = pkgs.auth-manager;
-      };
-
-      flake.profileMetadata = {
-        production = {
-          attr = "production";
-          description = "Full stack (GitLab, Mattermost, Penpot, Outline, n8n, observability)";
-          defaultImage = "artifacts/qcow/production/rave-production-localhost.qcow2";
-          features = {
-            penpot = true;
-            outline = true;
-            n8n = true;
-            monitoring = true;
-          };
-        };
-        dataPlane = {
-          attr = "dataPlane";
-          description = "Data plane only (PostgreSQL + Redis, SSH, SOPS secrets)";
-          defaultImage = "artifacts/qcow/data-plane/rave-data-plane.qcow2";
-          features = {
-            penpot = false;
-            outline = false;
-            n8n = false;
-            monitoring = false;
-          };
-        };
-        appsPlane = {
-          attr = "appsPlane";
-          description = "Application plane (GitLab/Mattermost/etc.) targeting external data services";
-          defaultImage = "artifacts/qcow/apps-plane/rave-apps-plane.qcow2";
-          features = {
-            penpot = true;
-            outline = true;
-            n8n = true;
-            monitoring = true;
-          };
-        };
-        development = {
-          attr = "development";
-          description = "Slimmer build (Penpot/Outline/n8n disabled, lower RAM/disk)";
-          defaultImage = "artifacts/qcow/development/rave-development-localhost.qcow2";
-          features = {
-            penpot = false;
-            outline = false;
-            n8n = false;
-            monitoring = true;
-          };
-        };
-        demo = {
-          attr = "demo";
-          description = "Demo-friendly stack (observability + optional apps disabled)";
-          defaultImage = "artifacts/qcow/demo/rave-demo-localhost.qcow2";
-          features = {
-            penpot = false;
-            outline = false;
-            n8n = false;
-            monitoring = false;
-          };
-        };
       };
     };
 }

@@ -125,8 +125,6 @@ in {
         RestartSec = 5;
         DynamicUser = false;
       };
-
-      sockets = [ ];
       wants = [ "network-online.target" ];
     };
 

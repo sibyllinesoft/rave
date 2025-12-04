@@ -287,13 +287,13 @@ in {
             ]);
           }
         ]
-        ++ lib.optionalAttrs (cfg.bootstrap.password != null) {
+        ++ lib.optional (cfg.bootstrap.password != null) {
           bootstrap_password = cfg.bootstrap.password;
         }
-        ++ lib.optionalAttrs (cfg.database.password != null) {
+        ++ lib.optional (cfg.database.password != null) {
           postgresql.password = cfg.database.password;
         }
-        ++ lib.optionalAttrs (cfg.secretKey != null) {
+        ++ lib.optional (cfg.secretKey != null) {
           secret_key = cfg.secretKey;
         }
         ++ [ cfg.extraSettings ]);
