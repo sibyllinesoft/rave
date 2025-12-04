@@ -75,34 +75,7 @@ Unified runner is now `rave health`, which also invokes any `scripts/health_chec
 
 ### 6. QEMU Launch Cleanup
 
-The script `final-rave-demo.sh` contained a very long QEMU command. This should be moved to a function or a variable to make it readable.
-
-**`scripts/vm/start.sh`**
-```bash
-#!/bin/bash
-source "$(dirname "$0")/../../config/rave.env"
-
-# Kill existing
-pkill -9 qemu-system-x86_64 2>/dev/null || true
-
-# Port Forwarding Configuration
-NET_OPTS="hostfwd=tcp:0.0.0.0:${VM_HTTP_PORT}-:8080"
-NET_OPTS+=",hostfwd=tcp:0.0.0.0:${VM_HTTPS_PORT}-:8081"
-NET_OPTS+=",hostfwd=tcp:0.0.0.0:${VM_SSH_PORT}-:22"
-
-echo "🚀 Starting VM..."
-qemu-system-x86_64 \
-  -enable-kvm \
-  -m 4G \
-  -smp 2 \
-  -drive file=gitlab-https-debug.qcow2,format=qcow2 \
-  -netdev user,id=net0,$NET_OPTS \
-  -device virtio-net,netdev=net0 \
-  -display none \
-  -daemonize
-
-echo "✅ VM process spawned. Run ./scripts/boot/monitor.sh to watch boot."
-```
+QEMU launch path is now the `rave vm start` subcommand (uses centralized ports from `config/rave.env`). The old standalone script and long inline command have been removed.
 
 ### 7. Remove the Bundle
 
