@@ -399,6 +399,7 @@ ready_service() {
     local target="${1:-gitlab}"
     local max_checks="${MAX_RETRIES:-20}"
     local base_url="https://localhost:${VM_HTTPS_PORT:-8443}"
+    local host_candidates=("")
 
     # Allow full URL as input
     local target_url=""
@@ -410,15 +411,19 @@ ready_service() {
             ;;
         gitlab)
             target_url="${base_url}/gitlab/"
+            host_candidates=("" "auth.localtest.me")
             ;;
         mattermost)
             target_url="${base_url}/mattermost/"
+            host_candidates=("" "chat.localtest.me" "auth.localtest.me")
             ;;
         grafana)
             target_url="${base_url}/grafana/"
+            host_candidates=("" "auth.localtest.me")
             ;;
         prom*|prometheus)
             target_url="${base_url}/prometheus/"
+            host_candidates=("" "auth.localtest.me")
             ;;
         nats)
             target_url="${base_url}/nats/"
@@ -434,27 +439,30 @@ ready_service() {
     local checks=0
     while [ "$checks" -lt "$max_checks" ]; do
         checks=$((checks + 1))
-        echo -n "[$checks/$max_checks] Testing response... "
-        response=$(curl -k -s -o /dev/null -w "%{http_code}" "$target_url" 2>/dev/null || echo "000")
-        case "$response" in
-            200|201|202|204|206|301|302|303|307|308|401)
-                echo "✅ SUCCESS! ${label} is ready (HTTP $response)"
-                echo "🎉 Accessible at: $target_url"
-                return 0
-                ;;
-            502)
-                echo "⏳ Still starting (502 Bad Gateway)"
-                ;;
-            500)
-                echo "⚠️  Internal Server Error (may indicate configuration issue)"
-                ;;
-            000|"")
-                echo "❌ No response yet"
-                ;;
-            *)
-                echo "❓ Unexpected response: HTTP $response"
-                ;;
-        esac
+        local success=0
+        local last_response="000"
+        for host_hdr in "${host_candidates[@]}"; do
+            if [ -n "$host_hdr" ]; then
+                response=$(curl -k -s -o /dev/null -w "%{http_code}" -H "Host: $host_hdr" "$target_url" 2>/dev/null || echo "000")
+            else
+                response=$(curl -k -s -o /dev/null -w "%{http_code}" "$target_url" 2>/dev/null || echo "000")
+            fi
+            last_response="$response"
+            case "$response" in
+                200|201|202|204|206|301|302|303|307|308|401)
+                    success=1
+                    break
+                    ;;
+            esac
+        done
+
+        if [ "$success" -eq 1 ]; then
+            echo "[$checks/$max_checks] ✅ SUCCESS! ${label} is ready (HTTP ${last_response})"
+            echo "🎉 Accessible at: $target_url"
+            return 0
+        fi
+
+        echo "[$checks/$max_checks] ❓ Response: HTTP ${last_response}"
         if [ "$checks" -lt "$max_checks" ]; then
             echo "   Waiting 30 seconds before next check..."
             sleep 30
